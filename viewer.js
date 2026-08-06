@@ -45,6 +45,9 @@ $('mFull').onclick=()=>{
   const f=el.requestFullscreen||el.webkitRequestFullscreen;
   if(f) f.call(el);
 };
+// installed (home-screen) mode is always fullscreen — the button only serves browser tabs
+if(matchMedia('(display-mode: standalone)').matches||navigator.standalone)
+  $('mFull').style.display='none';
 $('openBtn').onclick=()=>$('file').click();
 $('file').addEventListener('change',e=>{
   const f=e.target.files[0];
