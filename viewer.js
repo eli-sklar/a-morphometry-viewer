@@ -77,9 +77,37 @@ $('file').addEventListener('change',e=>{
   if(f) f.arrayBuffer().then(load).catch(ex=>{$('err').textContent='שגיאה: '+ex.message;});
 });
 if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+const STANDALONE=matchMedia('(display-mode: standalone)').matches||!!navigator.standalone;
 // installed (home-screen) mode is always fullscreen — the button only serves browser tabs
-if(matchMedia('(display-mode: standalone)').matches||navigator.standalone)
-  $('mFull').style.display='none';
+if(STANDALONE) $('mFull').style.display='none';
+
+/* ---- field anchors (decision 19): refuse to work from a Safari TAB on iPad —
+   there the 7-day storage eviction applies and work silently dies; and show a
+   visible ready-for-field badge once every shell asset is provably cached ---- */
+const IOS=/iPad|iPhone/.test(navigator.userAgent)||
+          (navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+if(IOS&&!STANDALONE){
+  $('openBtn').style.display='none';
+  $('install').style.display='block';
+}
+const SHELL=['index.html','viewer.js','three.min.js','manifest.webmanifest',
+             'icon-180.png','icon-512.png'];   // must mirror sw.js ASSETS (S13 guards)
+function checkReady(tries){
+  if(!('caches' in window)){$('ready').textContent='';return;}
+  Promise.all(SHELL.map(a=>caches.match(a,{ignoreSearch:true})))
+    .then(rs=>{
+      if(rs.every(Boolean)){
+        $('ready').textContent='✓ מוכן לשטח — עובד גם בלי רשת · '+$('ver').textContent;
+        $('ready').style.color='#22c55e';
+      } else if(tries>0){
+        setTimeout(()=>checkReady(tries-1),3000);
+      } else {
+        $('ready').textContent='טרם נשמר לעבודה ללא רשת — הישארו מחוברים רגע ופתחו שוב';
+        $('ready').style.color='#b8934a';
+      }
+    }).catch(()=>{$('ready').textContent='';});
+}
+checkReady(5);
 $('mFull').onclick=()=>{
   const el=document.documentElement;
   const f=el.requestFullscreen||el.webkitRequestFullscreen;
