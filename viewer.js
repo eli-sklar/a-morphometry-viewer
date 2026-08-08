@@ -65,7 +65,8 @@ const cv=$('cv');
 const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 const scene=new THREE.Scene();
-scene.background=new THREE.Color(0xf5f4f0);   // light bg — print/field requirement
+scene.background=new THREE.Color(0x15171a);   // dark working background, as on the
+// desktop: the light background belongs to the report stills, not to the marking view
 const camera=new THREE.PerspectiveCamera(50,innerWidth/Math.max(1,innerHeight),0.01,1000);
 function resize(){renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/Math.max(1,innerHeight);camera.updateProjectionMatrix();}
 addEventListener('resize',resize); resize();
@@ -302,7 +303,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
   document.addEventListener('dblclick',e=>e.preventDefault());
 
   /* ---- region growing (flood by brightness / probability) ---- */
-  let growTol=14, growByProb=false;
+  let growTol=14;
   const RG=0.05, RG2=RG*RG;
   const ray=new THREE.Raycaster();
   function castAt(e){
@@ -315,8 +316,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
   function growAt(e){
     const hit=castAt(e); if(!hit.length)return;
     const seed=hit[0].faceIndex; if(seed==null)return;
-    const byProb=growByProb&&hasProb; const tolP=growTol/100;
-    const seedVal=byProb?prob[seed]:lum[FACEOF[seed]];
+    const seedVal=lum[FACEOF[seed]];
     if(roiCount>0&&!roi[seed])return;
     const visited=new Uint8Array(N); const q=[seed]; visited[seed]=1;
     let head=0,added=0; const CAP=80000;
@@ -333,7 +333,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
           const dx=cen[g2*3]-cx,dy=cen[g2*3+1]-cy,dz=cen[g2*3+2]-cz;
           if(dx*dx+dy*dy+dz*dz>RG2)continue;
           if(roiCount>0&&!roi[g2]){visited[g2]=1;continue;}
-          const ok=byProb?(prob[g2]>=seedVal-tolP):(Math.abs(lum[FACEOF[g2]]-seedVal)<=growTol);
+          const ok=Math.abs(lum[FACEOF[g2]]-seedVal)<=growTol;
           visited[g2]=1; if(ok)q.push(g2);
         }}
     }
@@ -455,9 +455,6 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
   $('auto').onclick=autoComplete;
   $('brush').oninput=e=>{brushR=e.target.value/100;$('brushV').textContent=brushR.toFixed(2);};
   $('grtol').oninput=e=>{growTol=+e.target.value;$('grtolV').textContent=e.target.value;};
-  $('grProb').onclick=function(){
-    if(!hasProb&&!growByProb){alert('נביטה לפי הסתברות זמינה רק אחרי "השלמה אוטומטית".');return;}
-    growByProb=!growByProb;this.classList.toggle('on',growByProb);};
   $('thr').oninput=e=>{const v=e.target.value/1000;$('thrV').textContent=v.toFixed(3);
     globalThr=v;recolorAll();};
 
