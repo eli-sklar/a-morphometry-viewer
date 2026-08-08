@@ -11,10 +11,14 @@
 <title>A-morphometry</title>
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#f5f4f0;font-family:-apple-system,'Segoe UI',sans-serif}
-  #bar{position:fixed;top:0;right:0;left:0;display:flex;gap:6px;align-items:center;padding:8px 10px;
-       padding-top:calc(8px + env(safe-area-inset-top));background:rgba(245,244,240,.94);z-index:5;flex-wrap:wrap}
-  button{font-size:14px;padding:8px 14px;border:1px solid #c8c5bb;border-radius:8px;background:#fff;color:#333}
+  #bar{position:fixed;top:0;right:0;left:0;display:flex;flex-direction:column;gap:4px;padding:6px 10px;
+       padding-top:calc(6px + env(safe-area-inset-top));background:rgba(245,244,240,.94);z-index:5}
+  .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  button{font-size:14px;padding:8px 12px;border:1px solid #c8c5bb;border-radius:8px;background:#fff;color:#333}
   button.on{background:#0f766e;color:#fff;border-color:#0f766e}
+  button:disabled{opacity:.4}
+  input[type=range]{width:130px}
+  .lbl{font-size:12px;color:#777}
   #area{margin-inline-start:auto;font-size:15px;font-weight:700;color:#0f766e;white-space:nowrap}
   #cv{position:fixed;inset:0;touch-action:none}
   #hello{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;z-index:4;background:#f5f4f0}
@@ -30,16 +34,35 @@
   <p>פתיחת קובץ עבודה (‎.glb) שיוצא מהתוכנה במחשב. הקובץ נשאר במכשיר — שום דבר לא נשלח לרשת.</p>
   <button id="openBtn">פתח עבודה</button>
   <div id="err"></div>
-  <div style="color:#aaa;font-size:12px">גרסה 6</div>
+  <div style="color:#aaa;font-size:12px">גרסה 7</div>
   <input id="file" type="file" style="display:none">
 </div>
 <div id="bar" style="display:none">
-  <button id="mNav" class="on">ניווט</button>
-  <button id="mMark">סימון</button>
-  <button id="mErase">מחיקה</button>
-  <button id="mExport" style="background:#0f766e;color:#fff;border-color:#0f766e">ייצוא גיליון</button>
-  <button id="mFull">מסך מלא</button>
-  <span id="area">0.00 מ"ר</span>
+  <div class="row">
+    <button id="mNav" class="on">ניווט</button>
+    <button id="mAdd">סימון ＋</button>
+    <button id="mRem">מחיקה −</button>
+    <button id="mGrow">נביטה</button>
+    <button id="undo" disabled>↶</button>
+    <button id="redo" disabled>↷</button>
+    <button id="auto">השלמה אוטומטית</button>
+    <button id="mExport" style="background:#0f766e;color:#fff;border-color:#0f766e">ייצוא גיליון</button>
+    <button id="mFull">מסך מלא</button>
+    <span id="area">0.00 מ"ר</span>
+  </div>
+  <div class="row" id="thrRow">
+    <span class="lbl">סף</span><input type="range" id="thr" min="0" max="1000" value="500">
+    <span class="lbl" id="thrV">0.500</span>
+  </div>
+  <div class="row" id="brushRow" style="display:none">
+    <span class="lbl">מברשת</span><input type="range" id="brush" min="2" max="40" value="10">
+    <span class="lbl" id="brushV">0.10</span><span class="lbl">מ'</span>
+  </div>
+  <div class="row" id="growRow" style="display:none">
+    <span class="lbl">סבילות</span><input type="range" id="grtol" min="2" max="60" value="14">
+    <span class="lbl" id="grtolV">14</span>
+    <button id="grProb">לפי הסתברות</button>
+  </div>
 </div>
 <canvas id="cv"></canvas>
 <script src="three.min.js"></script>
