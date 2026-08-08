@@ -28,7 +28,32 @@ function view(g,bin,i,Arr){
 
 /* ---- scene ---- */
 let renderer,scene,camera,mesh,colors,marked,areaArr,allowed,total=0,name='';
+let AM=null,ROI0=null,CNT=null;      // package metadata + raw ROI/cnt, needed for the sheet export
 let mode='nav';
+
+/* ---- op-log: every mark mutation lands in IndexedDB immediately (decision 19) —
+   a crash or reload loses at most the last finger stroke ---- */
+let db=null;
+const dbReady=new Promise(res=>{
+  const r=indexedDB.open('am-ipad',1);
+  r.onupgradeneeded=()=>r.result.createObjectStore('ops',{autoIncrement:true});
+  r.onsuccess=()=>{db=r.result;res();};
+  r.onerror=()=>res();
+});
+const jobKey=()=>AM?(AM.jobId+':'+AM.Fo+':'+AM.Nsub):'';
+function logOp(sub,v){
+  if(!db||!AM)return;
+  try{db.transaction('ops','readwrite').objectStore('ops').put({j:jobKey(),s:sub,v:v});}catch(_){}
+}
+function readOps(){
+  return new Promise(res=>{
+    if(!db||!AM)return res([]);
+    const out=[],c=db.transaction('ops').objectStore('ops').openCursor();
+    c.onsuccess=()=>{const cur=c.result;
+      if(cur){if(cur.value.j===jobKey())out.push(cur.value);cur.continue();}else res(out);};
+    c.onerror=()=>res([]);
+  });
+}
 const cv=document.getElementById('cv');
 const $=id=>document.getElementById(id);
 
@@ -58,8 +83,8 @@ function load(buf){
   const g=parseGLB(buf);
   const am=g.json.asset&&g.json.asset.extras&&g.json.asset.extras.amWork;
   if(!am) throw new Error('הקובץ אינו נושא נתוני עבודה (amWork).');
-  if(am.schemaVersion>1) throw new Error('הקובץ נוצר בגרסה חדשה מדי של התוכנה — עדכנו את המציג.');
-  name=am.name||'עבודה';
+  if(am.schemaVersion>1) throw new Error('הקובץ נוצר בגרסה חדשה מדי של התוכנה — עדכנו את גרסת האייפד.');
+  AM=am; name=am.name||'עבודה';
   const acc=g.json.accessors;
   const pos=view(g,g.bin,acc[0].bufferView,Float32Array);
   const uv=view(g,g.bin,acc[1].bufferView,Float32Array);
@@ -72,12 +97,14 @@ function load(buf){
   let subToOrig=null;
   if(app.cnt!==undefined){
     const cnt=view(g,g.bin,app.cnt,Uint8Array);
+    CNT=cnt;
     subToOrig=new Int32Array(Nsub); let s=0;
     for(let f=0;f<cnt.length;f++) for(let j=0;j<cnt[f];j++) subToOrig[s++]=f;
   }
   allowed=null;
   if(app.roi0!==undefined){
     const roi=view(g,g.bin,app.roi0,Uint8Array);
+    ROI0=roi;
     allowed=new Uint8Array(Nsub);
     for(let s=0;s<Nsub;s++){
       const f=subToOrig?subToOrig[s]:Math.floor(s/am.spf);
@@ -110,6 +137,15 @@ function load(buf){
     $('hello').style.display='none';
     $('bar').style.display='flex';
     URL.revokeObjectURL(image.src);
+    // unexported marks from a previous visit of THIS work? offer to restore
+    dbReady.then(readOps).then(ops=>{
+      if(!ops.length)return;
+      const last={};ops.forEach(o=>{last[o.s]=o.v;});
+      const subs=Object.keys(last).filter(k=>last[k]);
+      if(!subs.length)return;
+      if(confirm('נמצאו '+subs.length+' סימונים שלא יוצאו מהביקור הקודם בעבודה הזאת — לשחזר אותם?'))
+        subs.forEach(k=>applyMark(+k,1));
+    });
   };
   image.onerror=()=>{$('err').textContent='טעינת הטקסטורה נכשלה.';};
   image.src=URL.createObjectURL(blob);
@@ -164,6 +200,17 @@ cv.addEventListener('pointerup',lift); cv.addEventListener('pointercancel',lift)
 
 /* ---- marking ---- */
 const ray=new THREE.Raycaster(), ndc=new THREE.Vector2();
+function applyMark(sub,want){
+  if(marked[sub]===want) return false;
+  marked[sub]=want;
+  total+=(want?1:-1)*areaArr[sub];
+  const b=sub*9;
+  const c=want?[1,0.25,0.2]:[1,1,1];
+  for(let k=0;k<3;k++){colors[b+k*3]=c[0];colors[b+k*3+1]=c[1];colors[b+k*3+2]=c[2];}
+  mesh.geometry.attributes.color.needsUpdate=true;
+  $('area').textContent=Math.max(0,total).toFixed(2)+' מ"ר';
+  return true;
+}
 function paint(e){
   if(!mesh) return;
   ndc.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);
@@ -173,15 +220,40 @@ function paint(e){
   const sub=hit.faceIndex;
   if(allowed&&!allowed[sub]) return;               // locked outside the orange zone
   const want=(mode==='mark')?1:0;
-  if(marked[sub]===want) return;
-  marked[sub]=want;
-  total+=(want?1:-1)*areaArr[sub];
-  const b=sub*9;
-  const c=want?[1,0.25,0.2]:[1,1,1];
-  for(let k=0;k<3;k++){colors[b+k*3]=c[0];colors[b+k*3+1]=c[1];colors[b+k*3+2]=c[2];}
-  mesh.geometry.attributes.color.needsUpdate=true;
-  $('area').textContent=Math.max(0,total).toFixed(2)+' מ"ר';
+  if(applyMark(sub,want)) logOp(sub,want);
 }
+
+/* ---- sheet export: EXACTLY the desktop sheet format (viewer3d_template getSheet) —
+   the file drops straight into the desktop app and feeds the report ---- */
+function b64u8(u8){
+  let s='';
+  for(let i=0;i<u8.length;i+=0x8000)
+    s+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));
+  return btoa(s);
+}
+$('mExport').onclick=async()=>{
+  if(!mesh||!AM) return;
+  const m=[],rep=[]; let ar=0;
+  for(let i=0;i<marked.length;i++)
+    if(marked[i]){ m.push([i,1]); rep.push(i); ar+=areaArr[i]; }
+  const rf=[];
+  if(ROI0) for(let f=0;f<ROI0.length;f++) if(ROI0[f]) rf.push(f);
+  const sheet={_sheet:1, Fo:AM.Fo, Nsub:AM.Nsub, subdiv:AM.sub,
+    cnt:CNT?b64u8(CNT):null, faceThr:[], manual:m, roiFaces:rf,
+    hasProb:false, prob:null, saved:new Date().toISOString(),
+    repairFaces:rep, areaM2:ar,
+    jobId:AM.jobId, exportedBy:'A-morphometry iPad'};
+  const fname=(name||'work')+'_gilayon.json';
+  const data=JSON.stringify(sheet);
+  const file=new File([data],fname,{type:'application/json'});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file]}); return; }
+    catch(e){ if(e&&e.name==='AbortError') return; }
+  }
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([data],{type:'application/json'}));
+  a.download=fname; a.click();
+};
 
 /* ---- boot ---- */
 renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
