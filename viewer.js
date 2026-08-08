@@ -211,8 +211,15 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
     if(curDiff&&curDiff.length){
       undoStack.push(curDiff);redoStack.length=0;
       logOps(curDiff.map(([f])=>[f,manual[f]]));      // final values of this stroke
+      markUnexported(true);
     }
     curDiff=null;curT=null;updateHB();
+  }
+  // export-reminder anchor (decision 19): unexported marks must be VISIBLE —
+  // with non-technical users the export is the step that gets forgotten
+  function markUnexported(on){
+    $('mExport').textContent=on?'⚠ ייצוא גיליון':'ייצוא גיליון';
+    $('mExport').style.outline=on?'2px solid #ef4444':'';
   }
   function applyDiff(diff){
     const inv=[];
@@ -426,12 +433,13 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
     const data=JSON.stringify(sheet);
     const file=new File([data],fname,{type:'application/json'});
     if(navigator.canShare&&navigator.canShare({files:[file]})){
-      try{await navigator.share({files:[file]});return;}
+      try{await navigator.share({files:[file]});markUnexported(false);return;}
       catch(e){if(e&&e.name==='AbortError')return;}
     }
     const a=document.createElement('a');
     a.href=URL.createObjectURL(new Blob([data],{type:'application/json'}));
     a.download=fname;a.click();
+    markUnexported(false);
   };
 
   /* ---- toolbar ---- */
@@ -463,7 +471,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
     if(!subs.length)return;
     if(confirm('נמצאו '+subs.length+' סימונים שלא יוצאו מהביקור הקודם בעבודה הזאת — לשחזר?')){
       for(const k of subs){manual[+k]=lastV[k];recolorFace(+k);}
-      colAttr.needsUpdate=true;updateArea();
+      colAttr.needsUpdate=true;updateArea();markUnexported(true);
     }
   });
 
