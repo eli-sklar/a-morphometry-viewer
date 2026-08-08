@@ -116,6 +116,7 @@ function load(buf){
     engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex);
     $('hello').style.display='none';
     $('bar').style.display='flex';
+    $('side').style.display='flex';
     URL.revokeObjectURL(image.src);
   };
   image.onerror=()=>{$('err').textContent='טעינת הטקסטורה נכשלה.';};
@@ -221,7 +222,9 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
     if(touchList().length>=2&&!hasPen()){
       if(dragging==='paint'&&paintManual)commitH();
       startPinch();dragging='pinch';return;}
-    if(e.pointerType==='touch'&&mode==='nav'){dragging='rot';}
+    // a finger ALWAYS navigates — marking/erasing/growing is pencil-only
+    // (user decision 08/08/2026; also the original editor's behaviour)
+    if(e.pointerType==='touch'){dragging='rot';}
     else if(mode==='nav'){dragging='rot';}
     else if(mode==='grow'){growAt(e);dragging=null;}
     else {dragging='paint';paintManual=true;beginH();paintAt(e);}
@@ -407,8 +410,6 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
   function setMode(m){mode=m;
     ['mNav','mAdd','mRem','mGrow'].forEach(id=>$(id).classList.remove('on'));
     $({nav:'mNav',add:'mAdd',rem:'mRem',grow:'mGrow'}[m]).classList.add('on');
-    $('brushRow').style.display=(m==='add'||m==='rem')?'flex':'none';
-    $('growRow').style.display=(m==='grow')?'flex':'none';
   }
   $('mNav').onclick=()=>setMode('nav');
   $('mAdd').onclick=()=>setMode('add');

@@ -4,65 +4,81 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <title>A-morphometry</title>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden;background:#f5f4f0;font-family:-apple-system,'Segoe UI',sans-serif}
-  #bar{position:fixed;top:0;right:0;left:0;display:flex;flex-direction:column;gap:4px;padding:6px 10px;
-       padding-top:calc(6px + env(safe-area-inset-top));background:rgba(245,244,240,.94);z-index:5}
-  .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-  button{font-size:14px;padding:8px 12px;border:1px solid #c8c5bb;border-radius:8px;background:#fff;color:#333}
-  button.on{background:#0f766e;color:#fff;border-color:#0f766e}
+  :root{--bg:#0a0a0a;--panel:#141210;--txt:#d8cdb8;--rep:#22c55e;--non:#ef4444;--acc:#3b82f6;--amber:#b8934a;--serif:"Frank Ruehl CLM","FrankRuehl","David","Narkisim","Times New Roman",serif;--sans:system-ui,"Segoe UI",Arial,sans-serif}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;position:fixed;width:100%;overflow:hidden;overscroll-behavior:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  body{background:var(--bg);color:var(--txt);font-family:var(--sans)}
+  button{background:#232019;color:var(--txt);border:1px solid #6b5a33;border-radius:2px;padding:8px 12px;font-size:14px;cursor:pointer;box-shadow:inset 0 0 0 2px #232019, inset 0 0 0 3px rgba(184,147,74,.40);display:inline-flex;align-items:center;justify-content:center}
   button:disabled{opacity:.4}
-  input[type=range]{width:130px}
-  .lbl{font-size:12px;color:#777}
-  #area{margin-inline-start:auto;font-size:15px;font-weight:700;color:#0f766e;white-space:nowrap}
+  button.on{background:var(--amber);color:#161310;border-color:var(--amber);font-weight:600;box-shadow:inset 0 0 0 2px var(--amber), inset 0 0 0 3px #161310}
+  input[type=range]{width:120px;accent-color:var(--amber)}
+  .val{font-variant-numeric:tabular-nums;min-width:44px;text-align:center;font-size:12px}
+  label{font-size:12px;opacity:.9}
+  .grp{display:flex;gap:6px;align-items:center;background:#0003;padding:4px 8px;border-radius:2px}
+  #bar{position:fixed;top:0;right:0;left:0;display:flex;flex-wrap:wrap;gap:5px;align-items:center;padding:5px 10px;
+       padding-top:calc(5px + env(safe-area-inset-top));background:rgba(17,15,12,0.96);border-bottom:1px solid #000;z-index:5;max-height:34%;overflow-y:auto}
+  #area{font-family:var(--serif);font-size:19px;font-weight:700;color:var(--rep);font-variant-numeric:tabular-nums;letter-spacing:.3px;margin-inline-start:auto;white-space:nowrap}
+  #side{position:fixed;top:50%;right:14px;transform:translateY(-50%);display:flex;flex-direction:column;gap:10px;z-index:6}
+  #side button{width:120px;padding:13px 8px;font-size:15px;font-weight:600;box-shadow:0 2px 8px #0007}
+  #side button.nav.on{background:#1d4ed8;outline:2px solid var(--acc);color:#fff}
+  #side button.add.on{background:#15803d;outline:2px solid var(--rep);color:#fff}
+  #side button.rem.on{background:#b91c1c;outline:2px solid var(--non);color:#fff}
+  #side button.grow.on{background:#15803d;outline:2px solid var(--rep);color:#fff}
   #cv{position:fixed;inset:0;touch-action:none}
-  #hello{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;z-index:4;background:#f5f4f0}
-  #hello h1{font-size:22px;color:#333;margin:0}
-  #hello p{color:#777;font-size:14px;max-width:340px;text-align:center;margin:0}
-  #openBtn{font-size:17px;padding:12px 26px;background:#0f766e;color:#fff;border:none}
-  #err{color:#a32d2d;font-size:13px;max-width:340px;text-align:center}
+  #hello{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:4;background:var(--bg)}
+  #hello h1{font-family:var(--serif);font-size:26px;color:var(--txt);margin:0;letter-spacing:.5px}
+  #hello p{color:#8a7f68;font-size:14px;max-width:340px;text-align:center;margin:0;line-height:1.5}
+  #openBtn{font-size:17px;padding:13px 30px;background:var(--amber);color:#161310;border-color:var(--amber);font-weight:600}
+  #err{color:var(--non);font-size:13px;max-width:340px;text-align:center}
+  #ver{color:#5c5342;font-size:12px}
 </style>
 </head>
 <body>
 <div id="hello">
   <h1>A-morphometry</h1>
-  <p>פתיחת קובץ עבודה (‎.glb) שיוצא מהתוכנה במחשב. הקובץ נשאר במכשיר — שום דבר לא נשלח לרשת.</p>
+  <p>פתיחת קובץ עבודה (‎.glb) שיוצא מהתוכנה במחשב.<br>הקובץ נשאר במכשיר — שום דבר לא נשלח לרשת.</p>
   <button id="openBtn">פתח עבודה</button>
   <div id="err"></div>
-  <div style="color:#aaa;font-size:12px">גרסה 7</div>
+  <div id="ver">גרסה 8</div>
   <input id="file" type="file" style="display:none">
 </div>
 <div id="bar" style="display:none">
-  <div class="row">
-    <button id="mNav" class="on">ניווט</button>
-    <button id="mAdd">סימון ＋</button>
-    <button id="mRem">מחיקה −</button>
-    <button id="mGrow">נביטה</button>
-    <button id="undo" disabled>↶</button>
-    <button id="redo" disabled>↷</button>
-    <button id="auto">השלמה אוטומטית</button>
-    <button id="mExport" style="background:#0f766e;color:#fff;border-color:#0f766e">ייצוא גיליון</button>
-    <button id="mFull">מסך מלא</button>
-    <span id="area">0.00 מ"ר</span>
+  <div class="grp">
+    <label>סף ההבחנה</label>
+    <input id="thr" type="range" min="0" max="1000" value="500">
+    <span id="thrV" class="val">0.500</span>
   </div>
-  <div class="row" id="thrRow">
-    <span class="lbl">סף</span><input type="range" id="thr" min="0" max="1000" value="500">
-    <span class="lbl" id="thrV">0.500</span>
+  <div class="grp">
+    <label>מברשת</label>
+    <input id="brush" type="range" min="2" max="40" value="10">
+    <span id="brushV" class="val">0.10</span>
   </div>
-  <div class="row" id="brushRow" style="display:none">
-    <span class="lbl">מברשת</span><input type="range" id="brush" min="2" max="40" value="10">
-    <span class="lbl" id="brushV">0.10</span><span class="lbl">מ'</span>
-  </div>
-  <div class="row" id="growRow" style="display:none">
-    <span class="lbl">סבילות</span><input type="range" id="grtol" min="2" max="60" value="14">
-    <span class="lbl" id="grtolV">14</span>
+  <div class="grp">
+    <label>סבילות נביטה</label>
+    <input id="grtol" type="range" min="2" max="60" value="14">
+    <span id="grtolV" class="val">14</span>
     <button id="grProb">לפי הסתברות</button>
   </div>
+  <div class="grp">
+    <button id="undo" disabled>↶ בטל</button>
+    <button id="redo" disabled>↷ חזור</button>
+  </div>
+  <button id="auto">למידת הסימונים והשלמה</button>
+  <button id="mExport" style="background:#0f766e;color:#fff;border-color:#0f766e">ייצוא גיליון</button>
+  <button id="mFull">מסך מלא</button>
+  <span id="area">0.00 מ"ר</span>
+</div>
+<div id="side" style="display:none">
+  <button id="mNav" class="nav on">ניווט</button>
+  <button id="mAdd" class="add">סימון ＋</button>
+  <button id="mRem" class="rem">מחיקה −</button>
+  <button id="mGrow" class="grow">נביטה</button>
 </div>
 <canvas id="cv"></canvas>
 <script src="three.min.js"></script>
