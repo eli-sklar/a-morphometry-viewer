@@ -73,9 +73,22 @@ addEventListener('resize',resize); resize();
 (function tick(){requestAnimationFrame(tick);renderer.render(scene,camera);})();
 
 $('openBtn').onclick=()=>$('file').click();
+$('mImport').onclick=()=>$('file').click();     // slice 2 (decision 42): the reverse button
 $('file').addEventListener('change',e=>{
-  const f=e.target.files[0];
-  if(f) f.arrayBuffer().then(load).catch(ex=>{$('err').textContent='שגיאה: '+ex.message;});
+  const f=e.target.files[0]; e.target.value='';
+  if(!f) return;
+  // one picker, recognized by content (decision 37): a .json is a SHEET — it loads
+  // into the open work; a .glb is a work package — it boots the engine
+  if(/\.json$/i.test(f.name||'')){
+    if(!window.__am){
+      $('err').textContent='זהו גיליון, לא קובץ עבודה. פתחו קודם את קובץ העבודה (.glb) — ואז טענו את הגיליון.';
+      return;
+    }
+    f.text().then(t=>{window.__am.applySheet(JSON.parse(t));})
+      .catch(ex=>alert('טעינת הגיליון נכשלה:\n'+((ex&&ex.message)||ex)));
+    return;
+  }
+  f.arrayBuffer().then(load).catch(ex=>{$('err').textContent='שגיאה: '+ex.message;});
 });
 if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 const STANDALONE=matchMedia('(display-mode: standalone)').matches||!!navigator.standalone;
@@ -120,7 +133,7 @@ function load(buf){
   const g=parseGLB(buf);
   const am=g.json.asset&&g.json.asset.extras&&g.json.asset.extras.amWork;
   if(!am) throw new Error('הקובץ אינו נושא נתוני עבודה (amWork).');
-  if(am.schemaVersion>1) throw new Error('הקובץ נוצר בגרסה חדשה מדי — עדכנו את גרסת האייפד.');
+  if(am.schemaVersion>2) throw new Error('הקובץ נוצר בגרסה חדשה מדי — עדכנו את גרסת האייפד.');
   AM=am;
   const acc=g.json.accessors, app=am.appData;
   const pos=bview(g,g.bin,acc[0].bufferView,Float32Array);
@@ -131,6 +144,12 @@ function load(buf){
   const lum=bview(g,g.bin,app.lum,Uint8Array);
   const CNT=(app.cnt!==undefined)?bview(g,g.bin,app.cnt,Uint8Array):null;
   const roi0=(app.roi0!==undefined)?bview(g,g.bin,app.roi0,Uint8Array):null;
+  // schema 2 (decision 42): the file may carry its sheet — the work rides with the file
+  let sheet=null;
+  if(app.sheet!==undefined){
+    try{sheet=JSON.parse(new TextDecoder().decode(bview(g,g.bin,app.sheet)));}
+    catch(_){sheet=null;}                        // a bad sheet must not block the model
+  }
   const img=bview(g,g.bin,g.json.images[0].bufferView);
 
   const image=new Image();
@@ -142,7 +161,7 @@ function load(buf){
     tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
     tex.generateMipmaps=false;                  // max sharpness, same as the desktop editor
     tex.needsUpdate=true;
-    engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex);
+    engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet);
     $('hello').style.display='none';
     $('bar').style.display='flex';
     $('side').style.display='flex';
@@ -153,7 +172,7 @@ function load(buf){
 }
 
 /* ================= the marking engine (port of the desktop editor IIFE) ======= */
-function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
+function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   const N=am.Nsub, SPF=am.spf, SUBK=am.sub, FO=am.Fo, NF=app_nfeat();
   function app_nfeat(){return am.appData.nfeat;}
   const OFF=new Uint32Array(FO+1);
@@ -460,6 +479,37 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
 
   fit(); recolorAll(); updateHB();
 
+  /* ---- sheet application (decision 42): one function, two callers — the sheet
+     embedded in the file at boot, and a sheet the user loads from Files (slice 2).
+     Field-for-field mirror of the desktop loadSheet — one engine, one meaning.
+     Throws on mismatch, reporting the measured numbers (decision 35). ---- */
+  function applySheet(sh){
+    if(!sh||!(sh._sheet||sh._work)) throw new Error('הקובץ אינו גיליון של התוכנה.');
+    if(sh.Nsub!==N||sh.Fo!==FO)
+      throw new Error('הגיליון אינו תואם לעבודה הפתוחה — בגיליון '+sh.Fo
+                      +' פאות, כאן '+FO+'.');
+    manual.fill(0);faceThr.fill(NaN);roi.fill(0);roiCount=0;
+    for(const [f,v] of (sh.manual||[])) if(f<N) manual[f]=v;
+    for(const [f,v] of (sh.faceThr||[])) if(f<N) faceThr[f]=v;
+    for(const fo of (sh.roiFaces||[])) if(fo<FO)
+      for(let t=OFF[fo];t<OFF[fo+1];t++){ if(!roi[t]){roi[t]=1;roiCount++;} }
+    if(typeof sh.globalThreshold==='number'){
+      globalThr=sh.globalThreshold;
+      $('thr').value=Math.round(globalThr*1000);
+      $('thrV').textContent=globalThr.toFixed(3);
+    }
+    if(sh.hasProb&&sh.prob&&sh.prob.length===FO){
+      for(let fo=0;fo<FO;fo++) for(let t=OFF[fo];t<OFF[fo+1];t++) prob[t]=sh.prob[fo];
+      hasProb=true;
+    }
+    undoStack.length=0;redoStack.length=0;updateHB();  // loaded state is the new baseline
+    recolorAll();
+  }
+  if(sheet){
+    try{applySheet(sheet);}
+    catch(ex){alert('הגיליון שבקובץ העבודה לא נטען:\n'+ex.message+'\nהמודל נפתח בלי סימונים.');}
+  }
+
   /* ---- restore unexported marks of THIS work from the op-log ---- */
   dbReady.then(readOps).then(ops=>{
     if(!ops.length)return;
@@ -472,7 +522,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex){
     }
   });
 
-  /* exposed for the smoke harness only — not a public API */
-  window.__am={N,FO,manual,roi,prob,area,getSheet,paintAt,growAt,autoComplete,
-    beginH,commitH,undo,redo,setMode:setMode,isRepair,fit};
+  /* exposed for the sheet-import path and the smoke harness — not a public API */
+  window.__am={N,FO,manual,roi,prob,area,getSheet,applySheet,paintAt,growAt,
+    autoComplete,beginH,commitH,undo,redo,setMode:setMode,isRepair,fit};
 }
