@@ -209,7 +209,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;');
     sh.fragmentShader=sh.fragmentShader
       .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;')
-      .replace('#include <opaque_fragment>','vec3 amTint=outgoingLight*mix(vec3(1.0),vACol,vAFlat);outgoingLight=mix(amTint,vACol,vAFlat*vAFlat*0.45);\n#include <opaque_fragment>');
+      .replace('#include <opaque_fragment>','vec3 amTint=outgoingLight*mix(vec3(1.0),vACol,min(vAFlat*1.25,1.0));float amF=clamp((vAFlat-0.7)/0.3,0.0,1.0);outgoingLight=mix(amTint,vACol,amF*amF*0.5);\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
 
@@ -278,22 +278,18 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   const cntTypes=[]; let activeC=-1, cSeq=0;
   const xmarks=[];
   function mkCntType(name,hex){const T={id:'c'+(cSeq++),name:name,hex:hex};cntTypes.push(T);return T;}
-  function xTexture(hex){const c=document.createElement('canvas');c.width=c.height=64;
-    const x=c.getContext('2d');x.strokeStyle=hex;x.lineWidth=9;x.lineCap='round';
-    x.beginPath();x.moveTo(14,14);x.lineTo(50,50);x.moveTo(50,14);x.lineTo(14,50);x.stroke();
-    return new THREE.CanvasTexture(c);}
   function xObj(m){const T=cntTypes.find(x=>x.id===m.t);
-    const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:xTexture(T?T.hex:'#ef4444'),
-      transparent:true,depthTest:true,depthWrite:false}));
-    const s=bs.radius*0.022; sp.scale.set(s,s,1);
-    sp.position.set(m.p[0],m.p[1],m.p[2]); sp.renderOrder=3; return sp;}
+    const dm=new THREE.Mesh(new THREE.OctahedronGeometry(Math.max(0.012,bs.radius*0.009)),
+      new THREE.MeshBasicMaterial({color:new THREE.Color(T?T.hex:'#ef4444')}));
+    dm.position.set(m.p[0],m.p[1],m.p[2]); dm.renderOrder=3; return dm;}
   function addX(m){if(!m.obj)m.obj=xObj(m); scene.add(m.obj); if(!xmarks.includes(m))xmarks.push(m);}
   function delX(m){if(m.obj)scene.remove(m.obj); const i=xmarks.indexOf(m); if(i>=0)xmarks.splice(i,1);}
   function placeXAt(e){if(activeC<0)return;
     const hit=castAt(e); if(!hit.length)return;
     const h=hit[0],nrm=h.face?h.face.normal:null;
+    const lift=Math.max(0.012,bs.radius*0.009);
     const m={t:cntTypes[activeC].id,
-      p:[h.point.x+(nrm?nrm.x*0.004:0),h.point.y+(nrm?nrm.y*0.004:0),h.point.z+(nrm?nrm.z*0.004:0)],obj:null};
+      p:[h.point.x+(nrm?nrm.x*lift:0),h.point.y+(nrm?nrm.y*lift:0),h.point.z+(nrm?nrm.z*lift:0)],obj:null};
     addX(m); undoStack.push([['X+',m]]); redoStack.length=0; markUnexported(true); updateHB(); updateArea();}
   function eraseXAt(e){
     const hit=castAt(e); if(!hit.length)return;
