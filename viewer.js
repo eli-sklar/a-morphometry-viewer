@@ -209,7 +209,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;');
     sh.fragmentShader=sh.fragmentShader
       .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;')
-      .replace('#include <opaque_fragment>','outgoingLight=mix(outgoingLight,vACol,vAFlat);\n#include <opaque_fragment>');
+      .replace('#include <opaque_fragment>','vec3 amTint=outgoingLight*mix(vec3(1.0),vACol,vAFlat);outgoingLight=mix(amTint,vACol,vAFlat*vAFlat*0.45);\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
 
@@ -232,7 +232,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   function reservedColor(hex){const [r,g,b]=hex2rgb(hex);const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
     if(mx-mn<0.18)return false;
     let h=0; if(mx===r)h=60*(((g-b)/(mx-mn))%6); else if(mx===g)h=60*((b-r)/(mx-mn)+2); else h=60*((r-g)/(mx-mn)+4);
-    if(h<0)h+=360; return (h<48||h>345);}
+    if(h<0)h+=360; return (h>=18&&h<48);}         // only ORANGE is reserved
   const effThr=(ti,f)=>{const T=types[ti];const t=T.faceThr?T.faceThr[f]:NaN;return isNaN(t)?T.thr:t;};
   function isType(ti,f){const T=types[ti],m=T.manual[f]; if(m===1)return true; if(m===-1)return false;
     if(!T.hasProb||!T.prob)return false;
@@ -250,26 +250,58 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;}
   }
   function recolorAll(){for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;updateArea();}
-  function updateArea(){let tot=0;
+  function updateArea(){
     for(let ti=0;ti<types.length;ti++){const T=types[ti];let a=0;
       for(let f=0;f<N;f++)if(isType(ti,f))a+=area[f];
-      T.area=a; tot+=a;
+      T.area=a;
       const e2=document.getElementById('tA_'+T.id); if(e2)e2.textContent=a.toFixed(2);}
-    $('area').textContent=tot.toFixed(2)+' מ"ר';
+    $('area').textContent='';
     for(const lt of lenTypes){let s2=0;for(const ln of lines)if(ln.t===lt.id)s2+=ln.len;
       const e3=document.getElementById('lA_'+lt.id); if(e3)e3.textContent=s2.toFixed(2);}
+    for(const ct of cntTypes){let n2=0;for(const m of xmarks)if(m.t===ct.id)n2++;
+      const e4=document.getElementById('cA_'+ct.id); if(e4)e4.textContent=String(n2);}
   }
   /* length pens (decision 58): continuous stroke -> sampled polyline; no learning */
   const lenTypes=[]; let activeL=-1, lSeq=0;
   const lines=[]; let curLine=null; const MIN_SEG=0.002;
   let lineW=0.008;                     // tube radius; brush slider drives it in len kind
-  function mkLenType(name,hex){const T={id:'l'+(lSeq++),name:name,hex:hex};lenTypes.push(T);return T;}
+  function mkLenType(name,hex){const T={id:'l'+(lSeq++),name:name,hex:hex,op:1.0};lenTypes.push(T);return T;}
+  function applyLenOp(T){for(const L of lines)if(L.t===T.id&&L.obj){L.obj.material.transparent=T.op<1;L.obj.material.opacity=T.op;L.obj.material.needsUpdate=true;}}
   function lineObj(L){
     const v=[];for(let i=0;i<L.pts.length;i+=3)v.push(new THREE.Vector3(L.pts[i],L.pts[i+1],L.pts[i+2]));
     const lt=lenTypes.find(x=>x.id===L.t);
     const g=new THREE.TubeGeometry(new THREE.CatmullRomCurve3(v),Math.min(400,Math.max(2,v.length*2)),L.w||0.008,6,false);
-    const m=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:new THREE.Color(lt?lt.hex:'#eab308')}));
+    const m=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:new THREE.Color(lt?lt.hex:'#eab308'),
+      transparent:(lt&&lt.op<1)||false,opacity:lt?lt.op:1.0}));
     m.renderOrder=2; return m;}
+  // ---- counter layers (round 3): an X per tap, the chip counts them ----
+  const cntTypes=[]; let activeC=-1, cSeq=0;
+  const xmarks=[];
+  function mkCntType(name,hex){const T={id:'c'+(cSeq++),name:name,hex:hex};cntTypes.push(T);return T;}
+  function xTexture(hex){const c=document.createElement('canvas');c.width=c.height=64;
+    const x=c.getContext('2d');x.strokeStyle=hex;x.lineWidth=9;x.lineCap='round';
+    x.beginPath();x.moveTo(14,14);x.lineTo(50,50);x.moveTo(50,14);x.lineTo(14,50);x.stroke();
+    return new THREE.CanvasTexture(c);}
+  function xObj(m){const T=cntTypes.find(x=>x.id===m.t);
+    const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:xTexture(T?T.hex:'#ef4444'),
+      transparent:true,depthTest:true,depthWrite:false}));
+    const s=bs.radius*0.022; sp.scale.set(s,s,1);
+    sp.position.set(m.p[0],m.p[1],m.p[2]); sp.renderOrder=3; return sp;}
+  function addX(m){if(!m.obj)m.obj=xObj(m); scene.add(m.obj); if(!xmarks.includes(m))xmarks.push(m);}
+  function delX(m){if(m.obj)scene.remove(m.obj); const i=xmarks.indexOf(m); if(i>=0)xmarks.splice(i,1);}
+  function placeXAt(e){if(activeC<0)return;
+    const hit=castAt(e); if(!hit.length)return;
+    const h=hit[0],nrm=h.face?h.face.normal:null;
+    const m={t:cntTypes[activeC].id,
+      p:[h.point.x+(nrm?nrm.x*0.004:0),h.point.y+(nrm?nrm.y*0.004:0),h.point.z+(nrm?nrm.z*0.004:0)],obj:null};
+    addX(m); undoStack.push([['X+',m]]); redoStack.length=0; markUnexported(true); updateHB(); updateArea();}
+  function eraseXAt(e){
+    const hit=castAt(e); if(!hit.length)return;
+    const p=hit[0].point, r2=Math.max(brushR,0.03)**2; const diff=[];
+    for(const m of [...xmarks]){
+      const dx=m.p[0]-p.x,dy=m.p[1]-p.y,dz=m.p[2]-p.z;
+      if(dx*dx+dy*dy+dz*dz<=r2){diff.push(['X-',m]);delX(m);}}
+    if(diff.length){undoStack.push(diff);redoStack.length=0;markUnexported(true);updateHB();updateArea();}}
   function eraseLineAt(p){
     const r2=Math.max(0.02,lineW*2)**2;
     for(const L of [...lines]){
@@ -322,6 +354,8 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     for(let i=diff.length-1;i>=0;i--){const d=diff[i];
       if(d[0]==='L+'){inv.push(['L-',d[1]]);delLine(d[1]);}
       else if(d[0]==='L-'){inv.push(['L+',d[1]]);addLine(d[1]);}
+      else if(d[0]==='X+'){inv.push(['X-',d[1]]);delX(d[1]);}
+      else if(d[0]==='X-'){inv.push(['X+',d[1]]);addX(d[1]);}
       else {const [ti,f,o]=d;inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;recolorFace(f);}}
     inv.reverse();
     logOps(typedOps(diff));
@@ -368,6 +402,8 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     else if(mode==='grow'){growAt(e);dragging=null;}
     else if(activeKind==='len'&&mode==='add'){dragging='line';curLine=null;lineAt(e);}
     else if(activeKind==='len'&&mode==='rem'){dragging='lerase';lineEraseAt(e);}
+    else if(activeKind==='cnt'&&mode==='add'){placeXAt(e);dragging=null;}
+    else if(activeKind==='cnt'&&mode==='rem'){dragging='xerase';eraseXAt(e);}
     else {dragging='paint';paintManual=true;beginH();paintAt(e);}
   });
   el.addEventListener('pointermove',e=>{
@@ -386,6 +422,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     if(dragging==='rot'){az-=dx*0.006;pol-=dy*0.006;apply();}
     else if(dragging==='line'){lineAt(e);}
     else if(dragging==='lerase'){lineEraseAt(e);}
+    else if(dragging==='xerase'){eraseXAt(e);}
     else if(dragging==='paint'){paintAt(e);}
   });
   function endDrag(e){
@@ -571,7 +608,10 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       globalThreshold:types[0].thr,faceThr:t0.faceThr,manual:t0.manual,roiFaces:rf,
       hasProb:t0.hasProb,prob:t0.prob,
       types:types.map(typeState),
-      lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex})),
+      lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex,op:(typeof T.op==='number')?T.op:1})),
+      cntTypes:cntTypes.map(T=>({id:T.id,name:T.name,color:T.hex})),
+      counters:cntTypes.map(T=>({t:T.id,
+        pts:[].concat(...xmarks.filter(m=>m.t===T.id).map(m=>m.p.map(v=>Math.round(v*1000)/1000)))})),
       lengths:lines.map(L=>({t:L.t,len:Math.round(L.len*1000)/1000,
         w:Math.round((L.w||0.008)*1000)/1000,
         pts:L.pts.map(v=>Math.round(v*1000)/1000)})),
@@ -586,6 +626,8 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       return {id:T.id,name:T.name,color:T.hex,areaM2:Math.round(a*1000)/1000,faces:fs};});
     o.lenTotals=lenTypes.map(T=>{let s2=0;for(const L of lines)if(L.t===T.id)s2+=L.len;
       return {id:T.id,name:T.name,color:T.hex,lenM:Math.round(s2*1000)/1000};});
+    o.cntTotals=cntTypes.map(T=>{let n2=0;for(const m of xmarks)if(m.t===T.id)n2++;
+      return {id:T.id,name:T.name,color:T.hex,n:n2};});
     o.repairFaces=rep;o.areaM2=ar;o.unionM2=un;
     return o;
   }
@@ -624,8 +666,10 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     types[activeT].thr=v;recolorAll();};
 
   /* ---- palette chips (mirror of the desktop): a chip per type, tools follow it --- */
-  function syncKindUI(){const isLen=activeKind==='len';
-    $('auto').disabled=isLen; $('thr').disabled=isLen; applyBrush();}
+  function syncKindUI(){const other=activeKind!=='area';
+    $('auto').disabled=other; $('thr').disabled=other; applyBrush();}
+  function activateC(i){activeKind='cnt';activeC=i;syncKindUI();buildChips();
+    if(mode!=='add'&&mode!=='rem')setMode('add');}
   function activateT(i){activeKind='area';activeT=i;const T=types[i];
     $('thr').value=Math.round(T.thr*1000);$('thrV').textContent=T.thr.toFixed(3);
     syncKindUI();buildChips();}
@@ -643,6 +687,17 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       const u=document.createElement('span');u.className='u';u.textContent='מ״ר';c.appendChild(u);
       c.onclick=()=>{activateT(i);if(mode==='nav')setMode('add');};
       A.appendChild(c);});
+    const C=$('chipsC');if(C){C.innerHTML='';
+    cntTypes.forEach((T,i)=>{
+      const c=document.createElement('span');c.className='chip'+(activeKind==='cnt'&&i===activeC?' on':'');c.style.setProperty('--c',T.hex);
+      const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);
+      const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם המונה';
+      inp.onchange=()=>{T.name=inp.value;markUnexported(true);};inp.onclick=e=>e.stopPropagation();
+      c.appendChild(inp);
+      const b=document.createElement('b');b.id='cA_'+T.id;b.textContent='0';c.appendChild(b);
+      const u=document.createElement('span');u.className='u';u.textContent='יח׳';c.appendChild(u);
+      c.onclick=()=>activateC(i);
+      C.appendChild(c);});}
     const L=$('chipsL');if(!L)return;L.innerHTML='';
     lenTypes.forEach((T,i)=>{
       const c=document.createElement('span');c.className='chip'+(activeKind==='len'&&i===activeL?' on':'');c.style.setProperty('--c',T.hex);
@@ -660,6 +715,11 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     if(reservedColor(hex)){alert('אדום שמור למברשת המחיקה, וכתום לאזור הכללי.\nנא לבחור צבע אחר.');return;}
     mkType('',hex);activateT(types.length-1);setMode('add');markUnexported(true);
     const inp=document.querySelector('#chipsA .chip.on input');if(inp)inp.focus();};
+  $('addCnt').onclick=()=>$('cntColor').click();
+  $('cntColor').onchange=e=>{const hex=e.target.value;
+    if(reservedColor(hex)){alert('כתום שמור לאזור הכללי.\nנא לבחור צבע אחר.');return;}
+    mkCntType('',hex);activateC(cntTypes.length-1);markUnexported(true);
+    const inp=document.querySelector('#chipsC .chip.on input');if(inp)inp.focus();};
   $('addLen').onclick=()=>$('lenColor').click();
   $('lenColor').onchange=e=>{const hex=e.target.value;
     if(reservedColor(hex)){alert('אדום שמור למברשת המחיקה, וכתום לאזור הכללי.\nנא לבחור צבע אחר.');return;}
@@ -678,7 +738,9 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       throw new Error('הגיליון אינו תואם לעבודה הפתוחה — בגיליון '+sh.Fo
                       +' פאות, כאן '+FO+'.');
     for(const L of [...lines]) delLine(L);
+    for(const m of [...xmarks]) delX(m);
     lenTypes.length=0; activeL=-1;
+    cntTypes.length=0; activeC=-1;
     types.length=1; activeT=0;
     const T0=types[0]; T0.manual.fill(0); T0.faceThr=null; T0.prob=prob; T0.hasProb=false;
     T0.name='תיקון'; T0.hex='#4dff4d'; T0.color=hex2rgb(T0.hex);
@@ -706,10 +768,15 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       loadT(T0,{name:'תיקון',thr:(typeof sh.globalThreshold==='number')?sh.globalThreshold:T0.thr,
                 manual:sh.manual,faceThr:sh.faceThr,hasProb:sh.hasProb,prob:sh.prob});
     }
-    for(const src of (sh.lenTypes||[])){const T=mkLenType(src.name||'',src.color||'#eab308');if(src.id)T.id=src.id;}
+    for(const src of (sh.lenTypes||[])){const T=mkLenType(src.name||'',src.color||'#eab308');if(src.id)T.id=src.id;
+      if(typeof src.op==='number')T.op=src.op;}
     for(const src of (sh.lengths||[])){
       const L={t:src.t,pts:src.pts.slice(),len:lineLen(src.pts),w:src.w||0.008,obj:null};  // len recomputed
       addLine(L);}
+    for(const src of (sh.cntTypes||[])){const T=mkCntType(src.name||'',src.color||'#ef4444');if(src.id)T.id=src.id;}
+    for(const src of (sh.counters||[])){const pts=src.pts||[];
+      for(let i=0;i+2<pts.length;i+=3) addX({t:src.t,p:[pts[i],pts[i+1],pts[i+2]],obj:null});}
+    if(cntTypes.length)activeC=0;
     if(lenTypes.length)activeL=0;
     $('thr').value=Math.round(types[0].thr*1000);
     $('thrV').textContent=types[0].thr.toFixed(3);
