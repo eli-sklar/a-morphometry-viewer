@@ -197,9 +197,20 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
   geo.setAttribute('uv',new THREE.BufferAttribute(uv,2));
   const colors=new Float32Array(N*9); colors.fill(1);
-  const colAttr=new THREE.BufferAttribute(colors,3); geo.setAttribute('color',colAttr);
+  const colAttr=new THREE.BufferAttribute(colors,3); geo.setAttribute('aCol',colAttr);
+  const flats=new Float32Array(N*3);
+  const flatAttr=new THREE.BufferAttribute(flats,1); geo.setAttribute('aFlat',flatAttr);
   geo.computeBoundingSphere();
-  const mat=new THREE.MeshBasicMaterial({map:tex,vertexColors:true,side:THREE.DoubleSide});
+  // flat-mix marking (user round 11/08): aFlat=1 paints pure colour OVER the texture
+  const mat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});
+  mat.onBeforeCompile=sh=>{
+    sh.vertexShader=sh.vertexShader
+      .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;varying vec3 vACol;varying float vAFlat;')
+      .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;');
+    sh.fragmentShader=sh.fragmentShader
+      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;')
+      .replace('#include <opaque_fragment>','outgoingLight=mix(outgoingLight,vACol,vAFlat);\n#include <opaque_fragment>');
+  };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
 
   /* ---- state ---- */
@@ -212,9 +223,10 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
      baked probability field stays dormant until a training or a loaded sheet arms it
      (hasProb) — same as the single-type version always behaved. */
   const types=[]; let activeT=0, tSeq=0;
+  let activeKind='area';               // area layers XOR length layers (user round 11/08)
   const hex2rgb=h=>[parseInt(h.slice(1,3),16)/255,parseInt(h.slice(3,5),16)/255,parseInt(h.slice(5,7),16)/255];
   function mkType(name,hex){const T={id:'t'+(tSeq++),name:name,hex:hex,color:hex2rgb(hex),
-    manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,area:0};
+    manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,area:0};
     types.push(T);return T;}
   const T0=mkType('תיקון','#4dff4d'); T0.prob=prob;
   function reservedColor(hex){const [r,g,b]=hex2rgb(hex);const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
@@ -227,18 +239,17 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     if(roiCount>0&&!roi[f])return false;
     return T.prob[f]>effThr(ti,f);}
   function isRepair(f){for(let ti=0;ti<types.length;ti++)if(isType(ti,f))return true;return false;}
-  const NON=[1,1,1], ROIC=[1.0,0.80,0.45];
+  const ROIC=[1.0,0.80,0.45];
   const _vis=[];
   function recolorFace(f){
-    let r=null; _vis.length=0;
-    for(let ti=0;ti<types.length;ti++) if(isType(ti,f)) _vis.push(ti);
-    if(!_vis.length) r=roi[f]?ROIC:NON;
-    else if(_vis.length===1) r=types[_vis[0]].color;
-    else { const s=cen[f*3]+cen[f*3+1]+cen[f*3+2];
-           r=types[_vis[((Math.floor(s/0.06)%_vis.length)+_vis.length)%_vis.length]].color; }
-    const o=f*9; for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];}
+    let r=null,a=0; _vis.length=0;
+    for(let ti=0;ti<types.length;ti++) if(types[ti].op>0&&isType(ti,f)) _vis.push(ti);
+    if(!_vis.length){ if(roi[f]){r=ROIC;a=0.45;} else {r=[1,1,1];a=0;} }
+    else { const T=types[_vis[f%_vis.length]]; r=T.color; a=T.op; }   // alternating triangles
+    const o=f*9;
+    for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;}
   }
-  function recolorAll(){for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;updateArea();}
+  function recolorAll(){for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;updateArea();}
   function updateArea(){let tot=0;
     for(let ti=0;ti<types.length;ti++){const T=types[ti];let a=0;
       for(let f=0;f<N;f++)if(isType(ti,f))a+=area[f];
@@ -251,11 +262,33 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   /* length pens (decision 58): continuous stroke -> sampled polyline; no learning */
   const lenTypes=[]; let activeL=-1, lSeq=0;
   const lines=[]; let curLine=null; const MIN_SEG=0.002;
+  let lineW=0.008;                     // tube radius; brush slider drives it in len kind
   function mkLenType(name,hex){const T={id:'l'+(lSeq++),name:name,hex:hex};lenTypes.push(T);return T;}
-  function lineObj(L){const g=new THREE.BufferGeometry();
-    g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(L.pts),3));
+  function lineObj(L){
+    const v=[];for(let i=0;i<L.pts.length;i+=3)v.push(new THREE.Vector3(L.pts[i],L.pts[i+1],L.pts[i+2]));
     const lt=lenTypes.find(x=>x.id===L.t);
-    return new THREE.Line(g,new THREE.LineBasicMaterial({color:new THREE.Color(lt?lt.hex:'#eab308')}));}
+    const g=new THREE.TubeGeometry(new THREE.CatmullRomCurve3(v),Math.min(400,Math.max(2,v.length*2)),L.w||0.008,6,false);
+    const m=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:new THREE.Color(lt?lt.hex:'#eab308')}));
+    m.renderOrder=2; return m;}
+  function eraseLineAt(p){
+    const r2=Math.max(0.02,lineW*2)**2;
+    for(const L of [...lines]){
+      const keep=[]; let touched=false;
+      for(let i=0;i<L.pts.length;i+=3){
+        const dx=L.pts[i]-p.x,dy=L.pts[i+1]-p.y,dz=L.pts[i+2]-p.z;
+        if(dx*dx+dy*dy+dz*dz<=r2){touched=true;keep.push(null);}
+        else keep.push([L.pts[i],L.pts[i+1],L.pts[i+2]]);
+      }
+      if(!touched)continue;
+      const runs=[]; let cur=[];
+      for(const k of keep){ if(k)cur.push(k[0],k[1],k[2]); else {if(cur.length>=6)runs.push(cur);cur=[];} }
+      if(cur.length>=6)runs.push(cur);
+      const diff=[['L-',L]]; delLine(L);
+      for(const run of runs){const NL={t:L.t,pts:run,len:lineLen(run),w:L.w,obj:null};addLine(NL);diff.push(['L+',NL]);}
+      undoStack.push(diff);redoStack.length=0;markUnexported(true);updateHB();
+    }
+    updateArea();
+  }
   function addLine(L){if(!L.obj)L.obj=lineObj(L); scene.add(L.obj); if(!lines.includes(L))lines.push(L);}
   function delLine(L){if(L.obj)scene.remove(L.obj); const i=lines.indexOf(L); if(i>=0)lines.splice(i,1);}
   function lineLen(pts){let s2=0;for(let i=3;i<pts.length;i+=3)
@@ -292,7 +325,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       else {const [ti,f,o]=d;inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;recolorFace(f);}}
     inv.reverse();
     logOps(typedOps(diff));
-    colAttr.needsUpdate=true;updateArea();return inv;
+    colAttr.needsUpdate=true;flatAttr.needsUpdate=true;updateArea();return inv;
   }
   const undo=()=>{if(undoStack.length){redoStack.push(applyDiff(undoStack.pop()));updateHB();}};
   const redo=()=>{if(redoStack.length){undoStack.push(applyDiff(redoStack.pop()));updateHB();}};
@@ -333,7 +366,8 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     if(e.pointerType==='touch'){dragging='rot';}
     else if(mode==='nav'){dragging='rot';}
     else if(mode==='grow'){growAt(e);dragging=null;}
-    else if(mode==='len'){dragging='line';curLine=null;lineAt(e);}
+    else if(activeKind==='len'&&mode==='add'){dragging='line';curLine=null;lineAt(e);}
+    else if(activeKind==='len'&&mode==='rem'){dragging='lerase';lineEraseAt(e);}
     else {dragging='paint';paintManual=true;beginH();paintAt(e);}
   });
   el.addEventListener('pointermove',e=>{
@@ -351,6 +385,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];
     if(dragging==='rot'){az-=dx*0.006;pol-=dy*0.006;apply();}
     else if(dragging==='line'){lineAt(e);}
+    else if(dragging==='lerase'){lineEraseAt(e);}
     else if(dragging==='paint'){paintAt(e);}
   });
   function endDrag(e){
@@ -411,7 +446,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
           visited[g2]=1; if(ok)q.push(g2);
         }}
     }
-    colAttr.needsUpdate=true;updateArea();commitH();
+    colAttr.needsUpdate=true;flatAttr.needsUpdate=true;updateArea();commitH();
   }
 
   /* ---- brush paint ---- */
@@ -431,16 +466,17 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
           const M=types[activeT].manual;
           if(M[f]!==val){recH(activeT,f);M[f]=val;recolorFace(f);ch=true;}
         }}}
-    if(ch){colAttr.needsUpdate=true;updateArea();}
+    if(ch){colAttr.needsUpdate=true;flatAttr.needsUpdate=true;updateArea();}
   }
 
   /* ---- length stroke: sample the pencil path into a surface polyline ---- */
+  function lineEraseAt(e){const hit=castAt(e);if(hit.length)eraseLineAt(hit[0].point);}
   function lineAt(e){
     if(activeL<0)return;
     const hit=castAt(e); if(!hit.length)return;
-    const h=hit[0]; const nrm=h.face?h.face.normal:null;
-    const px=h.point.x+(nrm?nrm.x*0.004:0), py=h.point.y+(nrm?nrm.y*0.004:0), pz=h.point.z+(nrm?nrm.z*0.004:0);
-    if(!curLine){curLine={t:lenTypes[activeL].id,pts:[px,py,pz],len:0,obj:null};return;}
+    const h=hit[0]; const nrm=h.face?h.face.normal:null; const lift=Math.max(0.004,lineW*0.8);
+    const px=h.point.x+(nrm?nrm.x*lift:0), py=h.point.y+(nrm?nrm.y*lift:0), pz=h.point.z+(nrm?nrm.z*lift:0);
+    if(!curLine){curLine={t:lenTypes[activeL].id,pts:[px,py,pz],len:0,w:lineW,obj:null};return;}
     const p=curLine.pts, n2=p.length;
     const d=Math.hypot(px-p[n2-3],py-p[n2-2],pz-p[n2-1]);
     if(d<MIN_SEG)return;
@@ -523,7 +559,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       if(T.manual[f]!==0)m.push([f,T.manual[f]]);
       if(T.faceThr&&!isNaN(T.faceThr[f]))ov.push([f,Math.round(T.faceThr[f]*1000)/1000]);
     }
-    return {id:T.id,name:T.name,color:T.hex,thr:T.thr,manual:m,faceThr:ov,
+    return {id:T.id,name:T.name,color:T.hex,thr:T.thr,op:T.op,manual:m,faceThr:ov,
       hasProb:T.hasProb,
       prob:T.hasProb?(()=>{const p=new Array(FO);
         for(let fo=0;fo<FO;fo++)p[fo]=Math.round(T.prob[OFF[fo]]*1000)/1000;return p;})():null};
@@ -537,6 +573,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       types:types.map(typeState),
       lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex})),
       lengths:lines.map(L=>({t:L.t,len:Math.round(L.len*1000)/1000,
+        w:Math.round((L.w||0.008)*1000)/1000,
         pts:L.pts.map(v=>Math.round(v*1000)/1000)})),
       saved:new Date().toISOString(),
       jobId:AM.jobId,exportedBy:'A-morphometry iPad'};
@@ -569,43 +606,46 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
 
   /* ---- toolbar ---- */
   function setMode(m){mode=m;
-    ['mNav','mAdd','mRem','mGrow','mLen'].forEach(id=>$(id).classList.remove('on'));
-    $({nav:'mNav',add:'mAdd',rem:'mRem',grow:'mGrow',len:'mLen'}[m]).classList.add('on');
+    ['mNav','mAdd','mRem','mGrow'].forEach(id=>$(id).classList.remove('on'));
+    $({nav:'mNav',add:'mAdd',rem:'mRem',grow:'mGrow'}[m]).classList.add('on');
   }
   $('mNav').onclick=()=>setMode('nav');
   $('mAdd').onclick=()=>setMode('add');
   $('mRem').onclick=()=>setMode('rem');
   $('mGrow').onclick=()=>setMode('grow');
-  $('mLen').onclick=()=>{
-    if(activeL<0){$('lenColor').click();return;}          // first use: create a pen
-    setMode('len');};
   $('undo').onclick=undo; $('redo').onclick=redo;
   $('auto').onclick=autoComplete;
-  $('brush').oninput=e=>{brushR=e.target.value/100;$('brushV').textContent=brushR.toFixed(2);};
+  function applyBrush(){const v=+$('brush').value;
+    if(activeKind==='len'){lineW=0.002+(v-2)/38*0.028;$('brushV').textContent=(lineW*1000).toFixed(0)+' \u05de"\u05de';}
+    else {brushR=v/100;$('brushV').textContent=brushR.toFixed(2);}}
+  $('brush').oninput=applyBrush;
   $('grtol').oninput=e=>{growTol=+e.target.value;$('grtolV').textContent=e.target.value;};
   $('thr').oninput=e=>{const v=e.target.value/1000;$('thrV').textContent=v.toFixed(3);
     types[activeT].thr=v;recolorAll();};
 
   /* ---- palette chips (mirror of the desktop): a chip per type, tools follow it --- */
-  function activateT(i){activeT=i;const T=types[i];
+  function syncKindUI(){const isLen=activeKind==='len';
+    $('auto').disabled=isLen; $('thr').disabled=isLen; applyBrush();}
+  function activateT(i){activeKind='area';activeT=i;const T=types[i];
     $('thr').value=Math.round(T.thr*1000);$('thrV').textContent=T.thr.toFixed(3);
-    buildChips();}
-  function activateL(i){activeL=i;buildChips();setMode('len');}
+    syncKindUI();buildChips();}
+  function activateL(i){activeKind='len';activeL=i;syncKindUI();buildChips();
+    if(mode!=='add'&&mode!=='rem')setMode('add');}
   function buildChips(){
     const A=$('chipsA');if(!A)return;A.innerHTML='';
     types.forEach((T,i)=>{
-      const c=document.createElement('span');c.className='chip'+(i===activeT?' on':'');c.style.setProperty('--c',T.hex);
+      const c=document.createElement('span');c.className='chip'+(activeKind==='area'&&i===activeT?' on':'');c.style.setProperty('--c',T.hex);
       const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);
       const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם הסוג';
       inp.onchange=()=>{T.name=inp.value;markUnexported(true);};inp.onclick=e=>e.stopPropagation();
       c.appendChild(inp);
       const b=document.createElement('b');b.id='tA_'+T.id;b.textContent=(T.area||0).toFixed(2);c.appendChild(b);
       const u=document.createElement('span');u.className='u';u.textContent='מ״ר';c.appendChild(u);
-      c.onclick=()=>{activateT(i);if(mode==='len'||mode==='nav')setMode('add');};
+      c.onclick=()=>{activateT(i);if(mode==='nav')setMode('add');};
       A.appendChild(c);});
     const L=$('chipsL');if(!L)return;L.innerHTML='';
     lenTypes.forEach((T,i)=>{
-      const c=document.createElement('span');c.className='chip'+(i===activeL&&mode==='len'?' on':'');c.style.setProperty('--c',T.hex);
+      const c=document.createElement('span');c.className='chip'+(activeKind==='len'&&i===activeL?' on':'');c.style.setProperty('--c',T.hex);
       const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);
       const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם הקו';
       inp.onchange=()=>{T.name=inp.value;markUnexported(true);};inp.onclick=e=>e.stopPropagation();
@@ -626,7 +666,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     mkLenType('',hex);activateL(lenTypes.length-1);markUnexported(true);
     const inp=document.querySelector('#chipsL .chip.on input');if(inp)inp.focus();};
 
-  fit(); buildChips(); recolorAll(); updateHB();
+  fit(); buildChips(); syncKindUI(); recolorAll(); updateHB();
 
   /* ---- sheet application (decision 42): one function, two callers — the sheet
      embedded in the file at boot, and a sheet the user loads from Files (slice 2).
@@ -649,6 +689,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       if(src.name!==undefined)T.name=src.name;
       if(src.color){T.hex=src.color;T.color=hex2rgb(src.color);}
       if(typeof src.thr==='number')T.thr=src.thr;
+      if(typeof src.op==='number')T.op=src.op;
       for(const [f,v] of (src.manual||[])) if(f<N) T.manual[f]=v;
       if((src.faceThr||[]).length){T.faceThr=new Float32Array(N).fill(NaN);
         for(const [f,v] of src.faceThr) if(f<N) T.faceThr[f]=v;}
@@ -667,7 +708,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     }
     for(const src of (sh.lenTypes||[])){const T=mkLenType(src.name||'',src.color||'#eab308');if(src.id)T.id=src.id;}
     for(const src of (sh.lengths||[])){
-      const L={t:src.t,pts:src.pts.slice(),len:lineLen(src.pts),obj:null};  // len recomputed
+      const L={t:src.t,pts:src.pts.slice(),len:lineLen(src.pts),w:src.w||0.008,obj:null};  // len recomputed
       addLine(L);}
     if(lenTypes.length)activeL=0;
     $('thr').value=Math.round(types[0].thr*1000);
@@ -701,7 +742,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
         addLine({t:lt.id,pts:ln.pts.slice(),len:lineLen(ln.pts),obj:null});}
       if(lenTypes.length&&activeL<0)activeL=0;
       buildChips();
-      colAttr.needsUpdate=true;updateArea();markUnexported(true);
+      colAttr.needsUpdate=true;flatAttr.needsUpdate=true;updateArea();markUnexported(true);
     }
   });
 
