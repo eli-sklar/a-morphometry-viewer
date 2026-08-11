@@ -655,7 +655,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   $('auto').onclick=autoComplete;
   function applyBrush(){const v=+$('brush').value;
     if(activeKind==='len'){lineW=0.002+(v-2)/38*0.028;$('brushV').textContent=(lineW*1000).toFixed(0)+' \u05de"\u05de';}
-    else {brushR=v/100;$('brushV').textContent=brushR.toFixed(2);}}
+    else {brushR=v/100;$('brushV').textContent=(brushR*100).toFixed(0)+' ס"מ';}}
   $('brush').oninput=applyBrush;
   $('grtol').oninput=e=>{growTol=+e.target.value;$('grtolV').textContent=e.target.value;};
   $('thr').oninput=e=>{const v=e.target.value/1000;$('thrV').textContent=v.toFixed(3);
