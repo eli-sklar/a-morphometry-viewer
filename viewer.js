@@ -277,17 +277,24 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   // ---- counter layers (round 3): an X per tap, the chip counts them ----
   const cntTypes=[]; let activeC=-1, cSeq=0;
   const xmarks=[];
-  function mkCntType(name,hex){const T={id:'c'+(cSeq++),name:name,hex:hex};cntTypes.push(T);return T;}
+  // per-layer diamond DIAMETER in true metres + per-layer opacity (12/08) — mirror of
+  // the desktop editor, and both ride in the sheet so devices render identically
+  const cntDefSize=()=>Math.max(0.024,bs.radius*0.018);
+  function mkCntType(name,hex){const T={id:'c'+(cSeq++),name:name,hex:hex,size:cntDefSize(),op:1.0};cntTypes.push(T);return T;}
   function xObj(m){const T=cntTypes.find(x=>x.id===m.t);
-    const dm=new THREE.Mesh(new THREE.OctahedronGeometry(Math.max(0.012,bs.radius*0.009)),
-      new THREE.MeshBasicMaterial({color:new THREE.Color(T?T.hex:'#ef4444')}));
+    const dm=new THREE.Mesh(new THREE.OctahedronGeometry(((T&&T.size)||cntDefSize())/2),
+      new THREE.MeshBasicMaterial({color:new THREE.Color(T?T.hex:'#ef4444'),
+        transparent:(T&&T.op<1)||false,opacity:T?(T.op!==undefined?T.op:1):1}));
     dm.position.set(m.p[0],m.p[1],m.p[2]); dm.renderOrder=3; return dm;}
+  function resizeCnt(T){for(const m of xmarks)if(m.t===T.id&&m.obj){
+    scene.remove(m.obj);m.obj=xObj(m);scene.add(m.obj);}}
   function addX(m){if(!m.obj)m.obj=xObj(m); scene.add(m.obj); if(!xmarks.includes(m))xmarks.push(m);}
   function delX(m){if(m.obj)scene.remove(m.obj); const i=xmarks.indexOf(m); if(i>=0)xmarks.splice(i,1);}
   function placeXAt(e){if(activeC<0)return;
     const hit=castAt(e); if(!hit.length)return;
     const h=hit[0],nrm=h.face?h.face.normal:null;
-    const lift=Math.max(0.012,bs.radius*0.009);
+    const T0=cntTypes[activeC];
+    const lift=((T0&&T0.size)||cntDefSize())/2;   // lift tracks the diamond's actual radius
     const m={t:cntTypes[activeC].id,
       p:[h.point.x+(nrm?nrm.x*lift:0),h.point.y+(nrm?nrm.y*lift:0),h.point.z+(nrm?nrm.z*lift:0)],obj:null};
     addX(m); undoStack.push([['X+',m]]); redoStack.length=0; markUnexported(true); updateHB(); updateArea();}
@@ -605,7 +612,9 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
       hasProb:t0.hasProb,prob:t0.prob,
       types:types.map(typeState),
       lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex,op:(typeof T.op==='number')?T.op:1})),
-      cntTypes:cntTypes.map(T=>({id:T.id,name:T.name,color:T.hex})),
+      cntTypes:cntTypes.map(T=>({id:T.id,name:T.name,color:T.hex,
+        size:Math.round((T.size||cntDefSize())*1000)/1000,
+        op:(typeof T.op==='number')?T.op:1})),
       counters:cntTypes.map(T=>({t:T.id,
         pts:[].concat(...xmarks.filter(m=>m.t===T.id).map(m=>m.p.map(v=>Math.round(v*1000)/1000)))})),
       lengths:lines.map(L=>({t:L.t,len:Math.round(L.len*1000)/1000,
@@ -655,6 +664,11 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   $('auto').onclick=autoComplete;
   function applyBrush(){const v=+$('brush').value;
     if(activeKind==='len'){lineW=0.002+(v-2)/38*0.028;$('brushV').textContent=(lineW*1000).toFixed(0)+' \u05de"\u05de';}
+    else if(activeKind==='cnt'){
+      // the slider is the diamond DIAMETER in true metres (12/08); resizes live
+      const T=cntTypes[activeC];
+      $('brushV').textContent=v.toFixed(0)+' ס"מ';
+      if(T&&Math.abs((T.size||0)-v/100)>1e-9){T.size=v/100;resizeCnt(T);markUnexported(true);}}
     else {brushR=v/100;$('brushV').textContent=(brushR*100).toFixed(0)+' ס"מ';}}
   $('brush').oninput=applyBrush;
   $('grtol').oninput=e=>{growTol=+e.target.value;$('grtolV').textContent=e.target.value;};
@@ -663,8 +677,14 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
 
   /* ---- palette chips (mirror of the desktop): a chip per type, tools follow it --- */
   function syncKindUI(){const other=activeKind!=='area';
-    $('auto').disabled=other; $('thr').disabled=other; applyBrush();}
-  function activateC(i){activeKind='cnt';activeC=i;syncKindUI();buildChips();
+    $('auto').disabled=other; $('thr').disabled=other;
+    // grow floods FACES by similarity — meaningless for lines and counters (12/08)
+    $('mGrow').disabled=other; $('grtol').disabled=other;
+    applyBrush();}
+  function activateC(i){activeKind='cnt';activeC=i;
+    const T=cntTypes[i];
+    if(T)$('brush').value=Math.round((T.size||cntDefSize())*100);
+    syncKindUI();buildChips();
     if(mode!=='add'&&mode!=='rem')setMode('add');}
   function activateT(i){activeKind='area';activeT=i;const T=types[i];
     $('thr').value=Math.round(T.thr*1000);$('thrV').textContent=T.thr.toFixed(3);
@@ -769,7 +789,9 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     for(const src of (sh.lengths||[])){
       const L={t:src.t,pts:src.pts.slice(),len:lineLen(src.pts),w:src.w||0.008,obj:null};  // len recomputed
       addLine(L);}
-    for(const src of (sh.cntTypes||[])){const T=mkCntType(src.name||'',src.color||'#ef4444');if(src.id)T.id=src.id;}
+    for(const src of (sh.cntTypes||[])){const T=mkCntType(src.name||'',src.color||'#ef4444');if(src.id)T.id=src.id;
+      if(typeof src.size==='number')T.size=src.size;
+      if(typeof src.op==='number')T.op=src.op;}
     for(const src of (sh.counters||[])){const pts=src.pts||[];
       for(let i=0;i+2<pts.length;i+=3) addX({t:src.t,p:[pts[i],pts[i+1],pts[i+2]],obj:null});}
     if(cntTypes.length)activeC=0;
