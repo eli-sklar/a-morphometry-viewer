@@ -298,12 +298,32 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     const m={t:cntTypes[activeC].id,
       p:[h.point.x+(nrm?nrm.x*lift:0),h.point.y+(nrm?nrm.y*lift:0),h.point.z+(nrm?nrm.z*lift:0)],obj:null};
     addX(m); undoStack.push([['X+',m]]); redoStack.length=0; markUnexported(true); updateHB(); updateArea();}
+  // Erase what you AIM AT (12/08, mirror of the desktop fix): the ray hits the diamonds
+  // themselves. A diamond is lifted half its diameter off the surface, so it blocks the
+  // ray and a mesh-based test measured from a point BEHIND it; and the brush slider is
+  // the diamond diameter here, not a radius. On a finger-driven device this matters more.
   function eraseXAt(e){
-    const hit=castAt(e); if(!hit.length)return;
-    const p=hit[0].point, r2=Math.max(brushR,0.03)**2; const diff=[];
-    for(const m of [...xmarks]){
-      const dx=m.p[0]-p.x,dy=m.p[1]-p.y,dz=m.p[2]-p.z;
-      if(dx*dx+dy*dy+dz*dz<=r2){diff.push(['X-',m]);delX(m);}}
+    const r=el.getBoundingClientRect();
+    const ndc=new THREE.Vector2(((e.clientX-r.left)/Math.max(1,r.width))*2-1,
+                                -((e.clientY-r.top)/Math.max(1,r.height))*2+1);
+    ray.setFromCamera(ndc,camera);
+    const diff=[];
+    const objs=xmarks.filter(m=>m.obj).map(m=>m.obj);
+    const hits=objs.length?ray.intersectObjects(objs,false):[];
+    if(hits.length){
+      const target=xmarks.find(m=>m.obj===hits[0].object);
+      if(target){diff.push(['X-',target]);delX(target);}
+    } else {
+      const hitM=ray.intersectObject(mesh,false);
+      if(hitM.length){
+        const p=hitM[0].point;
+        for(const m of [...xmarks]){
+          const T=cntTypes.find(x=>x.id===m.t);
+          const tol=Math.max(0.03,((T&&T.size)||cntDefSize())*0.9);
+          const dx=m.p[0]-p.x,dy=m.p[1]-p.y,dz=m.p[2]-p.z;
+          if(dx*dx+dy*dy+dz*dz<=tol*tol){diff.push(['X-',m]);delX(m);}}
+      }
+    }
     if(diff.length){undoStack.push(diff);redoStack.length=0;markUnexported(true);updateHB();updateArea();}}
   function eraseLineAt(p){
     const r2=Math.max(0.02,lineW*2)**2;
@@ -660,7 +680,25 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   $('mAdd').onclick=()=>setMode('add');
   $('mRem').onclick=()=>setMode('rem');
   $('mGrow').onclick=()=>setMode('grow');
-  $('undo').onclick=undo; $('redo').onclick=redo;
+  // The keys stay — a keyboard may be attached, and the same page opens on a computer —
+  // but the NOTE about them is gone (user decision 13/08): an iPad normally has no
+  // keyboard, so a strip telling the user about Ctrl+Z described something that is not
+  // there. On this shell the buttons are the whole story. Gestures for undo/redo were
+  // proposed and dropped in the same breath — two fingers are already the pinch.
+  $('undo').onclick=()=>{undo();};
+  $('redo').onclick=()=>{redo();};
+  addEventListener('keydown',ev=>{
+    if(!(ev.ctrlKey||ev.metaKey)) return;
+    const t=ev.target, n=(t&&t.tagName||'').toUpperCase();
+    if(n==='INPUT'||n==='TEXTAREA'||n==='SELECT'||(t&&t.isContentEditable)) return;
+    // ev.code names the PHYSICAL key. ev.key carries the layout's character, so with a
+    // Hebrew keyboard attached to the iPad Ctrl+Z arrives as 'ז' and matched nothing —
+    // the same root as the desktop screens (finding 1, 13/08).
+    const k=(ev.key||'').toLowerCase();
+    const z=(ev.code==='KeyZ')||k==='z', y=(ev.code==='KeyY')||k==='y';
+    if(z&&!ev.shiftKey){ev.preventDefault();undo();}
+    else if(y||(z&&ev.shiftKey)){ev.preventDefault();redo();}
+  });
   $('auto').onclick=autoComplete;
   function applyBrush(){const v=+$('brush').value;
     if(activeKind==='len'){lineW=0.002+(v-2)/38*0.028;$('brushV').textContent=(lineW*1000).toFixed(0)+' \u05de"\u05de';}
