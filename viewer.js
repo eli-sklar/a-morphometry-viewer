@@ -203,13 +203,134 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   geo.computeBoundingSphere();
   // flat-mix marking (user round 11/08): aFlat=1 paints pure colour OVER the texture
   const mat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});
-  mat.onBeforeCompile=sh=>{
+    const AM_SHADER_FN = `
+float amH(vec3 p){return fract(sin(dot(p,vec3(12.9898,78.233,37.719)))*43758.5453);}
+float amN(vec3 p){vec3 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
+  float a=mix(mix(amH(i+vec3(0.,0.,0.)),amH(i+vec3(1.,0.,0.)),f.x),
+              mix(amH(i+vec3(0.,1.,0.)),amH(i+vec3(1.,1.,0.)),f.x),f.y);
+  float b=mix(mix(amH(i+vec3(0.,0.,1.)),amH(i+vec3(1.,0.,1.)),f.x),
+              mix(amH(i+vec3(0.,1.,1.)),amH(i+vec3(1.,1.,1.)),f.x),f.y);
+  return mix(a,b,f.z);}
+vec3 amAge(vec3 base, vec3 wall, vec3 wp, float lvl){
+  if(lvl<=0.001) return base;
+  float n=0.6*amN(wp*9.0)+0.4*amN(wp*31.0);
+  float pit=clamp(1.0-n*1.35,0.0,1.0);
+  vec3 c=base*(0.82+0.36*n);
+  c=mix(c,vec3(0.42,0.20,0.09),pit*0.55);
+  float wl=clamp(dot(wall,vec3(0.2126,0.7152,0.0722))*1.3,0.0,1.0);
+  c*= (0.55+0.65*wl);
+  return mix(base,c,lvl);}
+`;
+
+  // Regular dodecahedron, from the marker the user designed (13/08). 20 vertices all at
+  // radius exactly 1, 12 pentagons as 36 triangles, un-indexed so each facet corner
+  // carries its own UV; every facet maps onto the SAME pentagon in texture space, so one
+  // small canvas puts the number on all twelve faces and it reads from any angle.
+  const AM_DODE_POS=new Float32Array([0.57735,0.57735,-0.57735,0.35682,0.93417,0,0.57735,0.57735,0.57735,0.57735,0.57735,-0.57735,0.57735,0.57735,0.57735,0.93417,0,0.35682,0.57735,0.57735,-0.57735,0.93417,0,0.35682,0.93417,0,-0.35682,0.57735,-0.57735,0.57735,0.93417,0,0.35682,0.57735,0.57735,0.57735,0.57735,-0.57735,0.57735,0.57735,0.57735,0.57735,0,0.35682,0.93417,0.57735,-0.57735,0.57735,0,0.35682,0.93417,0,-0.35682,0.93417,-0.57735,0.57735,0.57735,0,0.35682,0.93417,0.57735,0.57735,0.57735,-0.57735,0.57735,0.57735,0.57735,0.57735,0.57735,0.35682,0.93417,0,-0.57735,0.57735,0.57735,0.35682,0.93417,0,-0.35682,0.93417,0,0,-0.35682,-0.93417,0,0.35682,-0.93417,0.57735,0.57735,-0.57735,0,-0.35682,-0.93417,0.57735,0.57735,-0.57735,0.93417,0,-0.35682,0,-0.35682,-0.93417,0.93417,0,-0.35682,0.57735,-0.57735,-0.57735,-0.35682,0.93417,0,0.35682,0.93417,0,0.57735,0.57735,-0.57735,-0.35682,0.93417,0,0.57735,0.57735,-0.57735,0,0.35682,-0.93417,-0.35682,0.93417,0,0,0.35682,-0.93417,-0.57735,0.57735,-0.57735,0.93417,0,-0.35682,0.93417,0,0.35682,0.57735,-0.57735,0.57735,0.93417,0,-0.35682,0.57735,-0.57735,0.57735,0.35682,-0.93417,0,0.93417,0,-0.35682,0.35682,-0.93417,0,0.57735,-0.57735,-0.57735,-0.35682,-0.93417,0,0.35682,-0.93417,0,0.57735,-0.57735,0.57735,-0.35682,-0.93417,0,0.57735,-0.57735,0.57735,0,-0.35682,0.93417,-0.35682,-0.93417,0,0,-0.35682,0.93417,-0.57735,-0.57735,0.57735,-0.57735,-0.57735,-0.57735,0,-0.35682,-0.93417,0.57735,-0.57735,-0.57735,-0.57735,-0.57735,-0.57735,0.57735,-0.57735,-0.57735,0.35682,-0.93417,0,-0.57735,-0.57735,-0.57735,0.35682,-0.93417,0,-0.35682,-0.93417,0,-0.93417,0,-0.35682,-0.93417,0,0.35682,-0.57735,0.57735,0.57735,-0.93417,0,-0.35682,-0.57735,0.57735,0.57735,-0.35682,0.93417,0,-0.93417,0,-0.35682,-0.35682,0.93417,0,-0.57735,0.57735,-0.57735,0,-0.35682,0.93417,0,0.35682,0.93417,-0.57735,0.57735,0.57735,0,-0.35682,0.93417,-0.57735,0.57735,0.57735,-0.93417,0,0.35682,0,-0.35682,0.93417,-0.93417,0,0.35682,-0.57735,-0.57735,0.57735,-0.57735,-0.57735,-0.57735,-0.93417,0,-0.35682,-0.57735,0.57735,-0.57735,-0.57735,-0.57735,-0.57735,-0.57735,0.57735,-0.57735,0,0.35682,-0.93417,-0.57735,-0.57735,-0.57735,0,0.35682,-0.93417,0,-0.35682,-0.93417,-0.57735,-0.57735,-0.57735,-0.35682,-0.93417,0,-0.57735,-0.57735,0.57735,-0.57735,-0.57735,-0.57735,-0.57735,-0.57735,0.57735,-0.93417,0,0.35682,-0.57735,-0.57735,-0.57735,-0.93417,0,0.35682,-0.93417,0,-0.35682]);
+  const AM_DODE_UV=new Float32Array([0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094]);
+  // ---- the counter marker (decision 71) ------------------------------------------------
+  // The number lives ON the object, on every one of the twelve facets, so it reads from any
+  // angle without the marker ever being rotated. The floating tag is gone: a screen-space
+  // tag keeps its size at every zoom, and the user chose the object knowing that cost.
+  // One shared canvas carries a facet's shading; the number is stamped onto a copy, so a
+  // mark costs one small texture — the same cost the floating sprite already paid.
+  const AM_MK = (function(){
+    const R = 128;                                   // texture side; a facet is ~40 px on screen
+    let shadeCv = null;
+    function shade(){
+      if(shadeCv) return shadeCv;
+      const cv=document.createElement('canvas'); cv.width=cv.height=R;
+      const x=cv.getContext('2d');
+      x.fillStyle='#000'; x.fillRect(0,0,R,R);
+      const cx=R/2, cy=R/2, rad=0.45*R, pts=[];
+      for(let k=0;k<5;k++){const a=2*Math.PI*k/5-Math.PI/2; pts.push([cx+rad*Math.cos(a), cy+rad*Math.sin(a)]);}
+      // the shade pools at the CORNERS and thins along the middle of an edge (user 13/08):
+      // a short reach in from every edge, a long reach out of every vertex
+      x.globalCompositeOperation='lighter';
+      for(let k=0;k<5;k++){
+        const a=pts[k], b=pts[(k+1)%5];
+        const mx=(a[0]+b[0])/2, my=(a[1]+b[1])/2;
+        const g=x.createLinearGradient(mx,my,cx,cy);
+        g.addColorStop(0,'rgba(255,255,255,1)'); g.addColorStop(0.12,'rgba(255,255,255,0.28)');
+        g.addColorStop(0.30,'rgba(255,255,255,0)');
+        x.fillStyle=g; x.beginPath(); x.moveTo(a[0],a[1]); x.lineTo(b[0],b[1]); x.lineTo(cx,cy); x.closePath(); x.fill();
+      }
+      for(let k=0;k<5;k++){
+        const px=pts[k][0], py=pts[k][1];
+        const g=x.createRadialGradient(px,py,0,px,py,rad*0.60);
+        g.addColorStop(0,'rgba(255,255,255,1)'); g.addColorStop(0.45,'rgba(255,255,255,0.45)');
+        g.addColorStop(1,'rgba(255,255,255,0)');
+        x.fillStyle=g; x.beginPath(); x.arc(px,py,rad*0.60,0,6.284); x.fill();
+      }
+      x.globalCompositeOperation='destination-in';    // nothing outside the facet
+      x.fillStyle='#fff'; x.beginPath();
+      x.moveTo(pts[0][0],pts[0][1]); for(let k=1;k<5;k++)x.lineTo(pts[k][0],pts[k][1]);
+      x.closePath(); x.fill();
+      shadeCv=cv; return cv;
+    }
+    const cache=new Map();
+    function texture(num){
+      const key=String(num);
+      if(cache.has(key)) return cache.get(key);
+      const cv=document.createElement('canvas'); cv.width=cv.height=R;
+      const x=cv.getContext('2d');
+      x.drawImage(shade(),0,0);                       // grey = the shade; read from .r
+      x.globalCompositeOperation='source-over';
+      x.fillStyle='#00ff00';                          // the digit rides in GREEN alone
+      x.textAlign='center'; x.textBaseline='middle';
+      let fs=Math.round(R*0.42);
+      x.font='700 '+fs+'px system-ui, Arial, sans-serif';
+      while(x.measureText(key).width>R*0.62&&fs>8){fs-=2;x.font='700 '+fs+'px system-ui, Arial, sans-serif';}
+      x.fillText(key,R/2,R/2+R*0.02);
+      const t=new THREE.CanvasTexture(cv);
+      t.anisotropy=4; t.needsUpdate=true;
+      cache.set(key,t); return t;
+    }
+    function geometry(rad){
+      const g=new THREE.BufferGeometry();
+      const p=new Float32Array(AM_DODE_POS.length);
+      for(let i=0;i<p.length;i++) p[i]=AM_DODE_POS[i]*rad;
+      g.setAttribute('position',new THREE.BufferAttribute(p,3));
+      g.setAttribute('uv',new THREE.BufferAttribute(AM_DODE_UV.slice(),2));
+      g.computeVertexNormals();
+      return g;
+    }
+    function material(hex, op, designU, num){
+      // The canvas is NOT a colour map: red carries the facet's shade, green the digit. It
+      // rides in a uniform of its own, because three.js multiplies `map` into the colour
+      // automatically, and undoing that multiply is both ugly and numerically unstable.
+      const m=new THREE.MeshBasicMaterial({color:new THREE.Color(hex),
+        transparent:(op<1)||false, opacity:(typeof op==='number')?op:1.0});
+      m.userData.amTexU={value:texture(num)};
+      m.onBeforeCompile=sh=>{
+        sh.uniforms.amDesign=designU;
+        sh.uniforms.amTex=m.userData.amTexU;
+        sh.vertexShader=sh.vertexShader
+          .replace('#include <common>','#include <common>\nvarying vec3 vAPosM;varying vec2 vAUvM;')
+          .replace('#include <begin_vertex>','#include <begin_vertex>\nvAPosM=transformed;vAUvM=uv;');
+        sh.fragmentShader=sh.fragmentShader
+          .replace('#include <common>','#include <common>\nvarying vec3 vAPosM;varying vec2 vAUvM;uniform float amDesign;uniform sampler2D amTex;'+AM_SHADER_FN)
+          .replace('#include <opaque_fragment>',
+            'vec4 amT=texture2D(amTex,vAUvM);'
+           +'vec3 amC=amAge(diffuseColor.rgb,vec3(0.75),vAPosM*7.0,amDesign);'
+           +'amC*= 1.0-0.40*amDesign*amT.r;'
+           +'amC=mix(amC,amC*0.20,clamp(amT.g-amT.r,0.0,1.0));'
+           +'outgoingLight=amC;\n#include <opaque_fragment>');
+      };
+      m.userData.amDesign=designU;
+      return m;
+    }
+    return {geometry:geometry, material:material, texture:texture};
+  })();
+  const amDesignU={value:0.6};
+mat.onBeforeCompile=sh=>{
+    sh.uniforms.amDesign=amDesignU;
     sh.vertexShader=sh.vertexShader
-      .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;varying vec3 vACol;varying float vAFlat;')
-      .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;');
+      .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;varying vec3 vACol;varying float vAFlat;varying vec3 vAPos;')
+      .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vAPos=transformed;');
     sh.fragmentShader=sh.fragmentShader
-      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;')
-      .replace('#include <opaque_fragment>','vec3 amTint=outgoingLight*mix(vec3(1.0),vACol,min(vAFlat*1.25,1.0));float amF=clamp((vAFlat-0.7)/0.3,0.0,1.0);outgoingLight=mix(amTint,vACol,amF*amF*0.5);\n#include <opaque_fragment>');
+      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying vec3 vAPos;uniform float amDesign;'+AM_SHADER_FN)
+      .replace('#include <opaque_fragment>','vec3 amMark=amAge(vACol,outgoingLight,vAPos,amDesign);vec3 amTint=outgoingLight*mix(vec3(1.0),amMark,min(vAFlat*1.25,1.0));float amF=clamp((vAFlat-0.7)/0.3,0.0,1.0);outgoingLight=mix(amTint,amMark,amF*amF*0.5);\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
 
@@ -272,7 +393,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     const lt=lenTypes.find(x=>x.id===L.t);
     const g=new THREE.TubeGeometry(new THREE.CatmullRomCurve3(v),Math.min(400,Math.max(2,v.length*2)),L.w||0.008,6,false);
     const m=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:new THREE.Color(lt?lt.hex:'#eab308'),
-      transparent:(lt&&lt.op<1)||false,opacity:lt?lt.op:1.0}));
+      transparent:(lt&&lt.op<1)||false,opacity:(lt&&typeof lt.op==='number')?lt.op:1.0}));
     m.renderOrder=2; return m;}
   // ---- counter layers (round 3): an X per tap, the chip counts them ----
   const cntTypes=[]; let activeC=-1, cSeq=0;
@@ -282,9 +403,8 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   const cntDefSize=()=>Math.max(0.024,bs.radius*0.018);
   function mkCntType(name,hex){const T={id:'c'+(cSeq++),name:name,hex:hex,size:cntDefSize(),op:1.0};cntTypes.push(T);return T;}
   function xObj(m){const T=cntTypes.find(x=>x.id===m.t);
-    const dm=new THREE.Mesh(new THREE.OctahedronGeometry(((T&&T.size)||cntDefSize())/2),
-      new THREE.MeshBasicMaterial({color:new THREE.Color(T?T.hex:'#ef4444'),
-        transparent:(T&&T.op<1)||false,opacity:T?(T.op!==undefined?T.op:1):1}));
+    const dm=new THREE.Mesh(AM_MK.geometry(((T&&T.size)||cntDefSize())/2),
+      AM_MK.material(T?T.hex:'#ef4444', T?(T.op!==undefined?T.op:1):1, amDesignU, m.n||1));
     dm.position.set(m.p[0],m.p[1],m.p[2]); dm.renderOrder=3; return dm;}
   function resizeCnt(T){for(const m of xmarks)if(m.t===T.id&&m.obj){
     scene.remove(m.obj);m.obj=xObj(m);scene.add(m.obj);}}
