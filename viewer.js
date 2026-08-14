@@ -200,6 +200,11 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   const colAttr=new THREE.BufferAttribute(colors,3); geo.setAttribute('aCol',colAttr);
   const flats=new Float32Array(N*3);
   const flatAttr=new THREE.BufferAttribute(flats,1); geo.setAttribute('aFlat',flatAttr);
+  // aDes: the per-layer stipple level. Interim on the iPad: a constant 0.6 —
+  // per-layer values arrive in their own slice; without the attribute the new
+  // shader would read 0 and the marking would go flat (14/08).
+  const dess=new Float32Array(N*3).fill(0.6);
+  geo.setAttribute('aDes',new THREE.BufferAttribute(dess,1));
   geo.computeBoundingSphere();
   // flat-mix marking (user round 11/08): aFlat=1 paints pure colour OVER the texture
   const mat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});    // ---- the marking's look (decision 75: the stipple, option 6) --------------------------
@@ -330,11 +335,11 @@ vec3 amStipple(vec3 wall, vec3 col, float a, float lvl){
 mat.onBeforeCompile=sh=>{
     sh.uniforms.amDesign=amDesignU;
     sh.vertexShader=sh.vertexShader
-      .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;varying vec3 vACol;varying float vAFlat;varying vec3 vAPos;')
-      .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vAPos=transformed;');
+      .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;attribute float aDes;varying vec3 vACol;varying float vAFlat;varying float vADes;varying vec3 vAPos;')
+      .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vADes=aDes;vAPos=transformed;');
     sh.fragmentShader=sh.fragmentShader
-      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying vec3 vAPos;uniform float amDesign;'+AM_SHADER_FN)
-      .replace('#include <opaque_fragment>','outgoingLight=amStipple(outgoingLight,vACol,vAFlat,amDesign);\n#include <opaque_fragment>');
+      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying vec3 vAPos;uniform float amDesign;'+AM_SHADER_FN)
+      .replace('#include <opaque_fragment>','outgoingLight=amStipple(outgoingLight,vACol,vAFlat,vADes);\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
 
