@@ -200,11 +200,10 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   const colAttr=new THREE.BufferAttribute(colors,3); geo.setAttribute('aCol',colAttr);
   const flats=new Float32Array(N*3);
   const flatAttr=new THREE.BufferAttribute(flats,1); geo.setAttribute('aFlat',flatAttr);
-  // aDes: the per-layer stipple level. Interim on the iPad: a constant 0.6 —
-  // per-layer values arrive in their own slice; without the attribute the new
-  // shader would read 0 and the marking would go flat (14/08).
+  // the stipple level per sub-face, so every layer carries its own (slice 4)
   const dess=new Float32Array(N*3).fill(0.6);
-  geo.setAttribute('aDes',new THREE.BufferAttribute(dess,1));
+  const desAttr=new THREE.BufferAttribute(dess,1);
+  geo.setAttribute('aDes',desAttr);
   geo.computeBoundingSphere();
   // flat-mix marking (user round 11/08): aFlat=1 paints pure colour OVER the texture
   const mat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});    // ---- the marking's look (decision 75: the stipple, option 6) --------------------------
@@ -355,7 +354,7 @@ mat.onBeforeCompile=sh=>{
   const types=[]; let activeT=0, tSeq=0;
   let activeKind='area';               // area layers XOR length layers (user round 11/08)
   const hex2rgb=h=>[parseInt(h.slice(1,3),16)/255,parseInt(h.slice(3,5),16)/255,parseInt(h.slice(5,7),16)/255];
-  function mkType(name,hex){const T={id:'t'+(tSeq++),name:name,hex:hex,color:hex2rgb(hex),
+  function mkType(name,hex){const T={design:0.6,id:'t'+(tSeq++),name:name,hex:hex,color:hex2rgb(hex),
     manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,area:0};
     types.push(T);return T;}
   const T0=mkType('תיקון','#4dff4d'); T0.prob=prob;
@@ -372,14 +371,14 @@ mat.onBeforeCompile=sh=>{
   const ROIC=[1.0,0.80,0.45];
   const _vis=[];
   function recolorFace(f){
-    let r=null,a=0; _vis.length=0;
+    let r=null, a=0, d=0; _vis.length=0;
     for(let ti=0;ti<types.length;ti++) if(types[ti].op>0&&isType(ti,f)) _vis.push(ti);
     if(!_vis.length){ if(roi[f]){r=ROIC;a=0.45;} else {r=[1,1,1];a=0;} }
-    else { const T=types[_vis[f%_vis.length]]; r=T.color; a=T.op; }   // alternating triangles
+    else { const T=types[_vis[f%_vis.length]]; r=T.color; a=T.op; d=(typeof T.design==='number')?T.design:0.6; }   // alternating triangles
     const o=f*9;
-    for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;}
+    for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;dess[f*3+c]=d;}
   }
-  function recolorAll(){for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;updateArea();}
+  function recolorAll(){for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();}
   function updateArea(){
     for(let ti=0;ti<types.length;ti++){const T=types[ti];let a=0;
       for(let f=0;f<N;f++)if(isType(ti,f))a+=area[f];
@@ -395,14 +394,17 @@ mat.onBeforeCompile=sh=>{
   const lenTypes=[]; let activeL=-1, lSeq=0;
   const lines=[]; let curLine=null; const MIN_SEG=0.002;
   let lineW=0.008;                     // tube radius; brush slider drives it in len kind
-  function mkLenType(name,hex){const T={id:'l'+(lSeq++),name:name,hex:hex,op:1.0};lenTypes.push(T);return T;}
+  function mkLenType(name,hex){const T={design:0.0,designU:{value:0.0},id:'l'+(lSeq++),name:name,hex:hex,op:1.0};lenTypes.push(T);return T;}
   function applyLenOp(T){for(const L of lines)if(L.t===T.id&&L.obj){L.obj.material.transparent=T.op<1;L.obj.material.opacity=T.op;L.obj.material.needsUpdate=true;}}
   function lineObj(L){
-    const v=[];for(let i=0;i<L.pts.length;i+=3)v.push(new THREE.Vector3(L.pts[i],L.pts[i+1],L.pts[i+2]));
+    const _src=(L.fit&&L.fit.stations)||L.pts;
+    const v=[];for(let i=0;i<_src.length;i+=3)v.push(new THREE.Vector3(_src[i],_src[i+1],_src[i+2]));
     const lt=lenTypes.find(x=>x.id===L.t);
-    const g=new THREE.TubeGeometry(new THREE.CatmullRomCurve3(v),Math.min(400,Math.max(2,v.length*2)),L.w||0.008,6,false);
-    const m=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:new THREE.Color(lt?lt.hex:'#eab308'),
-      transparent:(lt&&lt.op<1)||false,opacity:(lt&&typeof lt.op==='number')?lt.op:1.0}));
+    let g=(L.fit&&L.fit.normals)?amRibbonGeom(L.fit.stations,L.fit.normals,L.w||0.008):null;
+    if(!g) g=new THREE.TubeGeometry(new THREE.CatmullRomCurve3(v),Math.min(400,Math.max(2,v.length*2)),L.w||0.008,6,false);
+    if(lt&&!lt.designU)lt.designU={value:lt.design||0};
+    const m=new THREE.Mesh(g,amTapeSkinMat(lt?lt.hex:'#eab308',(lt&&typeof lt.op==='number')?lt.op:1.0,
+      (lt&&lt.designU)||{value:0}, (L.fit&&L.fit.length_m)||lineLen(_src)));
     m.renderOrder=2; return m;}
   // ---- counter layers (round 3): an X per tap, the chip counts them ----
   const cntTypes=[]; let activeC=-1, cSeq=0;
@@ -410,7 +412,7 @@ mat.onBeforeCompile=sh=>{
   // per-layer diamond DIAMETER in true metres + per-layer opacity (12/08) — mirror of
   // the desktop editor, and both ride in the sheet so devices render identically
   const cntDefSize=()=>Math.max(0.024,bs.radius*0.018);
-  function mkCntType(name,hex){const T={id:'c'+(cSeq++),name:name,hex:hex,size:cntDefSize(),op:1.0};cntTypes.push(T);return T;}
+  function mkCntType(name,hex){const T={design:0.6,designU:{value:0.6},id:'c'+(cSeq++),name:name,hex:hex,size:cntDefSize(),op:1.0};cntTypes.push(T);return T;}
   function xObj(m){const T=cntTypes.find(x=>x.id===m.t);
     const dm=new THREE.Mesh(AM_MK.geometry(((T&&T.size)||cntDefSize())/2),
       AM_MK.material(T?T.hex:'#ef4444', T?(T.op!==undefined?T.op:1):1, amDesignU, m.n||1));
@@ -511,7 +513,7 @@ mat.onBeforeCompile=sh=>{
       else {const [ti,f,o]=d;inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;recolorFace(f);}}
     inv.reverse();
     logOps(typedOps(diff));
-    colAttr.needsUpdate=true;flatAttr.needsUpdate=true;updateArea();return inv;
+    colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();return inv;
   }
   const undo=()=>{if(undoStack.length){redoStack.push(applyDiff(undoStack.pop()));updateHB();}};
   const redo=()=>{if(redoStack.length){undoStack.push(applyDiff(redoStack.pop()));updateHB();}};
@@ -635,7 +637,7 @@ mat.onBeforeCompile=sh=>{
           visited[g2]=1; if(ok)q.push(g2);
         }}
     }
-    colAttr.needsUpdate=true;flatAttr.needsUpdate=true;updateArea();commitH();
+    colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();commitH();
   }
 
   /* ---- brush paint ---- */
@@ -655,7 +657,7 @@ mat.onBeforeCompile=sh=>{
           const M=types[activeT].manual;
           if(M[f]!==val){recH(activeT,f);M[f]=val;recolorFace(f);ch=true;}
         }}}
-    if(ch){colAttr.needsUpdate=true;flatAttr.needsUpdate=true;updateArea();}
+    if(ch){colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();}
   }
 
   /* ---- length stroke: sample the pencil path into a surface polyline ---- */
@@ -673,9 +675,241 @@ mat.onBeforeCompile=sh=>{
     if(curLine.obj)scene.remove(curLine.obj);
     curLine.obj=lineObj(curLine); scene.add(curLine.obj);
   }
+  // ---- the tape's skin (decision 74, slice 3) --------------------------------------------
+  // A flat world-space band from the STORED stations+normals: lifted 4 mm along the smoothed
+  // normal, width across it. Display only — the measured geometry is the stations
+  // themselves; this offset never enters a number.
+  function amRibbonGeom(st, nm, w){
+    const n=st.length/3;
+    if(n<2||!nm||nm.length!==st.length) return null;
+    const half=Math.max(w||0.008,0.004), lift=0.004;
+    const pos=new Float32Array(n*6), idx=[];
+    const P=new THREE.Vector3(),N=new THREE.Vector3(),T=new THREE.Vector3(),Sd=new THREE.Vector3();
+    for(let i=0;i<n;i++){
+      P.set(st[i*3],st[i*3+1],st[i*3+2]); N.set(nm[i*3],nm[i*3+1],nm[i*3+2]);
+      const a=Math.max(i-1,0), b=Math.min(i+1,n-1);
+      T.set(st[b*3]-st[a*3],st[b*3+1]-st[a*3+1],st[b*3+2]-st[a*3+2]);
+      if(T.lengthSq()<1e-12)T.set(1,0,0); T.normalize();
+      Sd.crossVectors(N,T); if(Sd.lengthSq()<1e-12)Sd.set(0,1,0);
+      Sd.normalize().multiplyScalar(half);
+      const ox=N.x*lift, oy=N.y*lift, oz=N.z*lift;
+      pos[i*6  ]=P.x-Sd.x+ox; pos[i*6+1]=P.y-Sd.y+oy; pos[i*6+2]=P.z-Sd.z+oz;
+      pos[i*6+3]=P.x+Sd.x+ox; pos[i*6+4]=P.y+Sd.y+oy; pos[i*6+5]=P.z+Sd.z+oz;
+      if(i){const k=(i-1)*2; idx.push(k,k+1,k+2, k+1,k+3,k+2);}
+    }
+    // u = metres along the band, for the dash pattern (user 14/08)
+    const uvs=new Float32Array(n*4); let run=0;
+    for(let i=0;i<n;i++){
+      if(i) run+=Math.hypot(st[i*3]-st[i*3-3],st[i*3+1]-st[i*3-2],st[i*3+2]-st[i*3-1]);
+      uvs[i*4]=run; uvs[i*4+1]=0; uvs[i*4+2]=run; uvs[i*4+3]=1;
+    }
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+    g.setAttribute('uv',new THREE.BufferAttribute(uvs,2));
+    g.setIndex(idx);
+    return g;
+  }
+
+
+  // The wheel's meaning on a tape (user 14/08): 0 = a solid band, 100 = dots along it,
+  // the whole scale in between. A dash is a DISCARD in metres along the band, so it is
+  // true length, identical in the editor and the report.
+  function amTapeSkinMat(hex, op, designU, lenM){
+    const m=new THREE.MeshBasicMaterial({color:new THREE.Color(hex), side:THREE.DoubleSide,
+      transparent:(op<1)||false, opacity:(typeof op==='number')?op:1.0});
+    m.onBeforeCompile=sh=>{
+      sh.uniforms.amDesign=designU;
+      sh.uniforms.amLen={value:Math.max(lenM||1e-6,1e-6)};
+      sh.vertexShader=sh.vertexShader
+        .replace('#include <common>','#include <common>\nvarying float vAU;')
+        .replace('#include <begin_vertex>','#include <begin_vertex>\nvAU=uv.x;');
+      sh.fragmentShader=sh.fragmentShader
+        .replace('#include <common>','#include <common>\nvarying float vAU;uniform float amDesign;uniform float amLen;')
+        .replace('#include <opaque_fragment>','float amDuty=1.0-0.85*amDesign;float amEnd=min(vAU,amLen-vAU);if(amEnd<0.03) amDuty=1.0;if(amDuty<0.999&&fract(vAU/0.06)>amDuty)discard;\n#include <opaque_fragment>');
+    };
+    m.userData.amDesign=designU;
+    return m;
+  }
+
+  // ---- the measurement chain (decision 74, slice 1) -------------------------------------
+  // Pen-up: resample at equal arc length -> corridor smoothing (hard clamp delta to the raw
+  // stroke; corner cutting structurally bounded) -> iterated closest-point snap on the BVH.
+  // The stations are the stroke's ONE truth: measured here, drawn here, saved in the sheet,
+  // summed by the server. Calibrated in spike 2: A 0.011%, C/D ~0.57%, E clean bridge.
+
+  // ---- the tape's skin (decision 74, slice 3) --------------------------------------------
+  // A flat world-space band from the STORED stations+normals: lifted 4 mm along the smoothed
+  // normal, width across it. Display only — the measured geometry is the stations
+  // themselves; this offset never enters a number.
+  function amRibbonGeom(st, nm, w){
+    const n=st.length/3;
+    if(n<2||!nm||nm.length!==st.length) return null;
+    const half=Math.max(w||0.008,0.004), lift=0.004;
+    const pos=new Float32Array(n*6), idx=[];
+    const P=new THREE.Vector3(),N=new THREE.Vector3(),T=new THREE.Vector3(),Sd=new THREE.Vector3();
+    for(let i=0;i<n;i++){
+      P.set(st[i*3],st[i*3+1],st[i*3+2]); N.set(nm[i*3],nm[i*3+1],nm[i*3+2]);
+      const a=Math.max(i-1,0), b=Math.min(i+1,n-1);
+      T.set(st[b*3]-st[a*3],st[b*3+1]-st[a*3+1],st[b*3+2]-st[a*3+2]);
+      if(T.lengthSq()<1e-12)T.set(1,0,0); T.normalize();
+      Sd.crossVectors(N,T); if(Sd.lengthSq()<1e-12)Sd.set(0,1,0);
+      Sd.normalize().multiplyScalar(half);
+      const ox=N.x*lift, oy=N.y*lift, oz=N.z*lift;
+      pos[i*6  ]=P.x-Sd.x+ox; pos[i*6+1]=P.y-Sd.y+oy; pos[i*6+2]=P.z-Sd.z+oz;
+      pos[i*6+3]=P.x+Sd.x+ox; pos[i*6+4]=P.y+Sd.y+oy; pos[i*6+5]=P.z+Sd.z+oz;
+      if(i){const k=(i-1)*2; idx.push(k,k+1,k+2, k+1,k+3,k+2);}
+    }
+    // u = metres along the band, for the dash pattern (user 14/08)
+    const uvs=new Float32Array(n*4); let run=0;
+    for(let i=0;i<n;i++){
+      if(i) run+=Math.hypot(st[i*3]-st[i*3-3],st[i*3+1]-st[i*3-2],st[i*3+2]-st[i*3-1]);
+      uvs[i*4]=run; uvs[i*4+1]=0; uvs[i*4+2]=run; uvs[i*4+3]=1;
+    }
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+    g.setAttribute('uv',new THREE.BufferAttribute(uvs,2));
+    g.setIndex(idx);
+    return g;
+  }
+
+  // The wheel's meaning on a tape (user 14/08): 0 = a solid band, 100 = dots along it,
+  // the whole scale in between. A dash is a DISCARD in metres along the band, so it is
+  // true length, identical in the editor and the report.
+  function amTapeSkinMat(hex, op, designU, lenM){
+    const m=new THREE.MeshBasicMaterial({color:new THREE.Color(hex), side:THREE.DoubleSide,
+      transparent:(op<1)||false, opacity:(typeof op==='number')?op:1.0});
+    m.onBeforeCompile=sh=>{
+      sh.uniforms.amDesign=designU;
+      sh.uniforms.amLen={value:Math.max(lenM||1e-6,1e-6)};
+      sh.vertexShader=sh.vertexShader
+        .replace('#include <common>','#include <common>\nvarying float vAU;')
+        .replace('#include <begin_vertex>','#include <begin_vertex>\nvAU=uv.x;');
+      sh.fragmentShader=sh.fragmentShader
+        .replace('#include <common>','#include <common>\nvarying float vAU;uniform float amDesign;uniform float amLen;')
+        .replace('#include <opaque_fragment>','float amDuty=1.0-0.85*amDesign;float amEnd=min(vAU,amLen-vAU);if(amEnd<0.03) amDuty=1.0;if(amDuty<0.999&&fract(vAU/0.06)>amDuty)discard;\n#include <opaque_fragment>');
+    };
+    m.userData.amDesign=designU;
+    return m;
+  }
+
+  const AM_FIT={tol:0.008, station:0.02, fine:0.01, iters:8, ver:1};
+  let amBVH=null;
+  setTimeout(()=>{                       // built once, off the critical path (spike 1: <1s)
+    try{ if(typeof MeshBVHLib!=='undefined'){
+      amBVH=new MeshBVHLib.MeshBVH(geo);
+      // the same tree accelerates EVERY raycast in the editor (paint, grow, tape)
+      geo.boundsTree=amBVH;
+      THREE.Mesh.prototype.raycast=MeshBVHLib.acceleratedRaycast;
+    } }
+    catch(e){ console.warn('am: BVH build failed', e); }
+  },50);
+  function amResample(P, step){
+    const s=[0]; for(let i=1;i<P.length;i++) s.push(s[i-1]+P[i].distanceTo(P[i-1]));
+    const total=s[s.length-1]; if(total<1e-6) return P.slice();
+    const n=Math.max(4, Math.round(total/step)), out=[];
+    let j=0;
+    for(let k=0;k<=n;k++){
+      const t=total*k/n;
+      while(j<s.length-2 && s[j+1]<t) j++;
+      const f=(t-s[j])/Math.max(s[j+1]-s[j],1e-9);
+      out.push(new THREE.Vector3().lerpVectors(P[j],P[j+1],Math.min(Math.max(f,0),1)));
+    }
+    return out;
+  }
+  function amMeasureStroke(flat, w){
+    if(!amBVH) return null;              // library missing or not ready: stay raw, honestly
+    const raw=[]; for(let i=0;i+2<flat.length;i+=3) raw.push(new THREE.Vector3(flat[i],flat[i+1],flat[i+2]));
+    if(raw.length<3) return null;
+    const D=AM_FIT.tol;
+    let S=amResample(raw, AM_FIT.station);
+    // corridor clamped to the raw POLYLINE (segments, not vertices): measuring against
+    // vertices alone made sparse fast strokes scallop toward them (user 14/08). Near a
+    // sharp raw corner the corridor tightens x2.5, so corners hold (user 14/08).
+    const corners=[];
+    {
+      const v1=new THREE.Vector3(), v2=new THREE.Vector3();
+      for(let i=1;i<raw.length-1;i++){
+        v1.subVectors(raw[i],raw[i-1]); v2.subVectors(raw[i+1],raw[i]);
+        if(v1.lengthSq()>1e-12&&v2.lengthSq()>1e-12&&v1.angleTo(v2)>Math.PI/6) corners.push(raw[i]);
+      }
+    }
+    const _ab=new THREE.Vector3(), _pr=new THREE.Vector3(), _bp=new THREE.Vector3();
+    function amClampToRaw(q, lim){
+      let bd=1e9;
+      for(let k=0;k+1<raw.length;k++){
+        _ab.subVectors(raw[k+1],raw[k]);
+        const L2=Math.max(_ab.lengthSq(),1e-12);
+        let tt=(q.x-raw[k].x)*_ab.x+(q.y-raw[k].y)*_ab.y+(q.z-raw[k].z)*_ab.z;
+        tt=Math.min(Math.max(tt/L2,0),1);
+        _pr.copy(raw[k]).addScaledVector(_ab,tt);
+        const d=q.distanceTo(_pr);
+        if(d<bd){bd=d;_bp.copy(_pr);}
+      }
+      if(bd>lim) q.sub(_bp).multiplyScalar(lim/bd).add(_bp);
+    }
+    for(let pass=0;pass<20;pass++){
+      for(let i=1;i<S.length-1;i++){
+        S[i].set((S[i-1].x+2*S[i].x+S[i+1].x)/4,(S[i-1].y+2*S[i].y+S[i+1].y)/4,(S[i-1].z+2*S[i].z+S[i+1].z)/4);
+      }
+      for(let i=1;i<S.length-1;i++){
+        let lim=D;
+        for(const c of corners){ if(S[i].distanceTo(c)<0.04){lim=D*0.4;break;} }
+        amClampToRaw(S[i],lim);
+      }
+    }
+    // iterated snap: closest point on the mesh, movement clamped to delta; a station with no
+    // surface within 5 cm keeps its smoothed place (hole bridged, never torn)
+    const tgt={point:new THREE.Vector3(),distance:0,faceIndex:0};
+    const snap=A=>{
+      for(const q of A){
+        amBVH.closestPointToPoint(q,tgt);
+        const d=tgt.distance;
+        if(d>0.05) continue;
+        if(d<=D) q.copy(tgt.point);
+        else q.lerp(tgt.point, D/d);
+      }
+      return A;
+    };
+    S=snap(S);
+    for(let it=1;it<AM_FIT.iters;it++) S=snap(amResample(S, AM_FIT.fine));
+    // a stable normal per station (slice 3): every triangle within 4 cm, averaged via the
+    // BVH, then smoothed along the curve — never a single face's flip
+    const _nrm=[];
+    {
+      const sph=new THREE.Sphere(), tn=new THREE.Vector3(), acc=new THREE.Vector3();
+      const prev=new THREE.Vector3(0,0,1);
+      for(const q of S){
+        sph.center.copy(q); sph.radius=0.04; acc.set(0,0,0);
+        amBVH.shapecast({
+          intersectsBounds:b=>b.intersectsSphere(sph),
+          intersectsTriangle:tr=>{ if(tr.intersectsSphere(sph)){tr.getNormal(tn);acc.add(tn);} return false; }
+        });
+        if(acc.lengthSq()<1e-9) acc.copy(prev);
+        acc.normalize(); prev.copy(acc); _nrm.push(acc.clone());
+      }
+      for(let pass=0;pass<3;pass++)
+        for(let i=1;i<_nrm.length-1;i++)
+          _nrm[i].add(_nrm[i-1]).add(_nrm[i+1]).normalize();
+    }
+    const nf=new Array(S.length*3);
+    for(let i=0;i<S.length;i++){nf[i*3]=Math.round(_nrm[i].x*1000)/1000;nf[i*3+1]=Math.round(_nrm[i].y*1000)/1000;nf[i*3+2]=Math.round(_nrm[i].z*1000)/1000;}
+    let len=0; for(let i=1;i<S.length;i++) len+=S[i].distanceTo(S[i-1]);
+    const st=new Array(S.length*3);
+    for(let i=0;i<S.length;i++){st[i*3]=Math.round(S[i].x*10000)/10000;st[i*3+1]=Math.round(S[i].y*10000)/10000;st[i*3+2]=Math.round(S[i].z*10000)/10000;}
+    return {version:AM_FIT.ver,
+            params:{tol_mm:Math.round(D*1000), station_mm:Math.round(AM_FIT.station*1000),
+                    iters:AM_FIT.iters, lift_mm:4},
+            stations:st, normals:nf, length_m:Math.round(len*1000)/1000};
+  }
+
   function endLine(){
     if(!curLine)return;
-    if(curLine.pts.length>=6){addLine(curLine);
+    if(curLine.pts.length>=6){
+      // same chain as the desktop, same characters, same numbers (slice 4)
+      const fit=amMeasureStroke(curLine.pts, curLine.w);
+      if(fit){ curLine.fit=fit; curLine.len=fit.length_m;
+        if(curLine.obj){scene.remove(curLine.obj);curLine.obj=null;} }
+      addLine(curLine);
       undoStack.push([['L+',curLine]]);redoStack.length=0;updateHB();updateArea();
       const lt=lenTypes.find(x=>x.id===curLine.t);
       logOps([]);                                          // faces untouched
@@ -996,7 +1230,7 @@ mat.onBeforeCompile=sh=>{
         addLine({t:lt.id,pts:ln.pts.slice(),len:lineLen(ln.pts),obj:null});}
       if(lenTypes.length&&activeL<0)activeL=0;
       buildChips();
-      colAttr.needsUpdate=true;flatAttr.needsUpdate=true;updateArea();markUnexported(true);
+      colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();markUnexported(true);
     }
   });
 
