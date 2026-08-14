@@ -202,24 +202,24 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   const flatAttr=new THREE.BufferAttribute(flats,1); geo.setAttribute('aFlat',flatAttr);
   geo.computeBoundingSphere();
   // flat-mix marking (user round 11/08): aFlat=1 paints pure colour OVER the texture
-  const mat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});
+  const mat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});    // ---- the marking's look (decision 75: the stipple, option 6) --------------------------
+    // Ordered Bayer dithering in SCREEN space: the marking is drawn as a lattice of solid
+    // colour dots over the untouched wall, the register of the 1968 plates. The layer's own
+    // opacity drives dot coverage; the design wheel morphs from the old flat wash (0) to full
+    // dots (1), so a clean flat submission stays one wheel-turn away. Screen-space is a
+    // property, not a bug: the dots sit like a print screen while the model moves under them.
     const AM_SHADER_FN = `
-float amH(vec3 p){return fract(sin(dot(p,vec3(12.9898,78.233,37.719)))*43758.5453);}
-float amN(vec3 p){vec3 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
-  float a=mix(mix(amH(i+vec3(0.,0.,0.)),amH(i+vec3(1.,0.,0.)),f.x),
-              mix(amH(i+vec3(0.,1.,0.)),amH(i+vec3(1.,1.,0.)),f.x),f.y);
-  float b=mix(mix(amH(i+vec3(0.,0.,1.)),amH(i+vec3(1.,0.,1.)),f.x),
-              mix(amH(i+vec3(0.,1.,1.)),amH(i+vec3(1.,1.,1.)),f.x),f.y);
-  return mix(a,b,f.z);}
-vec3 amAge(vec3 base, vec3 wall, vec3 wp, float lvl){
-  if(lvl<=0.001) return base;
-  float n=0.6*amN(wp*9.0)+0.4*amN(wp*31.0);
-  float pit=clamp(1.0-n*1.35,0.0,1.0);
-  vec3 c=base*(0.82+0.36*n);
-  c=mix(c,vec3(0.42,0.20,0.09),pit*0.55);
-  float wl=clamp(dot(wall,vec3(0.2126,0.7152,0.0722))*1.3,0.0,1.0);
-  c*= (0.55+0.65*wl);
-  return mix(base,c,lvl);}
+float amB2(vec2 a){a=floor(a);return fract(a.x*0.5+a.y*a.y*0.75);}
+float amBayer(vec2 px){return amB2(px*0.5)*0.25+amB2(px);}
+vec3 amStipple(vec3 wall, vec3 col, float a, float lvl){
+  vec3 flatC=wall*mix(vec3(1.0),col,min(a*1.25,1.0));
+  float f=clamp((a-0.7)/0.3,0.0,1.0);
+  flatC=mix(flatC,col,f*f*0.5);
+  if(lvl<=0.001||a<=0.001) return flatC;
+  float t=amBayer(floor(gl_FragCoord.xy/3.0));
+  vec3 dots=(a>t)?col:wall;
+  return mix(flatC,dots,lvl);
+}
 `;
 
   // Regular dodecahedron, from the marker the user designed (13/08). 20 vertices all at
@@ -316,7 +316,7 @@ vec3 amAge(vec3 base, vec3 wall, vec3 wp, float lvl){
           .replace('#include <common>','#include <common>\nvarying vec3 vAPosM;varying vec2 vAUvM;uniform float amDesign;uniform sampler2D amTex;'+AM_SHADER_FN)
           .replace('#include <opaque_fragment>',
             'vec4 amT=texture2D(amTex,vAUvM);'
-           +'vec3 amC=amAge(diffuseColor.rgb,vec3(0.75),vAPosM*7.0,amDesign);'
+           +'float amT0=amBayer(floor(gl_FragCoord.xy/3.0));vec3 amC=mix(diffuseColor.rgb,diffuseColor.rgb*0.72,((amT0<0.55)?1.0:0.0)*amDesign);'
            +'amC*= 1.0-0.40*amDesign*amT.r;'
            +'amC=mix(amC,amC*0.20,clamp(amT.g-amT.r,0.0,1.0));'
            +'outgoingLight=amC;\n#include <opaque_fragment>');
@@ -334,7 +334,7 @@ mat.onBeforeCompile=sh=>{
       .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vAPos=transformed;');
     sh.fragmentShader=sh.fragmentShader
       .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying vec3 vAPos;uniform float amDesign;'+AM_SHADER_FN)
-      .replace('#include <opaque_fragment>','vec3 amMark=amAge(vACol,outgoingLight,vAPos,amDesign);vec3 amTint=outgoingLight*mix(vec3(1.0),amMark,min(vAFlat*1.25,1.0));float amF=clamp((vAFlat-0.7)/0.3,0.0,1.0);outgoingLight=mix(amTint,amMark,amF*amF*0.5);\n#include <opaque_fragment>');
+      .replace('#include <opaque_fragment>','outgoingLight=amStipple(outgoingLight,vACol,vAFlat,amDesign);\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
 
