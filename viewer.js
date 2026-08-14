@@ -766,7 +766,7 @@ mat.onBeforeCompile=sh=>{
         op:(typeof T.op==='number')?T.op:1})),
       counters:cntTypes.map(T=>({t:T.id,
         pts:[].concat(...xmarks.filter(m=>m.t===T.id).map(m=>m.p.map(v=>Math.round(v*1000)/1000)))})),
-      lengths:lines.map(L=>({t:L.t,len:Math.round(L.len*1000)/1000,
+      lengths:lines.map(L=>({t:L.t,fit:L.fit||undefined,len:Math.round(L.len*1000)/1000,
         w:Math.round((L.w||0.008)*1000)/1000,
         pts:L.pts.map(v=>Math.round(v*1000)/1000)})),
       saved:new Date().toISOString(),
@@ -954,7 +954,9 @@ mat.onBeforeCompile=sh=>{
     for(const src of (sh.lenTypes||[])){const T=mkLenType(src.name||'',src.color||'#eab308');if(src.id)T.id=src.id;
       if(typeof src.op==='number')T.op=src.op;}
     for(const src of (sh.lengths||[])){
-      const L={t:src.t,pts:src.pts.slice(),len:lineLen(src.pts),w:src.w||0.008,obj:null};  // len recomputed
+      const L={t:src.t,pts:src.pts.slice(),fit:src.fit||null,
+        len:(src.fit&&typeof src.fit.length_m==='number')?src.fit.length_m:lineLen(src.pts),
+        w:src.w||0.008,obj:null};  // a measured stroke keeps its truth on the iPad too
       addLine(L);}
     for(const src of (sh.cntTypes||[])){const T=mkCntType(src.name||'',src.color||'#ef4444');if(src.id)T.id=src.id;
       if(typeof src.size==='number')T.size=src.size;
