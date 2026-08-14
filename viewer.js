@@ -283,6 +283,10 @@ vec3 amAge(vec3 base, vec3 wall, vec3 wp, float lvl){
       while(x.measureText(key).width>R*0.62&&fs>8){fs-=2;x.font='700 '+fs+'px system-ui, Arial, sans-serif';}
       x.fillText(key,R/2,R/2+R*0.02);
       const t=new THREE.CanvasTexture(cv);
+      // flipY OFF: a pentagon is rotationally odd, so the default Y-flip lands the
+      // corner shading on the edge midpoints (36deg off) and mirrors the digits.
+      // With flipY=false the canvas coordinates equal the UV coordinates exactly.
+      t.flipY=false;
       t.anisotropy=4; t.needsUpdate=true;
       cache.set(key,t); return t;
     }
