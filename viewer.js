@@ -1080,7 +1080,28 @@ mat.onBeforeCompile=sh=>{
     types[activeT].thr=v;recolorAll();};
 
   /* ---- palette chips (mirror of the desktop): a chip per type, tools follow it --- */
-  function syncKindUI(){const other=activeKind!=='area';
+  // The design wheel, wired exactly as on the desktop — same control, same meaning, and
+  // synced through the ONE path every activation crosses. Wiring it around the activate*
+  // functions is what failed silently there (decision 87), and the same trap exists here.
+  function amSyncDesign(){
+    const ds=$('design'), dv=$('designV');
+    if(!ds) return;
+    let v=null;
+    if(activeKind==='cnt'){const T=cntTypes[activeC]; v=T?(T.design??0.6):null;}
+    else if(activeKind==='len'){const T=lenTypes[activeL]; v=T?(T.design||0):null;}
+    else if(activeKind==='area'){const T=types[activeT]; v=T?(T.design??0.6):null;}
+    ds.disabled=(v===null);
+    if(v!==null){ds.value=Math.round(v*100);dv.textContent=Math.round(v*100)+'%';}
+  }
+  if($('design')) $('design').oninput=e=>{
+    const v=e.target.value/100;
+    $('designV').textContent=e.target.value+'%';
+    if(activeKind==='cnt'){const T=cntTypes[activeC];if(T){T.design=v;T.designU.value=v;}}
+    else if(activeKind==='len'){const T=lenTypes[activeL];if(T){T.design=v;if(!T.designU)T.designU={value:v};T.designU.value=v;}}
+    else if(activeKind==='area'){const T=types[activeT];if(T){T.design=v;recolorAll();}}
+    // this viewer renders on a continuous tick, so nothing has to be poked to redraw
+  };
+  function syncKindUI(){amSyncDesign();const other=activeKind!=='area';
     $('auto').disabled=other; $('thr').disabled=other;
     // grow floods FACES by similarity — meaningless for lines and counters (12/08)
     $('mGrow').disabled=other; $('grtol').disabled=other;
