@@ -2,7 +2,7 @@
    one-time install the viewer must work with no network at all (decision 19).
    Bump CACHE on every release; the old cache is dropped on activate. */
 'use strict';
-const CACHE='am-viewer-v20';
+const CACHE='am-viewer-v21';
 const ASSETS=['./','index.html','viewer.js','three.min.js','three-mesh-bvh.js','manifest.webmanifest',
               'icon-180.png','icon-512.png'];
 

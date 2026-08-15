@@ -997,6 +997,7 @@ mat.onBeforeCompile=sh=>{
     const rf=[];for(let fo=0;fo<FO;fo++)if(roi[OFF[fo]]||mkf[fo])rf.push(fo);
     const o={_sheet:1,sheetVersion:3,Fo:FO,Nsub:N,subdiv:SUBK,cnt:CNT?b64u8(CNT):null,
       globalThreshold:types[0].thr,faceThr:t0.faceThr,manual:t0.manual,roiFaces:rf,roiPainted:rp,
+      subScheme:AM_SUB_SCHEME,
       hasProb:t0.hasProb,prob:t0.prob,
       types:types.map(typeState),
       lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex,op:(typeof T.op==='number')?T.op:1})),
@@ -1154,11 +1155,82 @@ mat.onBeforeCompile=sh=>{
      embedded in the file at boot, and a sheet the user loads from Files (slice 2).
      Field-for-field mirror of the desktop loadSheet — one engine, one meaning.
      Throws on mismatch, reporting the measured numbers (decision 35). ---- */
+  // ---- the layout is a cache; the identity is (face, child) — decision 85 --------------
+  // Same translator as the editor, in the same words: a flat sub-face index means something
+  // only together with the counts it was written against, and the sheet carries those
+  // counts. The file alone decides — no history, no server, no memory of another device.
+  const AM_SUB_SCHEME = 1;      // core.subdiv_weights, face-major child order
+  function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
+    for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
+  function amRemap(j){
+    const sch=(typeof j.subScheme==='number')?j.subScheme:AM_SUB_SCHEME;
+    if(sch!==AM_SUB_SCHEME) return {ok:false,why:'סדר תת-הפאות בקובץ (סכימה '+sch+') אינו מוכר לתוכנה הזאת.'};
+    const oldK=(typeof j.subdiv==='number')?j.subdiv:SUBK;
+    if(oldK!==SUBK) return {ok:false,why:'דקוּת הסימון בקובץ ('+oldK+') שונה מזו של המודל הפתוח ('+SUBK+').'};
+    const oSPF=oldK*oldK;
+    let oCnt=null;
+    try{ oCnt=j.cnt?amB64u8(j.cnt):null; }catch(e){ return {ok:false,why:'פריסת הגיליון פגומה.'}; }
+    if(oCnt&&oCnt.length!==FO) return {ok:false,why:'פריסת הגיליון אינה תואמת למספר הפאות.'};
+    const oOFF=new Uint32Array(FO+1);
+    for(let fo=0;fo<FO;fo++) oOFF[fo+1]=oOFF[fo]+(oCnt?oCnt[fo]:oSPF);
+    let same=true;
+    for(let fo=0;fo<=FO;fo++) if(oOFF[fo]!==OFF[fo]){same=false;break;}
+    if(same) return {ok:true,same:true,oOFF:oOFF};
+    for(let fo=0;fo<FO;fo++){
+      const oc=oOFF[fo+1]-oOFF[fo], nc=OFF[fo+1]-OFF[fo];
+      if(nc<oc) return {ok:false,why:'הפריסה החדשה גסה מזו של הגיליון — סימון היה נאלץ להתקפל.'};
+      if(nc!==oc&&oc!==1) return {ok:false,why:'פאה שינתה רזולוציה שלא בהתפצלות של שלם.'};
+    }
+    return {ok:true,same:false,oOFF:oOFF};
+  }
+  function amFaceOf(m,s){
+    const o=m.oOFF; let lo=0,hi=FO-1;
+    if(s<0||s>=o[FO]) return -1;
+    while(lo<hi){const mid=(lo+hi+1)>>1; if(o[mid]<=s)lo=mid; else hi=mid-1;}
+    return lo;
+  }
+  function amEach(m,s,fn){
+    const fo=amFaceOf(m,s); if(fo<0) return false;
+    const oc=m.oOFF[fo+1]-m.oOFF[fo], nc=OFF[fo+1]-OFF[fo];
+    if(nc===oc){ fn(OFF[fo]+(s-m.oOFF[fo])); return true; }
+    for(let t=OFF[fo];t<OFF[fo+1];t++) fn(t);
+    return true;
+  }
+  function amFracOld(pairs,m){
+    const sig=new Float64Array(FO);
+    for(const pr of pairs){ if(pr[1]!==1) continue;
+      const fo=amFaceOf(m,pr[0]); if(fo>=0) sig[fo]+=1/(m.oOFF[fo+1]-m.oOFF[fo]); }
+    return sig;
+  }
+  function amFracNew(M){
+    const sig=new Float64Array(FO);
+    for(let s=0;s<N;s++) if(M[s]===1){ const fo=FACEOF[s]; sig[fo]+=1/(OFF[fo+1]-OFF[fo]); }
+    return sig;
+  }
+  function amFirstGap(a,b){
+    for(let fo=0;fo<FO;fo++) if(Math.abs(a[fo]-b[fo])>1e-9) return fo;
+    return -1;
+  }
   function applySheet(sh){
     if(!sh||!(sh._sheet||sh._work)) throw new Error('הקובץ אינו גיליון של התוכנה.');
-    if(sh.Nsub!==N||sh.Fo!==FO)
+    if(sh.Fo!==FO)
       throw new Error('הגיליון אינו תואם לעבודה הפתוחה — בגיליון '+sh.Fo
                       +' פאות, כאן '+FO+'.');
+    // OLD -> TRANSFORM -> VALIDATE -> COMMIT, exactly as in the editor: the transfer is
+    // rehearsed on a copy and checked per face before a single mark is installed.
+    const MAP=amRemap(sh);
+    if(!MAP.ok) throw new Error('אי אפשר לטעון את הסימונים: '+MAP.why+'\nהעבודה לא שונתה.');
+    if(MAP.same && sh.Nsub!==N)
+      throw new Error('הגיליון מצהיר על פריסה זהה אך על '+sh.Nsub+' תת-פאות במקום '+N+'.');
+    if(!MAP.same){
+      for(const src of (sh.types&&sh.types.length?sh.types:[sh])){
+        const tmp=new Int8Array(N);
+        for(const pr of (src.manual||[])) amEach(MAP,pr[0],t=>{tmp[t]=pr[1];});
+        const bad=amFirstGap(amFracOld(src.manual||[],MAP), amFracNew(tmp));
+        if(bad>=0) throw new Error('בדיקת השלמות נכשלה בהעברת הסימונים (פאה '+bad+').\n'+
+                                   'הפעולה בוטלה והעבודה לא שונתה.');
+      }
+    }
     for(const L of [...lines]) delLine(L);
     for(const m of [...xmarks]) delX(m);
     lenTypes.length=0; activeL=-1;
@@ -1174,9 +1246,9 @@ mat.onBeforeCompile=sh=>{
       if(src.color){T.hex=src.color;T.color=hex2rgb(src.color);}
       if(typeof src.thr==='number')T.thr=src.thr;
       if(typeof src.op==='number')T.op=src.op;
-      for(const [f,v] of (src.manual||[])) if(f<N) T.manual[f]=v;
+      for(const pr of (src.manual||[])) amEach(MAP,pr[0],t=>{T.manual[t]=pr[1];});
       if((src.faceThr||[]).length){T.faceThr=new Float32Array(N).fill(NaN);
-        for(const [f,v] of src.faceThr) if(f<N) T.faceThr[f]=v;}
+        for(const pr of src.faceThr) amEach(MAP,pr[0],t=>{T.faceThr[t]=pr[1];});}
       if(src.hasProb&&src.prob&&src.prob.length===FO){
         if(!T.prob||(T.prob===prob&&T!==types[0]))T.prob=new Float32Array(N);
         for(let fo=0;fo<FO;fo++) for(let t=OFF[fo];t<OFF[fo+1];t++) T.prob[t]=src.prob[fo];
