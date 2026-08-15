@@ -616,7 +616,6 @@ mat.onBeforeCompile=sh=>{
     const hit=castAt(e); if(!hit.length)return;
     const seed=hit[0].faceIndex; if(seed==null)return;
     const seedVal=lum[FACEOF[seed]];
-    if(roiCount>0&&!roi[seed])return;
     const visited=new Uint8Array(N); const q=[seed]; visited[seed]=1;
     let head=0,added=0; const CAP=80000;
     const M=types[activeT].manual;
@@ -632,7 +631,6 @@ mat.onBeforeCompile=sh=>{
         for(let n=0;n<a.length;n++){const g2=a[n]; if(visited[g2])continue;
           const dx=cen[g2*3]-cx,dy=cen[g2*3+1]-cy,dz=cen[g2*3+2]-cz;
           if(dx*dx+dy*dy+dz*dz>RG2)continue;
-          if(roiCount>0&&!roi[g2]){visited[g2]=1;continue;}
           const ok=Math.abs(lum[FACEOF[g2]]-seedVal)<=growTol;
           visited[g2]=1; if(ok)q.push(g2);
         }}
@@ -653,7 +651,6 @@ mat.onBeforeCompile=sh=>{
       for(let n=0;n<a.length;n++){const f=a[n];
         const dx=cen[f*3]-p.x,dy=cen[f*3+1]-p.y,dz=cen[f*3+2]-p.z;
         if(dx*dx+dy*dy+dz*dz<=r2){
-          if(roiCount>0&&!roi[f])continue;                // locked outside the orange zone
           const M=types[activeT].manual;
           if(M[f]!==val){recH(activeT,f);M[f]=val;recolorFace(f);ch=true;}
         }}}
