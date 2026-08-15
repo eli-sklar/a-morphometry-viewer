@@ -989,9 +989,14 @@ mat.onBeforeCompile=sh=>{
   }
   function getSheet(){
     const t0=typeState(types[0]);
-    const rf=[];for(let fo=0;fo<FO;fo++)if(roi[OFF[fo]])rf.push(fo);
+    // הזהה לעורך במילה: התחום שנוסע חזרה נגזר — מה שנצבע, בתוספת כל פאה
+    // שיש עליה סימון שטח; נסוג עם מחיקת הסימון, ואינו נשמר כצבע (החלטה 84)
+    const rp=[];for(let fo=0;fo<FO;fo++)if(roi[OFF[fo]])rp.push(fo);
+    const mkf=new Uint8Array(FO);
+    for(const T of types){const M=T.manual; for(let s2=0;s2<N;s2++) if(M[s2]===1) mkf[FACEOF[s2]]=1;}
+    const rf=[];for(let fo=0;fo<FO;fo++)if(roi[OFF[fo]]||mkf[fo])rf.push(fo);
     const o={_sheet:1,sheetVersion:3,Fo:FO,Nsub:N,subdiv:SUBK,cnt:CNT?b64u8(CNT):null,
-      globalThreshold:types[0].thr,faceThr:t0.faceThr,manual:t0.manual,roiFaces:rf,
+      globalThreshold:types[0].thr,faceThr:t0.faceThr,manual:t0.manual,roiFaces:rf,roiPainted:rp,
       hasProb:t0.hasProb,prob:t0.prob,
       types:types.map(typeState),
       lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex,op:(typeof T.op==='number')?T.op:1})),
@@ -1162,7 +1167,7 @@ mat.onBeforeCompile=sh=>{
     const T0=types[0]; T0.manual.fill(0); T0.faceThr=null; T0.prob=prob; T0.hasProb=false;
     T0.name='תיקון'; T0.hex='#4dff4d'; T0.color=hex2rgb(T0.hex);
     roi.fill(0);roiCount=0;
-    for(const fo of (sh.roiFaces||[])) if(fo<FO)
+    for(const fo of (sh.roiPainted||sh.roiFaces||[])) if(fo<FO)
       for(let t=OFF[fo];t<OFF[fo+1];t++){ if(!roi[t]){roi[t]=1;roiCount++;} }
     const loadT=(T,src)=>{
       if(src.name!==undefined)T.name=src.name;
