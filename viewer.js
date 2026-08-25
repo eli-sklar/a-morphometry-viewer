@@ -63,6 +63,14 @@ function readOps(){
 const $=id=>document.getElementById(id);
 const cv=$('cv');
 const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
+  // a lost GL context is HEARD, not a silent white canvas (field report 25/08);
+  // boot restores the embedded sheet and the op-log, so a reload loses nothing
+  renderer.domElement.addEventListener('webglcontextlost',ev=>{
+    ev.preventDefault();
+    alert('התצוגה הגרפית אופסה על ידי מערכת ההפעלה (עומס על כרטיס המסך).\n'
+         +'העבודה שמורה. העמוד ייטען מחדש וישחזר אותה.');
+    location.reload();
+  });
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 const scene=new THREE.Scene();
 scene.background=new THREE.Color(0x15171a);   // dark working background, as on the
@@ -379,6 +387,23 @@ mat.onBeforeCompile=sh=>{
     for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;dess[f*3+c]=d;}
   }
   function recolorAll(){for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();}
+  // Design-only repaint (decision 93) — same words as the editor: the wheel touches
+  // only aDes, and a full recolour per drag tick killed the GL context on a 168k-face
+  // building. One attribute pass, coalesced to a frame.
+  let _desReq=false;
+  function amDessOnly(){
+    _desReq=false;
+    for(let f=0;f<N;f++){
+      _vis.length=0;
+      for(let ti=0;ti<types.length;ti++) if(types[ti].op>0 && isType(ti,f)) _vis.push(ti);
+      if(!_vis.length) continue;
+      const T=types[_vis[f%_vis.length]];
+      const d=(typeof T.design==='number')?T.design:0.6;
+      dess[f*3]=d;dess[f*3+1]=d;dess[f*3+2]=d;
+    }
+    desAttr.needsUpdate=true;
+  }
+  function amDessSoon(){ if(_desReq) return; _desReq=true; requestAnimationFrame(amDessOnly); }
   function updateArea(){
     for(let ti=0;ti<types.length;ti++){const T=types[ti];let a=0;
       for(let f=0;f<N;f++)if(isType(ti,f))a+=area[f];
@@ -1098,7 +1123,7 @@ mat.onBeforeCompile=sh=>{
     $('designV').textContent=e.target.value+'%';
     if(activeKind==='cnt'){const T=cntTypes[activeC];if(T){T.design=v;T.designU.value=v;}}
     else if(activeKind==='len'){const T=lenTypes[activeL];if(T){T.design=v;if(!T.designU)T.designU={value:v};T.designU.value=v;}}
-    else if(activeKind==='area'){const T=types[activeT];if(T){T.design=v;recolorAll();}}
+    else if(activeKind==='area'){const T=types[activeT];if(T){T.design=v;amDessSoon();}}
     // this viewer renders on a continuous tick, so nothing has to be poked to redraw
   };
   function syncKindUI(){amSyncDesign();const other=activeKind!=='area';
@@ -1313,7 +1338,9 @@ mat.onBeforeCompile=sh=>{
     const lastV={}; const lns=[];
     ops.forEach(o=>{
       if(o.ln){lns.push(o.ln);return;}
-      const key=(o.c||'#4dff4d')+' '+(o.n||'')+' '+o.s;
+      const key=(o.c||'#4dff4d')+'
+'+(o.n||'')+'
+'+o.s;
       lastV[key]=o;});
     const marks=Object.values(lastV).filter(o=>o.v!==0);
     if(!marks.length&&!lns.length)return;
