@@ -997,6 +997,10 @@ mat.onBeforeCompile=sh=>{
     setTimeout(()=>{ab.textContent=old;},2500);
   }
 
+  // קרומי נפח (החלטות 114+120): גאומטריה מפורשת החיה בגיליון בלבד.
+  // הצפיין אינו יוצר אותם ואינו מציג אותם עדיין — הוא מחזיר אותם כמות שהם,
+  // כדי שמסלול האייפד לא ירוקן גיליון שיש בו קרומים.
+  let MEMBRANES=[];
   /* ---- sheet export: field-for-field the desktop getSheet(withDerived=true) --- */
   function typeState(T){
     const m=[],ov=[];
@@ -1031,6 +1035,7 @@ mat.onBeforeCompile=sh=>{
       lengths:lines.map(L=>({t:L.t,fit:L.fit||undefined,len:Math.round(L.len*1000)/1000,
         w:Math.round((L.w||0.008)*1000)/1000,
         pts:L.pts.map(v=>Math.round(v*1000)/1000)})),
+      membranes:MEMBRANES,
       saved:new Date().toISOString(),
       jobId:AM.jobId,exportedBy:'A-morphometry iPad'};
     const rep=[];let un=0;
@@ -1274,6 +1279,7 @@ mat.onBeforeCompile=sh=>{
                                    'הפעולה בוטלה והעבודה לא שונתה.');
       }
     }
+    MEMBRANES = Array.isArray(sh.membranes) ? sh.membranes : [];
     for(const L of [...lines]) delLine(L);
     for(const m of [...xmarks]) delX(m);
     lenTypes.length=0; activeL=-1;
