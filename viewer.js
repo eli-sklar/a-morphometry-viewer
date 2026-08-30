@@ -1035,7 +1035,7 @@ mat.onBeforeCompile=sh=>{
       lengths:lines.map(L=>({t:L.t,fit:L.fit||undefined,len:Math.round(L.len*1000)/1000,
         w:Math.round((L.w||0.008)*1000)/1000,
         pts:L.pts.map(v=>Math.round(v*1000)/1000)})),
-      membranes:MEMBRANES,
+      membranes:MEMBRANES, minReader:(MEMBRANES.length?2:1),
       saved:new Date().toISOString(),
       jobId:AM.jobId,exportedBy:'A-morphometry iPad'};
     const rep=[];let un=0;
@@ -1207,6 +1207,7 @@ mat.onBeforeCompile=sh=>{
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
+  const AM_SHEET_READER = 2;   // 1 = marks only; 2 = membranes (Fo counts the union)
   const AM_SUB_SCHEME = 1;      // core.subdiv_weights, face-major child order
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -1260,6 +1261,9 @@ mat.onBeforeCompile=sh=>{
     return -1;
   }
   function applySheet(sh){
+    const _need=(sh&&typeof sh.minReader==='number')?sh.minReader:1;
+    if(_need>AM_SHEET_READER)
+      throw new Error('\u05d4\u05d2\u05d9\u05dc\u05d9\u05d5\u05df \u05e0\u05db\u05ea\u05d1 \u05d1\u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d9\u05d5\u05ea\u05e8 \u05e9\u05dc \u05d4\u05ea\u05d5\u05db\u05e0\u05d4. \u05e2\u05d3\u05db\u05df \u05d0\u05ea \u05d4\u05e6\u05e4\u05d9\u05d9\u05df.');
     if(!sh||!(sh._sheet||sh._work)) throw new Error('הקובץ אינו גיליון של התוכנה.');
     if(sh.Fo!==FO)
       throw new Error('הגיליון אינו תואם לעבודה הפתוחה — בגיליון '+sh.Fo
