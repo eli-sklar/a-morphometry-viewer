@@ -1001,6 +1001,11 @@ mat.onBeforeCompile=sh=>{
   // הצפיין אינו יוצר אותם ואינו מציג אותם עדיין — הוא מחזיר אותם כמות שהם,
   // כדי שמסלול האייפד לא ירוקן גיליון שיש בו קרומים.
   let MEMBRANES=[];
+  // Carried, not used: the iPad does not draw volumes, but the sheet passes
+  // through here and a field this file does not carry comes back empty.
+  // volLayers holds each volume layer's name, colour and closure method
+  // (decision 142); dropping it would leave records pointing at nothing.
+  let VOL_LAYERS=[];
   /* ---- sheet export: field-for-field the desktop getSheet(withDerived=true) --- */
   function typeState(T){
     const m=[],ov=[];
@@ -1035,7 +1040,8 @@ mat.onBeforeCompile=sh=>{
       lengths:lines.map(L=>({t:L.t,fit:L.fit||undefined,len:Math.round(L.len*1000)/1000,
         w:Math.round((L.w||0.008)*1000)/1000,
         pts:L.pts.map(v=>Math.round(v*1000)/1000)})),
-      membranes:MEMBRANES, minReader:(MEMBRANES.length?2:1),
+      membranes:MEMBRANES, volLayers:VOL_LAYERS,
+      minReader:(MEMBRANES.length?2:1),
       saved:new Date().toISOString(),
       jobId:AM.jobId,exportedBy:'A-morphometry iPad'};
     const rep=[];let un=0;
@@ -1284,6 +1290,7 @@ mat.onBeforeCompile=sh=>{
       }
     }
     MEMBRANES = Array.isArray(sh.membranes) ? sh.membranes : [];
+    VOL_LAYERS = Array.isArray(sh.volLayers) ? sh.volLayers : [];
     for(const L of [...lines]) delLine(L);
     for(const m of [...xmarks]) delX(m);
     lenTypes.length=0; activeL=-1;
