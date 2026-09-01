@@ -1355,9 +1355,7 @@ mat.onBeforeCompile=sh=>{
     const lastV={}; const lns=[];
     ops.forEach(o=>{
       if(o.ln){lns.push(o.ln);return;}
-      const key=(o.c||'#4dff4d')+'
-'+(o.n||'')+'
-'+o.s;
+      const key=(o.c||'#4dff4d')+'\n'+(o.n||'')+'\n'+o.s;
       lastV[key]=o;});
     const marks=Object.values(lastV).filter(o=>o.v!==0);
     if(!marks.length&&!lns.length)return;
