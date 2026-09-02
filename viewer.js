@@ -212,6 +212,16 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   const dess=new Float32Array(N*3).fill(0.6);
   const desAttr=new THREE.BufferAttribute(dess,1);
   geo.setAttribute('aDes',desAttr);
+  // ---- which sub-faces are reconstructed surface (decision 166) ------------------
+  // Membrane faces are appended LAST by membrane_union and sub-faces are counted in
+  // face order, so the patch is a contiguous tail: one index describes all of it,
+  // and no sub-face-to-face map is needed (the read-only viewer has none). Absent
+  // the field there is no patch, the flag stays 0 everywhere, and every pixel is
+  // what it was.
+  const PATCH0=(typeof am.patch0==='number')?am.patch0:N;
+  const patchf=new Float32Array(N*3);
+  for(let i=PATCH0*3;i<N*3;i++) patchf[i]=1;
+  geo.setAttribute('aPatch',new THREE.BufferAttribute(patchf,1));
   geo.computeBoundingSphere();
   // flat-mix marking (user round 11/08): aFlat=1 paints pure colour OVER the texture
   const mat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});    // ---- the marking's look (decision 75: the stipple, option 6) --------------------------
@@ -231,6 +241,23 @@ vec3 amStipple(vec3 wall, vec3 col, float a, float lvl){
   float t=amBayer(floor(gl_FragCoord.xy/3.0));
   vec3 dots=(a>t)?col:wall;
   return mix(flatC,dots,lvl);
+}
+// ---- the closure patch is shaded; the photograph is not (decision 166) ----
+// No lights: the scan carries a PHOTOGRAPH that already holds the real lighting
+// of the place, and lighting it would multiply that. Only the reconstructed
+// patch is shaded, and its flat normal comes from screen derivatives of the
+// position — the mechanism this viewer already uses in its no-texture mode.
+// The coefficients are MEASURED against the training screen's real
+// MeshLambertMaterial (Amb 0.60 + Dir 0.55), fitted in linear space, and
+// normalised so the brightest face is exactly 1.0: a patch is never brighter
+// than its own colour, only shaded away from the light. Ratio 1.91, training's.
+vec3 amPatchShade(vec3 wall, float isPatch, vec3 p){
+  if(isPatch<0.5) return wall;
+  vec3 c=cross(dFdx(p),dFdy(p));
+  float l=length(c);
+  if(l<1e-12) return wall;          // a degenerate face keeps its colour, not a NaN
+  float d=abs(dot(c/l,vec3(0.426790,0.853580,0.298753)));
+  return wall*(0.5234+0.4766*d);
 }
 `;
 
@@ -342,11 +369,11 @@ vec3 amStipple(vec3 wall, vec3 col, float a, float lvl){
 mat.onBeforeCompile=sh=>{
     sh.uniforms.amDesign=amDesignU;
     sh.vertexShader=sh.vertexShader
-      .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;attribute float aDes;varying vec3 vACol;varying float vAFlat;varying float vADes;varying vec3 vAPos;')
-      .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vADes=aDes;vAPos=transformed;');
+      .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;attribute float aDes;attribute float aPatch;varying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;')
+      .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vADes=aDes;vAPatch=aPatch;vAPos=transformed;');
     sh.fragmentShader=sh.fragmentShader
-      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying vec3 vAPos;uniform float amDesign;'+AM_SHADER_FN)
-      .replace('#include <opaque_fragment>','outgoingLight=amStipple(outgoingLight,vACol,vAFlat,vADes);\n#include <opaque_fragment>');
+      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;uniform float amDesign;'+AM_SHADER_FN)
+      .replace('#include <opaque_fragment>','outgoingLight=amStipple(amPatchShade(outgoingLight,vAPatch,vAPos),vACol,vAFlat,vADes);\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
 
