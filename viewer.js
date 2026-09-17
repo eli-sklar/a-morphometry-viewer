@@ -78,7 +78,7 @@ scene.background=new THREE.Color(0x15171a);   // dark working background, as on 
 const camera=new THREE.PerspectiveCamera(50,innerWidth/Math.max(1,innerHeight),0.01,1000);
 function resize(){renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/Math.max(1,innerHeight);camera.updateProjectionMatrix();}
 addEventListener('resize',resize); resize();
-(function tick(){requestAnimationFrame(tick);renderer.render(scene,camera);})();
+(function tick(){requestAnimationFrame(tick);if(window.amRescaleFixed)window.amRescaleFixed();renderer.render(scene,camera);})();
 
 $('openBtn').onclick=()=>$('file').click();
 $('mImport').onclick=()=>$('file').click();     // slice 2 (decision 42): the reverse button
@@ -447,6 +447,354 @@ mat.onBeforeCompile=sh=>{
   const lines=[]; let curLine=null; const MIN_SEG=0.002;
   let lineW=0.008;                     // tube radius; brush slider drives it in len kind
   function mkLenType(name,hex){const T={design:0.0,designU:{value:0.0},id:'l'+(lSeq++),name:name,hex:hex,op:1.0};lenTypes.push(T);return T;}
+  /* ---- the ruler (decision 251), and it is the EDITOR'S code, character for character.
+     The two environments already learned this lesson with the shader: three copies of one
+     shader must stay one shader, and S21 holds them to it. The ruler is the same kind of
+     thing — a measurement whose definition may not differ between the desk and the iPad —
+     so the core below is copied verbatim and a gate compares the two texts.
+     The environment differences are kept OUT of the shared text, in these two shims. */
+  function invalidate(){}                    // the iPad draws every frame already
+  function markDirty(){ if(window.amMarkDirty) window.amMarkDirty(); }
+  const rulTypes=[]; let activeR=-1, rSeq=0, rpSeq=0;
+  const rulPts=[];                 // {id, t, x, y, z}
+  const rulSegs=[];                // {t, a, b}  — ids, undirected
+  let rulLast=null;
+  function mkRulType(name,hex){const T={id:'r'+(rSeq++),name:name,hex:hex,op:1.0};
+    rulTypes.push(T);return T;}
+  const SCREEN_FIXED=[];
+  const RUL_PT_K=0.006, RUL_LAB_K=0.040;
+  const rulGroup=new THREE.Group(); scene.add(rulGroup);
+  function rulPtById(id){for(const q of rulPts) if(q.id===id) return q; return null;}
+  function rulRuns(tid){
+    const idx=new Map(), pts=[];
+    for(const q of rulPts) if(q.t===tid){ idx.set(q.id,pts.length); pts.push(q); }
+    const par=pts.map((_,i)=>i);
+    const find=i=>{while(par[i]!==i){par[i]=par[par[i]];i=par[i];}return i;};
+    const segs=[];
+    for(const g of rulSegs){
+      if(g.t!==tid) continue;
+      const a=idx.get(g.a), b=idx.get(g.b);
+      if(a===undefined||b===undefined) continue;
+      segs.push([a,b]); const ra=find(a), rb=find(b); if(ra!==rb) par[ra]=rb;
+    }
+    const byRoot=new Map();
+    for(let i=0;i<pts.length;i++){
+      const r=find(i);
+      if(!byRoot.has(r)) byRoot.set(r,{pts:[],len:0});
+      byRoot.get(r).pts.push(pts[i]);
+    }
+    for(const [a,b] of segs){
+      const g=byRoot.get(find(a)); const A=pts[a], B=pts[b];
+      g.len+=Math.hypot(A.x-B.x,A.y-B.y,A.z-B.z);
+    }
+    // numbered in a stable order — by the lowest point id in each run, so a run keeps its
+    // number as others are added or removed. A number that moves is a number in a report.
+    const runs=[...byRoot.values()];
+    for(const g of runs) g.first=Math.min(...g.pts.map(q=>q.id));
+    runs.sort((x,y)=>x.first-y.first);
+    runs.forEach((g,i)=>{ g.n=i+1;
+      let cx=0,cy=0,cz=0; for(const q of g.pts){cx+=q.x;cy+=q.y;cz+=q.z;}
+      g.c={x:cx/g.pts.length,y:cy/g.pts.length,z:cz/g.pts.length}; });
+    return runs;
+  }
+  function rulTag(txt,hex){
+    const c=document.createElement('canvas'); const pad=24;
+    const tmp=c.getContext('2d'); tmp.font='bold 54px system-ui, Arial, sans-serif';
+    const w=Math.ceil(tmp.measureText(txt).width)+pad*2;
+    c.width=w; c.height=108;
+    const x=c.getContext('2d');
+    x.fillStyle='rgba(20,18,16,0.92)'; x.strokeStyle=hex||'#b8934a'; x.lineWidth=6;
+    const rr=18; x.beginPath();
+    x.moveTo(rr,3); x.arcTo(w-3,3,w-3,105,rr); x.arcTo(w-3,105,3,105,rr);
+    x.arcTo(3,105,3,3,rr); x.arcTo(3,3,w-3,3,rr); x.closePath(); x.fill(); x.stroke();
+    x.font='bold 54px system-ui, Arial, sans-serif'; x.fillStyle='#f0e6d2';
+    x.textAlign='center'; x.textBaseline='middle'; x.fillText(txt,w/2,58);
+    const t=new THREE.CanvasTexture(c); t.anisotropy=4;
+    const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:t,transparent:true,
+                                                        depthTest:false,depthWrite:false}));
+    sp.userData.aspect=w/108;                 // so the tag never comes out squashed
+    sp.renderOrder=1000; return sp;
+  }
+  function rulRebuild(){
+    for(let i=rulGroup.children.length-1;i>=0;i--){
+      const o=rulGroup.children[i]; forgetOnScreen(o); rulGroup.remove(o);
+      if(o.geometry)o.geometry.dispose();
+      if(o.material){if(o.material.map)o.material.map.dispose();o.material.dispose();}
+    }
+    for(const T of rulTypes){
+      const col=new THREE.Color(T.hex||'#b8934a');
+      for(const q of rulPts){
+        if(q.t!==T.id) continue;
+        const m=new THREE.Mesh(new THREE.SphereGeometry(1,14,10),
+          new THREE.MeshBasicMaterial({color:col,depthTest:false}));
+        m.position.set(q.x,q.y,q.z); m.renderOrder=999;
+        rulGroup.add(m); keepOnScreen(m,RUL_PT_K);
+      }
+      for(const g of rulSegs){
+        if(g.t!==T.id) continue;
+        const A=rulPtById(g.a), B=rulPtById(g.b); if(!A||!B) continue;
+        const gm=new THREE.BufferGeometry().setFromPoints(
+          [new THREE.Vector3(A.x,A.y,A.z),new THREE.Vector3(B.x,B.y,B.z)]);
+        const ln=new THREE.Line(gm,new THREE.LineBasicMaterial({color:col,depthTest:false}));
+        ln.renderOrder=999; rulGroup.add(ln);
+      }
+      // one tag per run, at its centroid: "3 : 4.67 מ'" — the number and the sum, which is
+      // what the report prints too, so the model and the table cannot disagree
+      for(const run of rulRuns(T.id)){
+        const sp=rulTag(run.n+' : '+run.len.toFixed(2)+' מ\u05f3', T.hex);
+        sp.position.set(run.c.x,run.c.y,run.c.z);
+        rulGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
+      }
+    }
+    rescaleFixed(); invalidate();
+  }
+  function rulPointAt(e){
+    const r=el.getBoundingClientRect(), px=e.clientX-r.left, py=e.clientY-r.top;
+    const hw=r.width/2, hh=r.height/2, v=new THREE.Vector3();
+    let best=null, bd=14;                       // pixels; the same feel as the hole picking
+    for(const q of rulPts){
+      if(activeR>=0 && q.t!==rulTypes[activeR].id) continue;
+      v.set(q.x,q.y,q.z).project(camera);
+      if(v.z<-1||v.z>1) continue;
+      const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
+      if(d<bd){bd=d;best=q;}
+    }
+    return best;
+  }
+  function rulAt(e){
+    if(activeR<0) return;
+    const tid=rulTypes[activeR].id;
+    const hitPt=rulPointAt(e);
+    if(hitPt){                                   // continue from a point already placed
+      if(rulLast!==null && rulLast!==hitPt.id) rulSegs.push({t:tid,a:rulLast,b:hitPt.id});
+      rulLast=hitPt.id; rulRebuild(); return;
+    }
+    const r=el.getBoundingClientRect();
+    const ndc=new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,
+                                -((e.clientY-r.top)/r.height)*2+1);
+    ray.setFromCamera(ndc,camera);
+    const hit=ray.intersectObject(mesh,false);
+    if(!hit.length){ rulEnd(); return; }         // a click in the air closes the chain
+    const q={id:++rpSeq,t:tid,x:hit[0].point.x,y:hit[0].point.y,z:hit[0].point.z};
+    rulPts.push(q);
+    if(rulLast!==null) rulSegs.push({t:tid,a:rulLast,b:q.id});
+    rulLast=q.id; rulRebuild();
+  }
+  function rulEnd(){ if(rulLast!==null){ rulLast=null; invalidate(); } }
+  function rulAsk(run,onRun,onPoint){
+    const wrap=document.createElement('div');
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:80;'
+      +'display:flex;align-items:center;justify-content:center;direction:rtl';
+    const box=document.createElement('div');
+    box.style.cssText='background:#141210;border:2px solid #6b5a33;border-radius:2px;'
+      +'padding:22px 26px;color:#d8cdb8;font:15px system-ui,Arial,sans-serif;max-width:420px;'
+      +'box-shadow:inset 0 0 0 3px #141210, inset 0 0 0 4px rgba(184,147,74,.45)';
+    const q=document.createElement('div');
+    q.style.cssText='margin-bottom:16px;line-height:1.7';
+    q.textContent='הנקודה שייכת לרצף '+run.n+' — '+run.pts.length+' נקודות, '
+      +run.len.toFixed(2)+' מ\u05f3. מה למחוק?';
+    const row=document.createElement('div');
+    row.style.cssText='display:flex;gap:8px;justify-content:flex-start';
+    const mk=(txt,fn,primary)=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.style.cssText='background:'+(primary?'#b8934a':'#232019')+';color:'
+        +(primary?'#161310':'#d8cdb8')+';border:1px solid #6b5a33;border-radius:2px;'
+        +'padding:8px 14px;font-size:14px;cursor:pointer';
+      b.onclick=()=>{close();fn&&fn();};
+      return b;};
+    function close(){window.removeEventListener('keydown',esc,true);wrap.remove();}
+    function esc(e){if((e.key||'')==='Escape'){e.preventDefault();e.stopPropagation();close();}}
+    window.addEventListener('keydown',esc,true);
+    wrap.onclick=e=>{if(e.target===wrap)close();};      // clicking away backs out too
+    row.appendChild(mk('הנקודה בלבד',onPoint,true));
+    row.appendChild(mk('הרצף כולו',onRun,false));
+    row.appendChild(mk('ביטול',null,false));
+    box.appendChild(q);box.appendChild(row);wrap.appendChild(box);
+    document.body.appendChild(wrap);
+  }
+  function rulDropPoints(ids){
+    const kill=new Set(ids);
+    for(let k=rulPts.length-1;k>=0;k--) if(kill.has(rulPts[k].id)) rulPts.splice(k,1);
+    for(let k=rulSegs.length-1;k>=0;k--)
+      if(kill.has(rulSegs[k].a)||kill.has(rulSegs[k].b)) rulSegs.splice(k,1);
+    if(rulLast!==null&&kill.has(rulLast)) rulLast=null;
+    rulRebuild(); markDirty();
+  }
+  function rulEraseAt(e){
+    const q=rulPointAt(e); if(!q) return;
+    const run=rulRuns(q.t).find(g=>g.pts.some(x=>x.id===q.id));
+    if(!run){ rulDropPoints([q.id]); return; }
+    // a run of one point has nothing to ask about — both answers are the same deletion
+    if(run.pts.length<=1){ rulDropPoints([q.id]); return; }
+    rulAsk(run,
+           ()=>rulDropPoints(run.pts.map(x=>x.id)),
+           ()=>rulDropPoints([q.id]));
+  }
+  function keepOnScreen(obj,k){SCREEN_FIXED.push({obj:obj,k:k});return obj;}
+  function forgetOnScreen(obj){for(let i=SCREEN_FIXED.length-1;i>=0;i--)
+    if(SCREEN_FIXED[i].obj===obj) SCREEN_FIXED.splice(i,1);}
+  function rescaleFixed(){
+    for(const f of SCREEN_FIXED){
+      if(!f.obj.parent) continue;
+      const d=camera.position.distanceTo(f.obj.position);
+      const s=Math.max(1e-6,d*f.k);
+      if(f.obj.isSprite) f.obj.scale.set(s*f.obj.userData.aspect||s*2.6,s,1);
+      else f.obj.scale.setScalar(s);
+    }
+  }
+  /* ---- polygon area (decision 253), the EDITOR'S code, character for character.
+     Same discipline as the ruler above and for the same reason: an area whose definition
+     differs between the desk and the iPad is two areas. S21 compares the two texts. */
+  const polys=[]; let curPoly=null, pSeq=0;
+  const polyGroup=new THREE.Group(); scene.add(polyGroup);
+  function polyPlane(P){                      // P: [[x,y,z],...]
+    let cx=0,cy=0,cz=0; for(const q of P){cx+=q[0];cy+=q[1];cz+=q[2];}
+    const n=P.length; cx/=n;cy/=n;cz/=n;
+    // Newell's normal: stable on a ring that is not flat, unlike a cross product of two edges
+    let nx=0,ny=0,nz=0;
+    for(let i=0;i<n;i++){
+      const a=P[i], b=P[(i+1)%n];
+      nx+=(a[1]-b[1])*(a[2]+b[2]); ny+=(a[2]-b[2])*(a[0]+b[0]); nz+=(a[0]-b[0])*(a[1]+b[1]);
+    }
+    let l=Math.hypot(nx,ny,nz);
+    if(l<1e-12){nx=0;ny=0;nz=1;l=1;}
+    nx/=l;ny/=l;nz/=l;
+    // any two axes orthogonal to the normal will do; picked off the smallest component so
+    // the cross product never collapses
+    let ax=Math.abs(nx)<Math.abs(ny)?(Math.abs(nx)<Math.abs(nz)?[1,0,0]:[0,0,1])
+                                    :(Math.abs(ny)<Math.abs(nz)?[0,1,0]:[0,0,1]);
+    let ux=ay(ax[1]*nz-ax[2]*ny), uy=ay(ax[2]*nx-ax[0]*nz), uz=ay(ax[0]*ny-ax[1]*nx);
+    let ul=Math.hypot(ux,uy,uz); ux/=ul;uy/=ul;uz/=ul;
+    const vx=ny*uz-nz*uy, vy=nz*ux-nx*uz, vz=nx*uy-ny*ux;
+    return {c:[cx,cy,cz], n:[nx,ny,nz], u:[ux,uy,uz], v:[vx,vy,vz]};
+  }
+  function ay(x){return x;}
+  function polyTriangles(P){
+    const n=P.length;
+    if(n<3) return [];
+    const B=polyPlane(P);
+    const uv=P.map(q=>{
+      const dx=q[0]-B.c[0], dy=q[1]-B.c[1], dz=q[2]-B.c[2];
+      return [dx*B.u[0]+dy*B.u[1]+dz*B.u[2], dx*B.v[0]+dy*B.v[1]+dz*B.v[2]];
+    });
+    let area2=0;
+    for(let i=0;i<n;i++){const a=uv[i], b=uv[(i+1)%n]; area2+=a[0]*b[1]-b[0]*a[1];}
+    const ccw=area2>0;
+    const idx=[...Array(n).keys()]; if(!ccw) idx.reverse();
+    const cross=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]);
+    const inside=(a,b,c,p)=>cross(a,b,p)>=0&&cross(b,c,p)>=0&&cross(c,a,p)>=0;
+    const tris=[]; let guard=0;
+    while(idx.length>3&&guard++<n*n+9){
+      let cut=false;
+      for(let k=0;k<idx.length;k++){
+        const i0=idx[(k+idx.length-1)%idx.length], i1=idx[k], i2=idx[(k+1)%idx.length];
+        const a=uv[i0], b=uv[i1], c=uv[i2];
+        if(cross(a,b,c)<=0) continue;                     // reflex: not an ear
+        let clear=true;
+        for(const j of idx){
+          if(j===i0||j===i1||j===i2) continue;
+          if(inside(a,b,c,uv[j])){clear=false;break;}
+        }
+        if(!clear) continue;
+        tris.push([i0,i1,i2]); idx.splice(k,1); cut=true; break;
+      }
+      if(!cut){ tris.push([idx[0],idx[1],idx[2]]); idx.splice(1,1); }   // degenerate ring
+    }
+    if(idx.length===3) tris.push([idx[0],idx[1],idx[2]]);
+    return tris;
+  }
+  function polyArea(P){
+    let s=0;
+    for(const [a,b,c] of polyTriangles(P)){
+      const A=P[a], B=P[b], C=P[c];
+      const ux=B[0]-A[0], uy=B[1]-A[1], uz=B[2]-A[2];
+      const vx=C[0]-A[0], vy=C[1]-A[1], vz=C[2]-A[2];
+      s+=0.5*Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx);
+    }
+    return s;
+  }
+  function polyRecompute(P){ P.area=polyArea(P.pts); }
+  function polyRebuild(){
+    for(let i=polyGroup.children.length-1;i>=0;i--){
+      const o=polyGroup.children[i]; forgetOnScreen(o); polyGroup.remove(o);
+      if(o.geometry)o.geometry.dispose();
+      if(o.material){if(o.material.map)o.material.map.dispose();o.material.dispose();}
+    }
+    const draw=(P,open)=>{
+      const T=types.find(t=>t.id===P.at)||types[0];
+      const col=new THREE.Color((T&&T.hex)||'#4dff4d');
+      for(const q of P.pts){
+        const m=new THREE.Mesh(new THREE.SphereGeometry(1,14,10),
+          new THREE.MeshBasicMaterial({color:col,depthTest:false}));
+        m.position.set(q[0],q[1],q[2]); m.renderOrder=999;
+        polyGroup.add(m); keepOnScreen(m,RUL_PT_K);
+      }
+      const n=P.pts.length;
+      for(let i=0;i+1<n||(!open&&i<n);i++){
+        const a=P.pts[i], b=P.pts[(i+1)%n];
+        const gm=new THREE.BufferGeometry().setFromPoints(
+          [new THREE.Vector3(a[0],a[1],a[2]),new THREE.Vector3(b[0],b[1],b[2])]);
+        const ln=new THREE.Line(gm,new THREE.LineBasicMaterial({color:col,depthTest:false}));
+        ln.renderOrder=999; polyGroup.add(ln);
+      }
+      if(open) return;
+      // the filled face, from the very triangles the area was measured on — so what is
+      // shaded and what is reported cannot be two different shapes
+      const tris=polyTriangles(P.pts), pos=[];
+      for(const [a,b,c] of tris)
+        for(const k of [a,b,c]) pos.push(P.pts[k][0],P.pts[k][1],P.pts[k][2]);
+      if(pos.length){
+        const gm=new THREE.BufferGeometry();
+        gm.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
+        const mm=new THREE.Mesh(gm,new THREE.MeshBasicMaterial({color:col,transparent:true,
+          opacity:0.35,side:THREE.DoubleSide,depthWrite:false}));
+        mm.renderOrder=998; polyGroup.add(mm);
+      }
+      let cx=0,cy=0,cz=0; for(const q of P.pts){cx+=q[0];cy+=q[1];cz+=q[2];}
+      const sp=rulTag(P.area.toFixed(2)+' מ\u05f2', '#'+col.getHexString());
+      sp.position.set(cx/n,cy/n,cz/n);
+      polyGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
+    };
+    for(const P of polys) draw(P,false);
+    if(curPoly&&curPoly.pts.length) draw(curPoly,true);
+    rescaleFixed(); invalidate();
+  }
+  function polyAt(e){
+    const r=el.getBoundingClientRect(), px=e.clientX-r.left, py=e.clientY-r.top;
+    if(curPoly&&curPoly.pts.length>=3){
+      const v=new THREE.Vector3(...curPoly.pts[0]).project(camera);
+      const d=Math.hypot((v.x+1)*(r.width/2)-px,(1-v.y)*(r.height/2)-py);
+      if(d<14){                                  // back on the first point: close it
+        const P={id:++pSeq,at:(types[activeT]||types[0]).id,pts:curPoly.pts.slice(),area:0};
+        polyRecompute(P); polys.push(P); curPoly=null; polyRebuild(); markDirty(); return;
+      }
+    }
+    const ndc=new THREE.Vector2((px/r.width)*2-1,-(py/r.height)*2+1);
+    ray.setFromCamera(ndc,camera);
+    const hit=ray.intersectObject(mesh,false);
+    if(!hit.length) return;
+    if(!curPoly) curPoly={at:(types[activeT]||types[0]).id,pts:[],area:0};
+    curPoly.pts.push([hit[0].point.x,hit[0].point.y,hit[0].point.z]);
+    polyRebuild();
+  }
+  function polyCancel(){ if(curPoly){ curPoly=null; polyRebuild(); } }
+  function polyEraseAt(e){
+    const r=el.getBoundingClientRect(), px=e.clientX-r.left, py=e.clientY-r.top;
+    const hw=r.width/2, hh=r.height/2, v=new THREE.Vector3();
+    let best=-1, bd=14;
+    for(let i=0;i<polys.length;i++){
+      for(const q of polys[i].pts){
+        v.set(q[0],q[1],q[2]).project(camera);
+        if(v.z<-1||v.z>1) continue;
+        const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
+        if(d<bd){bd=d;best=i;}
+      }
+    }
+    if(best<0) return;
+    polys.splice(best,1); polyRebuild(); markDirty();
+  }
+  window.amRescaleFixed=rescaleFixed;   // the tick loop lives outside this closure
   function applyLenOp(T){for(const L of lines)if(L.t===T.id&&L.obj){L.obj.material.transparent=T.op<1;L.obj.material.opacity=T.op;L.obj.material.needsUpdate=true;}}
   function lineObj(L){
     const _src=(L.fit&&L.fit.stations)||L.pts;
@@ -606,6 +954,10 @@ mat.onBeforeCompile=sh=>{
     if(e.pointerType==='touch'){dragging='rot';}
     else if(mode==='nav'){dragging='rot';}
     else if(mode==='grow'){growAt(e);dragging=null;}
+    else if(activeKind==='area'&&mode==='poly'){polyAt(e);dragging=null;}
+    else if(activeKind==='area'&&mode==='polyrem'){polyEraseAt(e);dragging=null;}
+    else if(activeKind==='rul'&&mode==='add'){rulAt(e);dragging=null;}
+    else if(activeKind==='rul'&&mode==='rem'){rulEraseAt(e);dragging=null;}
     else if(activeKind==='len'&&mode==='add'){dragging='line';curLine=null;lineAt(e);}
     else if(activeKind==='len'&&mode==='rem'){dragging='lerase';lineEraseAt(e);}
     else if(activeKind==='cnt'&&mode==='add'){placeXAt(e);dragging=null;}
@@ -1053,7 +1405,9 @@ mat.onBeforeCompile=sh=>{
     const mkf=new Uint8Array(FO);
     for(const T of types){const M=T.manual; for(let s2=0;s2<N;s2++) if(M[s2]===1) mkf[FACEOF[s2]]=1;}
     const rf=[];for(let fo=0;fo<FO;fo++)if(roi[OFF[fo]]||mkf[fo])rf.push(fo);
-    const o={_sheet:1,sheetVersion:3,Fo:FO,Nsub:N,subdiv:SUBK,cnt:CNT?b64u8(CNT):null,
+    // 4 only when a ruler is actually there; a work without one still writes 3 and
+    // still opens in every reader that came before the tool (251)
+    const o={_sheet:1,sheetVersion:((rulPts.length||polys.length)?4:3),Fo:FO,Nsub:N,subdiv:SUBK,cnt:CNT?b64u8(CNT):null,
       globalThreshold:types[0].thr,faceThr:t0.faceThr,manual:t0.manual,roiFaces:rf,roiPainted:rp,
       subScheme:AM_SUB_SCHEME,
       hasProb:t0.hasProb,prob:t0.prob,
@@ -1068,7 +1422,21 @@ mat.onBeforeCompile=sh=>{
         w:Math.round((L.w||0.008)*1000)/1000,
         pts:L.pts.map(v=>Math.round(v*1000)/1000)})),
       membranes:MEMBRANES, volLayers:VOL_LAYERS,
-      minReader:(MEMBRANES.length?2:1),
+      polygons:polys.map(P=>({id:P.id,at:P.at,
+        area:Math.round(P.area*10000)/10000,
+        pts:P.pts.map(q=>[Math.round(q[0]*1000)/1000,
+                          Math.round(q[1]*1000)/1000,
+                          Math.round(q[2]*1000)/1000])})),
+      rulTypes:rulTypes.map(T=>({id:T.id,name:T.name,color:T.hex,
+        op:(typeof T.op==='number')?T.op:1})),
+      rulerPts:rulPts.map(q=>({id:q.id,t:q.t,
+        p:[Math.round(q.x*1000)/1000,Math.round(q.y*1000)/1000,Math.round(q.z*1000)/1000]})),
+      rulerSegs:rulSegs.map(g=>({t:g.t,a:g.a,b:g.b})),
+      rulerRuns:[].concat(...rulTypes.map(T=>rulRuns(T.id).map(g=>({
+        t:T.id,n:g.n,len:Math.round(g.len*1000)/1000,
+        c:[Math.round(g.c.x*1000)/1000,Math.round(g.c.y*1000)/1000,
+           Math.round(g.c.z*1000)/1000]})))),
+      minReader:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1)),
       saved:new Date().toISOString(),
       jobId:AM.jobId,exportedBy:'A-morphometry iPad'};
     const rep=[];let un=0;
@@ -1177,6 +1545,8 @@ mat.onBeforeCompile=sh=>{
   function activateT(i){activeKind='area';activeT=i;const T=types[i];
     $('thr').value=Math.round(T.thr*1000);$('thrV').textContent=T.thr.toFixed(3);
     syncKindUI();buildChips();}
+  function activateR(i){activeKind='rul';activeR=i;rulEnd();syncKindUI();buildChips();
+    if(mode!=='add'&&mode!=='rem')setMode('add');}
   function activateL(i){activeKind='len';activeL=i;syncKindUI();buildChips();
     if(mode!=='add'&&mode!=='rem')setMode('add');}
   function buildChips(){
@@ -1240,7 +1610,7 @@ mat.onBeforeCompile=sh=>{
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
-  const AM_SHEET_READER = 2;   // 1 = marks only; 2 = membranes (Fo counts the union)
+  const AM_SHEET_READER = 3;   // 1 = marks only; 2 = membranes; 3 = the ruler (251)
   const AM_SUB_SCHEME = 1;      // core.subdiv_weights, face-major child order
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -1349,6 +1719,21 @@ mat.onBeforeCompile=sh=>{
       loadT(T0,{name:'תיקון',thr:(typeof sh.globalThreshold==='number')?sh.globalThreshold:T0.thr,
                 manual:sh.manual,faceThr:sh.faceThr,hasProb:sh.hasProb,prob:sh.prob});
     }
+    rulTypes.length=0; activeR=-1; rulPts.length=0; rulSegs.length=0; rulLast=null;
+    polys.length=0; curPoly=null; pSeq=0; polyRebuild();
+    rulRebuild();
+    for(const src of (sh.rulTypes||[])){const T=mkRulType(src.name||'',src.color||'#b8934a');
+      if(src.id)T.id=src.id; if(typeof src.op==='number')T.op=src.op;}
+    for(const src of (sh.rulerPts||[])){const q=src.p||[];
+      rulPts.push({id:src.id,t:src.t,x:q[0],y:q[1],z:q[2]});
+      if(src.id>rpSeq) rpSeq=src.id;}
+    for(const src of (sh.rulerSegs||[])) rulSegs.push({t:src.t,a:src.a,b:src.b});
+    for(const src of (sh.polygons||[])){
+      const P={id:src.id||(++pSeq),at:src.at,pts:(src.pts||[]).map(q=>q.slice()),area:0};
+      if(src.id&&src.id>pSeq) pSeq=src.id;
+      polyRecompute(P); polys.push(P);}
+    if(polys.length) polyRebuild();
+    if(rulTypes.length){activeR=0; rulRebuild();}
     for(const src of (sh.lenTypes||[])){const T=mkLenType(src.name||'',src.color||'#eab308');if(src.id)T.id=src.id;
       if(typeof src.op==='number')T.op=src.op;}
     for(const src of (sh.lengths||[])){
