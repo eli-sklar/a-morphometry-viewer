@@ -389,8 +389,18 @@ mat.onBeforeCompile=sh=>{
   const types=[]; let activeT=0, tSeq=0;
   let activeKind='area';               // area layers XOR length layers (user round 11/08)
   const hex2rgb=h=>[parseInt(h.slice(1,3),16)/255,parseInt(h.slice(3,5),16)/255,parseInt(h.slice(5,7),16)/255];
+  // 256: how a layer MEASURES is a property of the layer, as in the editor
+  const AM_BRUSH='brush', AM_POLY='poly';
+  const AM_MODE_NAME={brush:'סימון במברשת', poly:'שטח פוליגון'};
+  function typeHasContent(T){
+    if(!T) return false;
+    for(let s=0;s<N;s++) if(T.manual[s]===1) return true;
+    for(const P of polys) if(P.at===T.id) return true;
+    return false;
+  }
   function mkType(name,hex){const T={design:0.6,id:'t'+(tSeq++),name:name,hex:hex,color:hex2rgb(hex),
-    manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,area:0};
+    manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,area:0,
+    am:AM_BRUSH};
     types.push(T);return T;}
   const T0=mkType('תיקון','#4dff4d'); T0.prob=prob;
   function reservedColor(hex){const [r,g,b]=hex2rgb(hex);const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
@@ -954,8 +964,10 @@ mat.onBeforeCompile=sh=>{
     if(e.pointerType==='touch'){dragging='rot';}
     else if(mode==='nav'){dragging='rot';}
     else if(mode==='grow'){growAt(e);dragging=null;}
-    else if(activeKind==='area'&&mode==='poly'){polyAt(e);dragging=null;}
-    else if(activeKind==='area'&&mode==='polyrem'){polyEraseAt(e);dragging=null;}
+    else if(activeKind==='area'&&(types[activeT]||{}).am===AM_POLY&&mode==='add'){
+      polyAt(e);dragging=null;}
+    else if(activeKind==='area'&&(types[activeT]||{}).am===AM_POLY&&mode==='rem'){
+      polyEraseAt(e);dragging=null;}
     else if(activeKind==='rul'&&mode==='add'){rulAt(e);dragging=null;}
     else if(activeKind==='rul'&&mode==='rem'){rulEraseAt(e);dragging=null;}
     else if(activeKind==='len'&&mode==='add'){dragging='line';curLine=null;lineAt(e);}
@@ -1392,7 +1404,7 @@ mat.onBeforeCompile=sh=>{
       if(T.manual[f]!==0)m.push([f,T.manual[f]]);
       if(T.faceThr&&!isNaN(T.faceThr[f]))ov.push([f,Math.round(T.faceThr[f]*1000)/1000]);
     }
-    return {id:T.id,name:T.name,color:T.hex,thr:T.thr,op:T.op,manual:m,faceThr:ov,
+    return {id:T.id,name:T.name,color:T.hex,thr:T.thr,op:T.op,am:(T.am||AM_BRUSH),manual:m,faceThr:ov,
       hasProb:T.hasProb,
       prob:T.hasProb?(()=>{const p=new Array(FO);
         for(let fo=0;fo<FO;fo++)p[fo]=Math.round(T.prob[OFF[fo]]*1000)/1000;return p;})():null};
@@ -1470,18 +1482,16 @@ mat.onBeforeCompile=sh=>{
 
   /* ---- toolbar ---- */
   function setMode(m){mode=m;
-    ['mNav','mAdd','mRem','mGrow','mPoly'].forEach(id=>{const b=$(id);if(b)b.classList.remove('on');});
-    const _b=$({nav:'mNav',add:'mAdd',rem:'mRem',grow:'mGrow',poly:'mPoly'}[m]);
+    ['mNav','mAdd','mRem','mGrow'].forEach(id=>{const b=$(id);if(b)b.classList.remove('on');});
+    const _b=$({nav:'mNav',add:'mAdd',rem:'mRem',grow:'mGrow'}[m]);
     if(_b)_b.classList.add('on');
-    // a ring started and not closed does not survive leaving the tool
-    if(m!=='poly'&&typeof polyCancel==='function') polyCancel();
+    // 256: an UNCLOSED ring survives leaving the tool — turning the model is part of
+    // placing the points (Eli, 18/09). Escape is the way out, and the only one.
   }
   $('mNav').onclick=()=>setMode('nav');
   $('mAdd').onclick=()=>setMode('add');
   $('mRem').onclick=()=>setMode('rem');
-  if($('mPoly')) $('mPoly').onclick=()=>{
-    if(activeKind!=='area'&&types.length) activateT(activeT>=0?activeT:0);
-    setMode('poly');};
+
   $('mGrow').onclick=()=>setMode('grow');
   // The keys stay — a keyboard may be attached, and the same page opens on a computer —
   // but the NOTE about them is gone (user decision 13/08): an iPad normally has no
@@ -1499,6 +1509,11 @@ mat.onBeforeCompile=sh=>{
     // the same root as the desktop screens (finding 1, 13/08).
     const k=(ev.key||'').toLowerCase();
     const z=(ev.code==='KeyZ')||k==='z', y=(ev.code==='KeyY')||k==='y';
+    // 256: while a shape is open, Ctrl+Z takes back the last POINT and nothing else
+    if(z&&!ev.shiftKey){
+      if(activeKind==='rul'&&rulLast!==null&&rulUndoPoint()){ev.preventDefault();return;}
+      if(activeKind==='area'&&curPoly&&polyUndoPoint()){ev.preventDefault();return;}
+    }
     if(z&&!ev.shiftKey){ev.preventDefault();undo();}
     else if(y||(z&&ev.shiftKey)){ev.preventDefault();redo();}
   });
@@ -1565,6 +1580,17 @@ mat.onBeforeCompile=sh=>{
       c.appendChild(inp);
       const b=document.createElement('b');b.id='tA_'+T.id;b.textContent=(T.area||0).toFixed(2);c.appendChild(b);
       const u=document.createElement('span');u.className='u';u.textContent='מ״ר';c.appendChild(u);
+      // 256: the layer's measurement mode, on the layer — locked once it holds marks
+      const ms=document.createElement('select');
+      ms.disabled=typeHasContent(T);
+      ms.title=ms.disabled?'שיטת המדידה נעולה — כבר יש בשכבה סימונים':'שיטת המדידה של השכבה';
+      ms.style.cssText='font-size:11px;margin-inline-start:4px;max-width:104px';
+      for(const kk of [AM_BRUSH,AM_POLY]){
+        const o=document.createElement('option');o.value=kk;o.textContent=AM_MODE_NAME[kk];
+        if((T.am||AM_BRUSH)===kk)o.selected=true; ms.appendChild(o);}
+      ms.onclick=e=>e.stopPropagation();
+      ms.onchange=()=>{T.am=ms.value;polyCancel();markUnexported(true);buildChips();};
+      c.appendChild(ms);
       c.onclick=()=>{activateT(i);if(mode==='nav')setMode('add');};
       A.appendChild(c);});
     const C=$('chipsC');if(C){C.innerHTML='';
@@ -1729,6 +1755,7 @@ mat.onBeforeCompile=sh=>{
     for(const fo of (sh.roiPainted||sh.roiFaces||[])) if(fo<FO)
       for(let t=OFF[fo];t<OFF[fo+1];t++){ if(!roi[t]){roi[t]=1;roiCount++;} }
     const loadT=(T,src)=>{
+      T.am=(src.am===AM_POLY)?AM_POLY:AM_BRUSH;   // an older sheet is a brush layer
       if(src.name!==undefined)T.name=src.name;
       if(src.color){T.hex=src.color;T.color=hex2rgb(src.color);}
       if(typeof src.thr==='number')T.thr=src.thr;
