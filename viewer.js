@@ -1470,12 +1470,18 @@ mat.onBeforeCompile=sh=>{
 
   /* ---- toolbar ---- */
   function setMode(m){mode=m;
-    ['mNav','mAdd','mRem','mGrow'].forEach(id=>$(id).classList.remove('on'));
-    $({nav:'mNav',add:'mAdd',rem:'mRem',grow:'mGrow'}[m]).classList.add('on');
+    ['mNav','mAdd','mRem','mGrow','mPoly'].forEach(id=>{const b=$(id);if(b)b.classList.remove('on');});
+    const _b=$({nav:'mNav',add:'mAdd',rem:'mRem',grow:'mGrow',poly:'mPoly'}[m]);
+    if(_b)_b.classList.add('on');
+    // a ring started and not closed does not survive leaving the tool
+    if(m!=='poly'&&typeof polyCancel==='function') polyCancel();
   }
   $('mNav').onclick=()=>setMode('nav');
   $('mAdd').onclick=()=>setMode('add');
   $('mRem').onclick=()=>setMode('rem');
+  if($('mPoly')) $('mPoly').onclick=()=>{
+    if(activeKind!=='area'&&types.length) activateT(activeT>=0?activeT:0);
+    setMode('poly');};
   $('mGrow').onclick=()=>setMode('grow');
   // The keys stay — a keyboard may be attached, and the same page opens on a computer —
   // but the NOTE about them is gone (user decision 13/08): an iPad normally has no
@@ -1583,6 +1589,25 @@ mat.onBeforeCompile=sh=>{
       const u=document.createElement('span');u.className='u';u.textContent='מ״א';c.appendChild(u);
       c.onclick=()=>activateL(i);
       L.appendChild(c);});
+    const R=$('chipsR');
+    if(R){
+      R.innerHTML='';
+      rulTypes.forEach((T,i)=>{
+        const c=document.createElement('span');
+        c.className='chip'+(activeKind==='rul'&&i===activeR?' on':'');
+        c.style.setProperty('--c',T.hex);
+        const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);
+        const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם הסרגל';
+        inp.onchange=()=>{T.name=inp.value;markUnexported(true);};
+        inp.onclick=e=>e.stopPropagation();
+        c.appendChild(inp);
+        const b=document.createElement('b');b.id='rA_'+T.id;
+        let tot=0; for(const g of rulRuns(T.id)) tot+=g.len;
+        b.textContent=tot.toFixed(2); c.appendChild(b);
+        const u=document.createElement('span');u.className='u';u.textContent='מ״א';c.appendChild(u);
+        c.onclick=()=>activateR(i);
+        R.appendChild(c);});
+    }
     updateArea();}
   $('addType').onclick=()=>$('typeColor').click();
   $('typeColor').onchange=e=>{const hex=e.target.value;
@@ -1594,6 +1619,11 @@ mat.onBeforeCompile=sh=>{
     if(reservedColor(hex)){alert('כתום שמור לאזור הכללי.\nנא לבחור צבע אחר.');return;}
     mkCntType('',hex);activateC(cntTypes.length-1);markUnexported(true);
     const inp=document.querySelector('#chipsC .chip.on input');if(inp)inp.focus();};
+  $('addRul').onclick=()=>$('rulColor').click();
+  $('rulColor').onchange=e=>{const hex=e.target.value;
+    if(reservedColor(hex)){alert("אדום שמור למברשת המחיקה, וכתום לאזור הכללי. נא לבחור צבע אחר.");return;}
+    mkRulType('',hex);activateR(rulTypes.length-1);markUnexported(true);
+    const inp=document.querySelector('#chipsR .chip.on input');if(inp)inp.focus();};
   $('addLen').onclick=()=>$('lenColor').click();
   $('lenColor').onchange=e=>{const hex=e.target.value;
     if(reservedColor(hex)){alert('אדום שמור למברשת המחיקה, וכתום לאזור הכללי.\nנא לבחור צבע אחר.');return;}
@@ -1788,3 +1818,4 @@ mat.onBeforeCompile=sh=>{
     autoComplete,beginH,commitH,undo,redo,setMode:setMode,isRepair,isType,fit,
     mkType,mkLenType,activateT,activateL};
 }
+
