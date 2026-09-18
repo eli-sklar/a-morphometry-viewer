@@ -242,6 +242,26 @@ vec3 amStipple(vec3 wall, vec3 col, float a, float lvl){
   vec3 dots=(a>t)?col:wall;
   return mix(flatC,dots,lvl);
 }
+// 257: a painted area has the wall under it in the SAME pixel, so its stipple can mix
+// two colours. A polygon has nothing under it in its own draw call -- it is an overlay
+// -- so its stipple works on COVERAGE: at the wheel's end the dot is the layer's own
+// colour at full strength and the gap is the model itself, showing through. Same
+// lattice, same law, and the mean alpha is unchanged, so the wheel does not add weight.
+float amStippleA(float a, float lvl){
+  if(lvl<=0.001) return a;
+  float t=amBayer(floor(gl_FragCoord.xy/3.0));
+  return mix(a,(a>t)?1.0:0.0,lvl);
+}
+// 258: the model itself can be made see-through, so that what sits BEHIND the face
+// being measured -- a volume layer, a closure patch, a point on the far side -- can be
+// judged without turning away from it. Only the bare wall fades: a marked face and a
+// reconstructed patch stay opaque, or the wheel would rub out the measurement along
+// with the model, and the picture would say less the further it was turned up.
+float amWallAlpha(float mk, float pch, float clr){
+  if(clr<=0.001) return 1.0;
+  float keep=clamp(max(mk*2.0,pch),0.0,1.0);
+  return mix(1.0-clr,1.0,keep);
+}
 // ---- the closure patch is shaded; the photograph is not (decision 166) ----
 // No lights: the scan carries a PHOTOGRAPH that already holds the real lighting
 // of the place, and lighting it would multiply that. Only the reconstructed
@@ -366,14 +386,23 @@ vec3 amPatchShade(vec3 wall, float isPatch, vec3 p){
     return {geometry:geometry, material:material, texture:texture};
   })();
   const amDesignU={value:0.6};
+  // 258: how see-through the model itself is — a way of LOOKING at the work, not a
+  // property of it, so it is never saved into the sheet and never reaches the report.
+  const amClearU={value:0};
+  function amApplyClear(v){
+    amClearU.value=v;
+    const tr=v>0.001;
+    if(mat.transparent!==tr){mat.transparent=tr; mat.depthWrite=!tr; mat.needsUpdate=true;}
+  }
 mat.onBeforeCompile=sh=>{
     sh.uniforms.amDesign=amDesignU;
+    sh.uniforms.amClear=amClearU;
     sh.vertexShader=sh.vertexShader
       .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;attribute float aDes;attribute float aPatch;varying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;')
       .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vADes=aDes;vAPatch=aPatch;vAPos=transformed;');
     sh.fragmentShader=sh.fragmentShader
-      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;uniform float amDesign;'+AM_SHADER_FN)
-      .replace('#include <opaque_fragment>','outgoingLight=amStipple(amPatchShade(outgoingLight,vAPatch,vAPos),vACol,vAFlat,vADes);\n#include <opaque_fragment>');
+      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;uniform float amDesign;uniform float amClear;'+AM_SHADER_FN)
+      .replace('#include <opaque_fragment>','outgoingLight=amStipple(amPatchShade(outgoingLight,vAPatch,vAPos),vACol,vAFlat,vADes);diffuseColor.a*=amWallAlpha(vAFlat,vAPatch,amClear);\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
 
@@ -398,7 +427,7 @@ mat.onBeforeCompile=sh=>{
     for(const P of polys) if(P.at===T.id) return true;
     return false;
   }
-  function mkType(name,hex){const T={design:0.6,id:'t'+(tSeq++),name:name,hex:hex,color:hex2rgb(hex),
+  function mkType(name,hex){const T={design:0.6,designU:{value:0.6},id:'t'+(tSeq++),name:name,hex:hex,color:hex2rgb(hex),
     manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,area:0,
     am:AM_BRUSH};
     types.push(T);return T;}
@@ -444,6 +473,8 @@ mat.onBeforeCompile=sh=>{
   function updateArea(){
     for(let ti=0;ti<types.length;ti++){const T=types[ti];let a=0;
       for(let f=0;f<N;f++)if(isType(ti,f))a+=area[f];
+      // 258: a polygon layer's area lives in its rings, not in painted faces
+      for(const P of polys) if(P.at===T.id) a+=P.area;
       T.area=a;
       const e2=document.getElementById('tA_'+T.id); if(e2)e2.textContent=a.toFixed(2);}
     $('area').textContent='';
@@ -690,28 +721,77 @@ mat.onBeforeCompile=sh=>{
     });
     let area2=0;
     for(let i=0;i<n;i++){const a=uv[i], b=uv[(i+1)%n]; area2+=a[0]*b[1]-b[0]*a[1];}
-    const ccw=area2>0;
-    const idx=[...Array(n).keys()]; if(!ccw) idx.reverse();
-    const cross=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]);
-    const inside=(a,b,c,p)=>cross(a,b,p)>=0&&cross(b,c,p)>=0&&cross(c,a,p)>=0;
-    const tris=[]; let guard=0;
-    while(idx.length>3&&guard++<n*n+9){
-      let cut=false;
-      for(let k=0;k<idx.length;k++){
-        const i0=idx[(k+idx.length-1)%idx.length], i1=idx[k], i2=idx[(k+1)%idx.length];
-        const a=uv[i0], b=uv[i1], c=uv[i2];
-        if(cross(a,b,c)<=0) continue;                     // reflex: not an ear
-        let clear=true;
-        for(const j of idx){
-          if(j===i0||j===i1||j===i2) continue;
-          if(inside(a,b,c,uv[j])){clear=false;break;}
-        }
-        if(!clear) continue;
-        tris.push([i0,i1,i2]); idx.splice(k,1); cut=true; break;
+    const ord=[...Array(n).keys()]; if(area2<=0) ord.reverse();
+    const Q=ord.map(i=>uv[i]), R=ord.map(i=>P[i]);
+    const cr=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]);
+    // two segments cross only if each strictly separates the other's ends; touching at a
+    // shared vertex is not a crossing, which is why the endpoint cases are excluded above
+    const crosses=(p,q,r,s)=>{
+      const d1=cr(r,s,p), d2=cr(r,s,q), d3=cr(p,q,r), d4=cr(p,q,s);
+      return ((d1>0)!==(d2>0))&&((d3>0)!==(d4>0))&&d1!==0&&d2!==0&&d3!==0&&d4!==0;
+    };
+    const inside=p=>{
+      let c=false;
+      for(let i=0,j=n-1;i<n;j=i++){
+        const a=Q[i], b=Q[j];
+        if(((a[1]>p[1])!==(b[1]>p[1]))&&(p[0]<(b[0]-a[0])*(p[1]-a[1])/(b[1]-a[1])+a[0])) c=!c;
       }
-      if(!cut){ tris.push([idx[0],idx[1],idx[2]]); idx.splice(1,1); }   // degenerate ring
+      return c;
+    };
+    // a diagonal may be used only if it stays within the outline: crossing no edge, and with
+    // its middle inside. This is what makes the sheet follow the wall into a notch instead of
+    // taking the short way across its mouth.
+    const okChord=(i,j)=>{
+      if(j===i+1||(i===0&&j===n-1)) return true;
+      for(let k=0;k<n;k++){
+        const k2=(k+1)%n;
+        if(k===i||k===j||k2===i||k2===j) continue;
+        if(crosses(Q[i],Q[j],Q[k],Q[k2])) return false;
+      }
+      return inside([(Q[i][0]+Q[j][0])/2,(Q[i][1]+Q[j][1])/2]);
+    };
+    const ok=[];
+    for(let i=0;i<n;i++) ok.push(new Array(n).fill(true));
+    for(let i=0;i<n;i++) for(let j=i+2;j<n;j++){const w=okChord(i,j); ok[i][j]=w; ok[j][i]=w;}
+    const ar3=(i,j,k)=>{
+      const A=R[i], D=R[j], C=R[k];
+      const ux=D[0]-A[0], uy=D[1]-A[1], uz=D[2]-A[2];
+      const vx=C[0]-A[0], vy=C[1]-A[1], vz=C[2]-A[2];
+      return 0.5*Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx);
+    };
+    // the classic interval DP: the cheapest triangulation of the piece between i and j,
+    // built from the two pieces its last triangle splits it into. O(n^3) on a ring a hand
+    // clicked, so a few tens of points at most.
+    const solve=strict=>{
+      const W=[], M=[];
+      for(let i=0;i<n;i++){W.push(new Array(n).fill(0)); M.push(new Array(n).fill(-1));}
+      for(let g=2;g<n;g++) for(let i=0;i+g<n;i++){
+        const j=i+g;
+        if(strict&&!ok[i][j]){W[i][j]=Infinity; continue;}
+        let best=Infinity, bm=-1;
+        for(let m=i+1;m<j;m++){
+          const w=W[i][m]+W[m][j];
+          if(!isFinite(w)) continue;
+          const t=w+ar3(i,m,j);
+          if(t<best){best=t; bm=m;}
+        }
+        W[i][j]=best; M[i][j]=bm;
+      }
+      return {W:W,M:M};
+    };
+    // where the projection folds over itself no diagonal can be validated at all; rather
+    // than refuse to measure, the constraint is dropped and the plain minimum is taken
+    let S=solve(true);
+    if(!isFinite(S.W[0][n-1])) S=solve(false);
+    const tris=[], st=[[0,n-1]];
+    while(st.length){
+      const ij=st.pop(), i=ij[0], j=ij[1];
+      if(j<=i+1) continue;
+      const m=S.M[i][j];
+      if(m<0) continue;
+      tris.push([ord[i],ord[m],ord[j]]);
+      st.push([i,m]); st.push([m,j]);
     }
-    if(idx.length===3) tris.push([idx[0],idx[1],idx[2]]);
     return tris;
   }
   function polyArea(P){
@@ -757,8 +837,18 @@ mat.onBeforeCompile=sh=>{
       if(pos.length){
         const gm=new THREE.BufferGeometry();
         gm.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
+        // 256/257: the polygon takes the design wheel, through COVERAGE — an overlay
+        // has no wall of its own in the pixel, so only alpha reaches the model behind it
         const mm=new THREE.Mesh(gm,new THREE.MeshBasicMaterial({color:col,transparent:true,
-          opacity:0.35,side:THREE.DoubleSide,depthWrite:false}));
+          opacity:(typeof T.op==='number')?T.op:0.75,side:THREE.DoubleSide,depthWrite:false}));
+        const _du=T.designU||(T.designU={value:(typeof T.design==='number')?T.design:0.6});
+        mm.material.onBeforeCompile=sh=>{
+          sh.uniforms.amDesign=_du;
+          sh.fragmentShader=sh.fragmentShader
+            .replace('#include <common>','#include <common>\nuniform float amDesign;'+AM_SHADER_FN)
+            .replace('#include <opaque_fragment>',
+                     'diffuseColor.a=amStippleA(diffuseColor.a,amDesign);\n#include <opaque_fragment>');
+        };
         mm.renderOrder=998; polyGroup.add(mm);
       }
       let cx=0,cy=0,cz=0; for(const q of P.pts){cx+=q[0];cy+=q[1];cz+=q[2];}
@@ -803,6 +893,82 @@ mat.onBeforeCompile=sh=>{
     }
     if(best<0) return;
     polys.splice(best,1); polyRebuild(); markDirty();
+  }
+  // ---- 258: moving a point that is already placed ---------------------------------------
+  // Eli, 18/09: "I want to add the option of dragging a point of a polygon or a ruler."
+  // The plain drag has to stay the camera: the reason to move a point is almost always that
+  // turning the model showed it sitting wrong, so the hand needs the camera free first.
+  // The grab therefore gets a gesture of its own — Ctrl with the left button on a desk,
+  // press-and-hold then drag under a finger. The point is dragged ON the model, never into
+  // the air: it is raycast onto the surface exactly as it was when it was first placed.
+  const AM_GRAB_PX=14, AM_HOLD_MS=450, AM_HOLD_SLOP=10;
+  let amGrab=null, amHold=null;
+  function amPointHandle(e){
+    const r=el.getBoundingClientRect(), px=e.clientX-r.left, py=e.clientY-r.top;
+    const hw=r.width/2, hh=r.height/2, v=new THREE.Vector3();
+    let best=null, bd=AM_GRAB_PX;
+    for(const q of rulPts){
+      v.set(q.x,q.y,q.z).project(camera);
+      if(v.z<-1||v.z>1) continue;
+      const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
+      if(d<bd){bd=d; best={kind:'rul',id:q.id};}
+    }
+    // a ring still being drawn is grabbable too — that is when a point is most often wrong
+    const rings=curPoly?polys.concat([curPoly]):polys;
+    for(const P of rings) for(let i=0;i<P.pts.length;i++){
+      const q=P.pts[i];
+      v.set(q[0],q[1],q[2]).project(camera);
+      if(v.z<-1||v.z>1) continue;
+      const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
+      if(d<bd){bd=d; best={kind:'poly',ring:P,i:i};}
+    }
+    return best;
+  }
+  function amGrabBegin(h){
+    if(!h) return false;
+    const q=(h.kind==='rul')?rulPtById(h.id):null;
+    if(h.kind==='rul'&&!q) return false;
+    h.from=(h.kind==='rul')?[q.x,q.y,q.z]:h.ring.pts[h.i].slice();
+    amGrab=h; return true;
+  }
+  function amGrabMove(e){
+    if(!amGrab) return;
+    const r=el.getBoundingClientRect();
+    const ndc=new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1);
+    ray.setFromCamera(ndc,camera);
+    const hit=ray.intersectObject(mesh,false);
+    if(!hit.length) return;          // dragged past the edge of the model: the point stays
+    const p=hit[0].point;
+    if(amGrab.kind==='rul'){
+      const q=rulPtById(amGrab.id); if(!q) return;
+      q.x=p.x; q.y=p.y; q.z=p.z; rulRebuild();
+    } else {
+      amGrab.ring.pts[amGrab.i]=[p.x,p.y,p.z];
+      polyRecompute(amGrab.ring); polyRebuild();
+    }
+  }
+  function amGrabEnd(){
+    if(!amGrab) return;
+    const h=amGrab; amGrab=null;
+    let now=null;
+    if(h.kind==='rul'){const q=rulPtById(h.id); if(q) now=[q.x,q.y,q.z];}
+    else if(h.ring.pts[h.i]) now=h.ring.pts[h.i].slice();
+    if(!now) return;
+    // a grab that went nowhere is not an edit, and must not fill the history with no-ops
+    if(Math.hypot(now[0]-h.from[0],now[1]-h.from[1],now[2]-h.from[2])<1e-9) return;
+    undoStack.push([(h.kind==='rul')?['M',{kind:'rul',id:h.id,from:h.from}]
+                               :['M',{kind:'poly',ring:h.ring,i:h.i,from:h.from}]]);
+    redoStack.length=0; markDirty(); updateHB(); updateArea();
+  }
+  function amHoldClear(){ if(amHold){clearTimeout(amHold.t); amHold=null;} }
+  function amHoldArm(e){
+    amHoldClear();
+    const h=amPointHandle(e);
+    if(!h) return;
+    amHold={x:e.clientX,y:e.clientY,h:h,t:setTimeout(()=>{
+      amHold=null;
+      if(amGrabBegin(h)) dragging='grab';
+    },AM_HOLD_MS)};
   }
   window.amRescaleFixed=rescaleFixed;   // the tick loop lives outside this closure
   function applyLenOp(T){for(const L of lines)if(L.t===T.id&&L.obj){L.obj.material.transparent=T.op<1;L.obj.material.opacity=T.op;L.obj.material.needsUpdate=true;}}
@@ -920,6 +1086,15 @@ mat.onBeforeCompile=sh=>{
       else if(d[0]==='L-'){inv.push(['L+',d[1]]);addLine(d[1]);}
       else if(d[0]==='X+'){inv.push(['X-',d[1]]);delX(d[1]);}
       else if(d[0]==='X-'){inv.push(['X+',d[1]]);addX(d[1]);}
+      // 258: a point that was dragged undoes to where it came from — Ctrl+Z puts it back,
+      // it does not delete it. The ring is held by reference, the way a line already is.
+      else if(d[0]==='M'){const m=d[1];
+        if(m.kind==='rul'){const q=rulPtById(m.id);
+          if(q){inv.push(['M',{kind:'rul',id:m.id,from:[q.x,q.y,q.z]}]);
+            q.x=m.from[0];q.y=m.from[1];q.z=m.from[2];rulRebuild();}}
+        else if(m.ring&&m.ring.pts[m.i]){
+          inv.push(['M',{kind:'poly',ring:m.ring,i:m.i,from:m.ring.pts[m.i].slice()}]);
+          m.ring.pts[m.i]=m.from.slice(); polyRecompute(m.ring); polyRebuild();}}
       else {const [ti,f,o]=d;inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;recolorFace(f);}}
     inv.reverse();
     logOps(typedOps(diff));
@@ -961,7 +1136,8 @@ mat.onBeforeCompile=sh=>{
       startPinch();dragging='pinch';return;}
     // a finger ALWAYS navigates — marking/erasing/growing is pencil-only
     // (user decision 08/08/2026; also the original editor's behaviour)
-    if(e.pointerType==='touch'){dragging='rot';}
+    // 258: a finger rotates, and a finger that STAYS on a point for a moment grabs it
+    if(e.pointerType==='touch'){dragging='rot'; amHoldArm(e);}
     else if(mode==='nav'){dragging='rot';}
     else if(mode==='grow'){growAt(e);dragging=null;}
     else if(activeKind==='area'&&(types[activeT]||{}).am===AM_POLY&&mode==='add'){
@@ -988,16 +1164,21 @@ mat.onBeforeCompile=sh=>{
         target.addScaledVector(right,-(nmx-pinch.mx)*k);target.addScaledVector(up,(nmy-pinch.my)*k);apply();}
       pinch={d:nd,mx:nmx,my:nmy};return;}
     if(dragId!==null&&e.pointerId!==dragId) return;       // palm guard
+    // a finger that travels is navigating, not holding — the grab must not fire behind it
+    if(amHold&&Math.hypot(e.clientX-amHold.x,e.clientY-amHold.y)>AM_HOLD_SLOP) amHoldClear();
     const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];
     if(dragging==='rot'){az-=dx*0.006;pol-=dy*0.006;apply();}
     else if(dragging==='line'){lineAt(e);}
     else if(dragging==='lerase'){lineEraseAt(e);}
     else if(dragging==='xerase'){eraseXAt(e);}
+    else if(dragging==='grab'){amGrabMove(e);}
     else if(dragging==='paint'){paintAt(e);}
   });
   function endDrag(e){
+    amHoldClear();
     if(e){ptrs.delete(e.pointerId);if(e.pointerId===dragId)dragId=null;}
     if(dragging==='pinch'){if(touchList().length>=2)startPinch();else{pinch=null;dragging=null;}return;}
+    if(dragging==='grab')amGrabEnd();
     if(dragging==='paint'&&paintManual)commitH();
     if(dragging==='line')endLine();
     dragging=null;dragId=null;
@@ -1545,12 +1726,18 @@ mat.onBeforeCompile=sh=>{
     ds.disabled=(v===null);
     if(v!==null){ds.value=Math.round(v*100);dv.textContent=Math.round(v*100)+'%';}
   }
+  if($('clear')) $('clear').oninput=e=>{
+    $('clearV').textContent=e.target.value+'%';
+    amApplyClear(e.target.value/100);};
   if($('design')) $('design').oninput=e=>{
     const v=e.target.value/100;
     $('designV').textContent=e.target.value+'%';
     if(activeKind==='cnt'){const T=cntTypes[activeC];if(T){T.design=v;T.designU.value=v;}}
     else if(activeKind==='len'){const T=lenTypes[activeL];if(T){T.design=v;if(!T.designU)T.designU={value:v};T.designU.value=v;}}
-    else if(activeKind==='area'){const T=types[activeT];if(T){T.design=v;amDessSoon();}}
+    // 257: the polygon reads the same wheel through a uniform, so the layer's own
+    // designU has to move with it — a brush layer repaints, a polygon layer does not
+    else if(activeKind==='area'){const T=types[activeT];if(T){T.design=v;
+      if(!T.designU)T.designU={value:v}; T.designU.value=v; amDessSoon();}}
     // this viewer renders on a continuous tick, so nothing has to be poked to redraw
   };
   function syncKindUI(){amSyncDesign();const other=activeKind!=='area';
