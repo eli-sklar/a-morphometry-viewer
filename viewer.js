@@ -252,16 +252,6 @@ float amStippleA(float a, float lvl){
   float t=amBayer(floor(gl_FragCoord.xy/3.0));
   return mix(a,(a>t)?1.0:0.0,lvl);
 }
-// 258: the model itself can be made see-through, so that what sits BEHIND the face
-// being measured -- a volume layer, a closure patch, a point on the far side -- can be
-// judged without turning away from it. Only the bare wall fades: a marked face and a
-// reconstructed patch stay opaque, or the wheel would rub out the measurement along
-// with the model, and the picture would say less the further it was turned up.
-float amWallAlpha(float mk, float pch, float clr){
-  if(clr<=0.001) return 1.0;
-  float keep=clamp(max(mk*2.0,pch),0.0,1.0);
-  return mix(1.0-clr,1.0,keep);
-}
 // ---- the closure patch is shaded; the photograph is not (decision 166) ----
 // No lights: the scan carries a PHOTOGRAPH that already holds the real lighting
 // of the place, and lighting it would multiply that. Only the reconstructed
@@ -386,23 +376,27 @@ vec3 amPatchShade(vec3 wall, float isPatch, vec3 p){
     return {geometry:geometry, material:material, texture:texture};
   })();
   const amDesignU={value:0.6};
-  // 258: how see-through the model itself is — a way of LOOKING at the work, not a
-  // property of it, so it is never saved into the sheet and never reaches the report.
-  const amClearU={value:0};
-  function amApplyClear(v){
-    amClearU.value=v;
-    const tr=v>0.001;
-    if(mat.transparent!==tr){mat.transparent=tr; mat.depthWrite=!tr; mat.needsUpdate=true;}
+  // 265: the model's transparency. The SAME behaviour as the measurement screen's veteran
+  // wheel (mdlop, 02/09): the slider IS the opacity, 100% is opaque, and everything the
+  // mesh draws fades together — the photograph, the marks and the closure patches alike.
+  // Eli, 18/09: "leave the veteran as it is, delete the duplicate, and check that all the
+  // transparency wheels behave the same way — I do not want different behaviour in each
+  // screen." Below 100 the material turns transparent; at 100 it goes back to opaque,
+  // because a transparent material sorts per object and would cost for nothing.
+  function amApplyClear(pct){
+    const v=Math.max(0.05,Math.min(1,pct/100));
+    const ms=Array.isArray(mesh.material)?mesh.material:[mesh.material];
+    for(const m of ms){ m.transparent=(v<0.999); m.opacity=v;
+                        m.depthWrite=(v>=0.999); m.needsUpdate=true; }
   }
 mat.onBeforeCompile=sh=>{
     sh.uniforms.amDesign=amDesignU;
-    sh.uniforms.amClear=amClearU;
     sh.vertexShader=sh.vertexShader
       .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;attribute float aDes;attribute float aPatch;varying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;')
       .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vADes=aDes;vAPatch=aPatch;vAPos=transformed;');
     sh.fragmentShader=sh.fragmentShader
-      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;uniform float amDesign;uniform float amClear;'+AM_SHADER_FN)
-      .replace('#include <opaque_fragment>','outgoingLight=amStipple(amPatchShade(outgoingLight,vAPatch,vAPos),vACol,vAFlat,vADes);diffuseColor.a*=amWallAlpha(vAFlat,vAPatch,amClear);\n#include <opaque_fragment>');
+      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;uniform float amDesign;'+AM_SHADER_FN)
+      .replace('#include <opaque_fragment>','outgoingLight=amStipple(amPatchShade(outgoingLight,vAPatch,vAPos),vACol,vAFlat,vADes);\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
 
@@ -540,10 +534,16 @@ mat.onBeforeCompile=sh=>{
   }
   function rulTag(txt,hex){
     const c=document.createElement('canvas'); const pad=24;
-    const tmp=c.getContext('2d'); tmp.font='bold 54px system-ui, Arial, sans-serif';
+    // 265: the tag is Hebrew and reads from the RIGHT — the number, then the value, then
+    // the unit. A canvas lays text out left-to-right unless told otherwise, which put the
+    // number on the wrong end. The mark sets the base direction for what follows it, and
+    // `direction` does the same where the property is honoured.
+    txt='‏'+txt;
+    const tmp=c.getContext('2d'); tmp.direction='rtl';
+    tmp.font='bold 54px system-ui, Arial, sans-serif';
     const w=Math.ceil(tmp.measureText(txt).width)+pad*2;
     c.width=w; c.height=108;
-    const x=c.getContext('2d');
+    const x=c.getContext('2d'); x.direction='rtl';
     x.fillStyle='rgba(20,18,16,0.92)'; x.strokeStyle=hex||'#b8934a'; x.lineWidth=6;
     const rr=18; x.beginPath();
     x.moveTo(rr,3); x.arcTo(w-3,3,w-3,105,rr); x.arcTo(w-3,105,3,105,rr);
@@ -852,7 +852,12 @@ mat.onBeforeCompile=sh=>{
         mm.renderOrder=998; polyGroup.add(mm);
       }
       let cx=0,cy=0,cz=0; for(const q of P.pts){cx+=q[0];cy+=q[1];cz+=q[2];}
-      const sp=rulTag(P.area.toFixed(2)+' מ\u05f2', '#'+col.getHexString());
+      // 265: the ring is numbered 1..n WITHIN ITS LAYER, in marking order — the ruler's
+      // rule, and the order the report lists the layer's rings in. A ring still being
+      // drawn takes the next number, so its identity does not change when it closes.
+      const _pi=polys.filter(q=>q.at===P.at).indexOf(P);
+      const _pn=(_pi>=0)?_pi+1:polys.filter(q=>q.at===P.at).length+1;
+      const sp=rulTag(_pn+' : '+P.area.toFixed(2)+' מ\u05f4ר', '#'+col.getHexString());
       sp.position.set(cx/n,cy/n,cz/n);
       polyGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
     };
@@ -1728,7 +1733,7 @@ mat.onBeforeCompile=sh=>{
   }
   if($('clear')) $('clear').oninput=e=>{
     $('clearV').textContent=e.target.value+'%';
-    amApplyClear(e.target.value/100);};
+    amApplyClear(e.target.value);};
   if($('design')) $('design').oninput=e=>{
     const v=e.target.value/100;
     $('designV').textContent=e.target.value+'%';
