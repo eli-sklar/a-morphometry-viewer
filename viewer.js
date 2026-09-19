@@ -1822,7 +1822,7 @@ mat.onBeforeCompile=sh=>{
         const b=document.createElement('b');b.id='rA_'+T.id;
         let tot=0; for(const g of rulRuns(T.id)) tot+=g.len;
         b.textContent=tot.toFixed(2); c.appendChild(b);
-        const u=document.createElement('span');u.className='u';u.textContent='מ״א';c.appendChild(u);
+        const u=document.createElement('span');u.className='u';u.textContent='מ׳';c.appendChild(u);
         c.onclick=()=>activateR(i);
         R.appendChild(c);});
     }
