@@ -1704,7 +1704,17 @@ mat.onBeforeCompile=sh=>{
     else if(y||(z&&ev.shiftKey)){ev.preventDefault();redo();}
   });
   $('auto').onclick=autoComplete;
-  function applyBrush(){const v=+$('brush').value;
+  /* WHAT THE SLIDER MEANS NOW, in words (301). It has changed meaning with the layer
+     since 256 and never said which. */
+  const AM_BRUSH_WHAT={area:'רדיוס המברשת', len:'רוחב הקו', cnt:'קוטר המעוין',
+                       rul:'רדיוס המברשת', vol:'רדיוס המברשת'};
+  const AM_TOOL_NAME={area:'סימון שטח', len:'סרט מדידה', cnt:'מונה', rul:'סרגל', vol:'נפח אזור'};
+  function amSideWhat(){
+    const w=$('brushWhat'); if(w) w.textContent=AM_BRUSH_WHAT[activeKind]||'גודל המברשת';
+    const t=$('sideTool'); if(t) t.textContent=AM_TOOL_NAME[activeKind]||'סימון';
+    const g=$('growWrap'); if(g) g.classList.toggle('off', activeKind!=='area');
+  }
+  function applyBrush(){amSideWhat();const v=+$('brush').value;
     if(activeKind==='len'){lineW=0.002+(v-2)/38*0.028;$('brushV').textContent=(lineW*1000).toFixed(0)+' \u05de"\u05de';}
     else if(activeKind==='cnt'){
       // the slider is the diamond DIAMETER in true metres (12/08); resizes live

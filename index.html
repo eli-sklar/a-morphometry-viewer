@@ -26,7 +26,14 @@
        padding-top:calc(5px + env(safe-area-inset-top));background:rgba(17,15,12,0.96);border-bottom:1px solid #000;z-index:5;max-height:34%;overflow-y:auto}
   #area{font-family:var(--serif);font-size:19px;font-weight:700;color:var(--rep);font-variant-numeric:tabular-nums;letter-spacing:.3px;margin-inline-start:auto;white-space:nowrap}
   #side{position:fixed;top:50%;right:14px;transform:translateY(-50%);display:flex;flex-direction:column;gap:10px;z-index:6}
-  #side button{width:120px;padding:13px 8px;font-size:15px;font-weight:600;box-shadow:0 2px 8px #0007}
+  #side{width:150px;background:rgba(17,15,12,.92);border:1px solid #6b5a33;
+        border-radius:2px;padding:9px;box-sizing:border-box}
+  #sideTool{font-size:13px;color:var(--amber);text-align:center;font-weight:600;min-height:16px}
+  #side .sfield label{font-size:13px;color:#8a8272;display:block;margin-bottom:3px}
+  #side .sfield input[type=range]{width:100%;accent-color:var(--amber)}
+  #side .sfield .val{float:left;font-variant-numeric:tabular-nums}
+  #side .off{opacity:.35;pointer-events:none}
+  #side button{width:100%;padding:13px 8px;font-size:15px;font-weight:600;box-shadow:0 2px 8px #0007}
   #side button.nav.on{background:#1d4ed8;outline:2px solid var(--acc);color:#fff}
   #side button.add.on{background:#15803d;outline:2px solid var(--rep);color:#fff}
   #side button.rem.on{background:#b91c1c;outline:2px solid var(--non);color:#fff}
@@ -61,7 +68,7 @@
   </div>
   <div id="ready" style="font-size:13px;color:#8a7f68">בודק מוכנות לשטח…</div>
   <div id="err"></div>
-  <div id="ver">גרסה 32</div>
+  <div id="ver">גרסה 33</div>
   <input id="file" type="file" style="display:none">
 </div>
 <div id="bar" style="display:none">
@@ -70,11 +77,7 @@
     <input id="thr" type="range" min="0" max="1000" value="500">
     <span id="thrV" class="val">0.500</span>
   </div>
-  <div class="grp">
-    <label>מברשת</label>
-    <input id="brush" type="range" min="2" max="40" value="10">
-    <span id="brushV" class="val">0.10</span>
-  </div>
+  <!-- the brush moved to the side bar (301) -->
   <div class="grp">
     <label title="מראה הסימון: 0 = שטוח ונקי · 100% = מרקם מלא. חל על השטחים, על סרטי המדידה ועל סמני המונים, בכל המסכים ובדוח.">עיצוב</label>
     <input id="design" type="range" min="0" max="100" value="60">
@@ -86,9 +89,6 @@
     <span id="clearV" class="val">100%</span>
   </div>
   <div class="grp">
-    <label>סבילות נביטה</label>
-    <input id="grtol" type="range" min="2" max="60" value="14">
-    <span id="grtolV" class="val">14</span>
     
   </div>
   <div class="grp" id="palArea">
@@ -114,6 +114,15 @@
     <input id="rulColor" type="color" value="#b8934a" style="width:0;height:0;opacity:0;position:absolute">
   </div>
   <div class="grp">
+    <!-- 301: the brush lives beside the buttons that use it -->
+    <div class="sfield">
+      <label for="brush"><span id="brushWhat">גודל המברשת</span><span id="brushV" class="val">0.10</span></label>
+      <input id="brush" type="range" min="2" max="40" value="10">
+    </div>
+    <div class="sfield" id="growWrap">
+      <label for="grtol">סבילות הנביטה<span id="grtolV" class="val">14</span></label>
+      <input id="grtol" type="range" min="2" max="60" value="14">
+    </div>
     <button id="undo" disabled>↶ בטל</button>
     <button id="redo" disabled>↷ חזור</button>
   </div>
@@ -124,6 +133,7 @@
   <span id="area">0.00 מ"ר</span>
 </div>
 <div id="side" style="display:none">
+  <div id="sideTool">סימון שטח</div>
   <button id="mNav" class="nav on">ניווט</button>
   <button id="mAdd" class="add"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M8.8 2.6h6.4v12.2H8.8z"/><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M8.8 14.8h6.4L12 21.4z"/><path fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" d="M12 2.6v12.2M10.6 17.6h2.8"/><path fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" d="M8.8 5.4h6.4"/></svg> סימון</button>
   <button id="mRem" class="rem"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M9.2 2.6h5.6a1.4 1.4 0 0 1 1.4 1.4v4.2a1.4 1.4 0 0 1-1.4 1.4H9.2A1.4 1.4 0 0 1 7.8 8.2V4a1.4 1.4 0 0 1 1.4-1.4z"/><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M8.4 9.6h7.2l1.2 9.4a1.6 1.6 0 0 1-1.6 1.8H8.8a1.6 1.6 0 0 1-1.6-1.8z"/><path fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" d="M7.4 20.2h9.2"/></svg> מחיקה</button>
