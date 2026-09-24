@@ -61,15 +61,77 @@ function readOps(){
 
 /* ================= boot: renderer first, engine wires up per loaded file ====== */
 const $=id=>document.getElementById(id);
+/* ---- THE PROGRAM'S OWN QUESTION (24/09) --------------------------------------------
+   Two reasons, both Eli's. "Why not write 'close them all' and 'close only the largest' ON
+   the buttons, instead of OK/Cancel and a key in the text?" — the browser's own dialog cannot
+   name its buttons. And the night it cost a volume: a native dialog STOPS the page while it
+   is open, the heartbeat with it, and after a minute the server concluded the window was
+   closed, saved and quit (22:18-22:20). This one lives in the page: every button says what
+   it does, the page keeps running, Escape or a click outside is always the answer that
+   changes nothing, and no key reaches the screen underneath while it is open. */
+function amAsk(text,buttons,safe){
+  return new Promise(res=>{
+    const wrap=document.createElement('div');
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2147483000;'
+      +'display:flex;align-items:center;justify-content:center;direction:rtl';
+    const box=document.createElement('div');
+    box.style.cssText='background:#141210;border:2px solid #6b5a33;border-radius:2px;'
+      +'padding:22px 26px;color:#d8cdb8;font:15px system-ui,Arial,sans-serif;max-width:480px;'
+      +'box-shadow:inset 0 0 0 3px #141210, inset 0 0 0 4px rgba(184,147,74,.45)';
+    const q=document.createElement('div');
+    q.style.cssText='margin-bottom:16px;line-height:1.7;white-space:pre-line';
+    q.textContent=text;
+    const row=document.createElement('div');
+    row.style.cssText='display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-start';
+    let focusEl=null;
+    const done=v=>{window.removeEventListener('keydown',key,true);wrap.remove();res(v);};
+    function key(e){
+      if((e.key||'')==='Escape'){e.preventDefault();done(safe);}
+      e.stopImmediatePropagation(); e.stopPropagation();   // nothing reaches the screen underneath
+    }
+    for(const b of buttons){
+      const el=document.createElement('button');
+      el.textContent=b.t;
+      el.style.cssText='background:'+(b.primary?'#b8934a':'#232019')+';color:'
+        +(b.primary?'#161310':'#d8cdb8')+';border:1px solid #6b5a33;border-radius:2px;'
+        +'padding:8px 14px;font-size:14px;cursor:pointer';
+      el.onclick=()=>done(b.v);
+      row.appendChild(el);
+      if(b.v===safe) focusEl=el;                 // Enter never does the irreversible thing
+    }
+    window.addEventListener('keydown',key,true);
+    wrap.onclick=e=>{if(e.target===wrap)done(safe);};
+    box.appendChild(q); box.appendChild(row); wrap.appendChild(box);
+    document.body.appendChild(wrap);
+    if(focusEl) setTimeout(()=>focusEl.focus(),0);
+  });
+}
+// a message: one button, and the page runs on underneath it
+function amTell(text,label){ return amAsk(text,[{t:label||'הבנתי',v:true,primary:true}],true); }
+// the text selected, ready to copy — what the last-resort prompt() did, without stopping
+function amCopyBox(text,str){
+  return new Promise(res=>{
+    const p=amAsk(text,[{t:'סגור',v:true,primary:true}],true);
+    setTimeout(()=>{
+      const boxes=document.querySelectorAll('div[style*="2147483000"] > div');
+      const box=boxes[boxes.length-1]; if(!box){return;}
+      const ta=document.createElement('textarea');
+      ta.readOnly=true; ta.value=str;
+      ta.style.cssText='width:100%;height:120px;margin-bottom:12px;direction:ltr;font:12px monospace;'
+        +'background:#0d0c0a;color:#d8cdb8;border:1px solid #6b5a33';
+      box.insertBefore(ta,box.lastChild); ta.focus(); ta.select();
+    },0);
+    p.then(res);
+  });
+}
 const cv=$('cv');
 const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
   // a lost GL context is HEARD, not a silent white canvas (field report 25/08);
   // boot restores the embedded sheet and the op-log, so a reload loses nothing
   renderer.domElement.addEventListener('webglcontextlost',ev=>{
     ev.preventDefault();
-    alert('התצוגה הגרפית אופסה על ידי מערכת ההפעלה (עומס על כרטיס המסך).\n'
-         +'העבודה שמורה. העמוד ייטען מחדש וישחזר אותה.');
-    location.reload();
+    amTell('התצוגה הגרפית אופסה על ידי מערכת ההפעלה (עומס על כרטיס המסך).\n'
+         +'העבודה שמורה. העמוד ייטען מחדש וישחזר אותה.','לטעון מחדש').then(()=>location.reload());
   });
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 const scene=new THREE.Scene();
@@ -93,7 +155,7 @@ $('file').addEventListener('change',e=>{
       return;
     }
     f.text().then(t=>{window.__am.applySheet(JSON.parse(t));})
-      .catch(ex=>alert('טעינת הגיליון נכשלה:\n'+((ex&&ex.message)||ex)));
+      .catch(ex=>amTell('טעינת הגיליון נכשלה:\n'+((ex&&ex.message)||ex)));
     return;
   }
   f.arrayBuffer().then(load).catch(ex=>{$('err').textContent='שגיאה: '+ex.message;});
@@ -562,7 +624,10 @@ mat.onBeforeCompile=sh=>{
       const col=new THREE.Color(T.hex||'#b8934a');
       // the ruler layer's opacity, as in the other three screens; the length tag stays
       const _op=(typeof T.op==='number')?T.op:1;
-      const _lm=()=>({color:col,depthTest:false,transparent:_op<0.999,opacity:_op});
+      // ALWAYS in the transparent pass, even at 100% (24/09): an opaque overlay is drawn in the
+      // opaque pass, BEFORE the transparent model and layers, which then paint over it — the
+      // ruler vanished at 100% and came back at 99% (Eli).
+      const _lm=()=>({color:col,depthTest:false,transparent:true,opacity:_op});
       for(const q of rulPts){
         if(q.t!==T.id) continue;
         const m=new THREE.Mesh(new THREE.SphereGeometry(1,14,10),
@@ -815,7 +880,10 @@ mat.onBeforeCompile=sh=>{
       const col=new THREE.Color((T&&T.hex)||'#4dff4d');
       // the whole layer fades, outline and corners included (Eli, 24/09); the tag stays
       const _op=(T&&typeof T.op==='number')?T.op:0.75;
-      const _lm=()=>({color:col,depthTest:false,transparent:_op<0.999,opacity:_op});
+      // ALWAYS in the transparent pass, even at 100% (24/09): an opaque overlay is drawn in the
+      // opaque pass, BEFORE the transparent model and layers, which then paint over it — the
+      // ruler vanished at 100% and came back at 99% (Eli).
+      const _lm=()=>({color:col,depthTest:false,transparent:true,opacity:_op});
       for(const q of P.pts){
         const m=new THREE.Mesh(new THREE.SphereGeometry(1,14,10),
           new THREE.MeshBasicMaterial(_lm()));
@@ -1715,7 +1783,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       for(let i=0;i<cap;i++){const fo=out[(Math.random()*out.length)|0];
         if(labeled[fo])continue;labeled[fo]=1;Xi.push(fo);yi.push(0);nneg++;}
     }
-    if(npos<15||nneg<15){alert('צריך עוד דוגמאות לסוג "'+(T.name||'ללא שם')+'": לפחות ~15 פאות מסומנות (＋) ו-15 לא (−).\nכרגע: '+npos+' כן, '+nneg+' לא.');return;}
+    if(npos<15||nneg<15){amTell('צריך עוד דוגמאות לסוג "'+(T.name||'ללא שם')+'": לפחות ~15 פאות מסומנות (＋) ו-15 לא (−).\nכרגע: '+npos+' כן, '+nneg+' לא.');return;}
     const w=new Float64Array(NE);let bw=0;
     const wpos=yi.length/(2*npos),wneg=yi.length/(2*nneg),lr=0.3,lam=0.02;
     for(let it=0;it<500;it++){
@@ -1877,7 +1945,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   $('auto').onclick=autoComplete;
   /* WHAT THE SLIDER MEANS NOW, in words (301). It has changed meaning with the layer
      since 256 and never said which. */
-  const AM_BRUSH_WHAT={area:'רדיוס המברשת', len:'רוחב הקו', cnt:'קוטר המעוין',
+  const AM_BRUSH_WHAT={area:'רדיוס המברשת', len:'רוחב הקו', cnt:'קוטר הסמן',
                        rul:'רדיוס המברשת', vol:'רדיוס המברשת'};
   const AM_TOOL_NAME={area:'סימון שטח', len:'סרט מדידה', cnt:'מונה', rul:'סרגל', vol:'נפח אזור'};
   // The tolerance belongs to growing alone (Eli, 24/09) — hidden, not dimmed, in every
@@ -2048,11 +2116,12 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     recolorAll(); polyRebuild(); rulRebuild(); syncKindUI(); buildChips(); updateArea();
     markUnexported(true);
   }
-  function amLayerDelete(kind,i){
+  async function amLayerDelete(kind,i){
     const list=AM_KIND_LIST[kind](), T=list[i]; if(!T) return;
     const held=amLayerHeld(kind,T);
-    if(held.n&&!confirm('למחוק את השכבה "'+(T.name||'ללא שם')+'"?\n\nיימחקו איתה: '+held.say
-                        +'.\nאפשר להחזיר אותה בכפתור הביטול.')) return;
+    if(held.n&&!(await amAsk('למחוק את השכבה "'+(T.name||'ללא שם')+'"?\n\nיימחקו איתה: '+held.say
+                        +'.\nאפשר להחזיר אותה בכפתור הביטול.',
+                        [{t:'למחוק את השכבה',v:true,primary:true},{t:'ביטול',v:false}],false))) return;
     const snap={kind:kind,i:i,T:T};
     amLayerOut(snap);
     undoStack.push([['D',snap]]); redoStack.length=0; updateHB();
@@ -2133,22 +2202,22 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     updateArea();}
   $('addType').onclick=()=>$('typeColor').click();
   $('typeColor').onchange=e=>{const hex=e.target.value;
-    if(reservedColor(hex)){alert('אדום שמור למברשת המחיקה, וכתום לאזור הכללי.\nנא לבחור צבע אחר.');return;}
+    if(reservedColor(hex)){amTell('אדום שמור למברשת המחיקה, וכתום לאזור הכללי.\nנא לבחור צבע אחר.');return;}
     mkType('',hex);activateT(types.length-1);setMode('add');markUnexported(true);
     const inp=document.querySelector('#chipsA .chip.on input');if(inp)inp.focus();};
   $('addCnt').onclick=()=>$('cntColor').click();
   $('cntColor').onchange=e=>{const hex=e.target.value;
-    if(reservedColor(hex)){alert('כתום שמור לאזור הכללי.\nנא לבחור צבע אחר.');return;}
+    if(reservedColor(hex)){amTell('כתום שמור לאזור הכללי.\nנא לבחור צבע אחר.');return;}
     mkCntType('',hex);activateC(cntTypes.length-1);markUnexported(true);
     const inp=document.querySelector('#chipsC .chip.on input');if(inp)inp.focus();};
   $('addRul').onclick=()=>$('rulColor').click();
   $('rulColor').onchange=e=>{const hex=e.target.value;
-    if(reservedColor(hex)){alert("אדום שמור למברשת המחיקה, וכתום לאזור הכללי. נא לבחור צבע אחר.");return;}
+    if(reservedColor(hex)){amTell("אדום שמור למברשת המחיקה, וכתום לאזור הכללי. נא לבחור צבע אחר.");return;}
     mkRulType('',hex);activateR(rulTypes.length-1);markUnexported(true);
     const inp=document.querySelector('#chipsR .chip.on input');if(inp)inp.focus();};
   $('addLen').onclick=()=>$('lenColor').click();
   $('lenColor').onchange=e=>{const hex=e.target.value;
-    if(reservedColor(hex)){alert('אדום שמור למברשת המחיקה, וכתום לאזור הכללי.\nנא לבחור צבע אחר.');return;}
+    if(reservedColor(hex)){amTell('אדום שמור למברשת המחיקה, וכתום לאזור הכללי.\nנא לבחור צבע אחר.');return;}
     mkLenType('',hex);activateL(lenTypes.length-1);markUnexported(true);
     const inp=document.querySelector('#chipsL .chip.on input');if(inp)inp.focus();};
 
@@ -2311,13 +2380,13 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   }
   if(sheet){
     try{applySheet(sheet);}
-    catch(ex){alert('הגיליון שבקובץ העבודה לא נטען:\n'+ex.message+'\nהמודל נפתח בלי סימונים.');}
+    catch(ex){amTell('הגיליון שבקובץ העבודה לא נטען:\n'+ex.message+'\nהמודל נפתח בלי סימונים.');}
   }
 
   /* ---- restore unexported marks of THIS work from the op-log ----
      entries carry the type's colour+name, so the palette is rebuilt on the way in;
      legacy entries (no colour) land on the default type. Lines restore whole. */
-  dbReady.then(readOps).then(ops=>{
+  dbReady.then(readOps).then(async ops=>{
     if(!ops.length)return;
     const lastV={}; const lns=[];
     ops.forEach(o=>{
@@ -2326,7 +2395,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       lastV[key]=o;});
     const marks=Object.values(lastV).filter(o=>o.v!==0);
     if(!marks.length&&!lns.length)return;
-    if(confirm('נמצאו '+(marks.length+lns.length)+' סימונים שלא יוצאו מהביקור הקודם בעבודה הזאת — לשחזר?')){
+    if(await amAsk('נמצאו '+(marks.length+lns.length)+' סימונים שלא יוצאו מהביקור הקודם בעבודה הזאת.',
+                   [{t:'לשחזר את הסימונים',v:true,primary:true},{t:'לא לשחזר',v:false}],false)){
       for(const o of marks){const ti=findOrMkType(o.c||'#4dff4d',o.n||'');
         types[ti].manual[o.s]=o.v;recolorFace(o.s);}
       for(const ln of lns){
