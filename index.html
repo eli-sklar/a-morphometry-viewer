@@ -29,6 +29,11 @@
   #side{width:150px;background:rgba(17,15,12,.92);border:1px solid #6b5a33;
         border-radius:2px;padding:9px;box-sizing:border-box}
   #sideTool{font-size:13px;color:var(--amber);text-align:center;font-weight:600;min-height:16px}
+  #side .row,.sfield .row{display:flex;gap:5px}
+  .sfield .row button{flex:1 1 0;padding:7px 2px;font-size:14px;font-weight:500}
+  .sfield .row button.on{background:#3a2f16;outline:2px solid var(--amber);color:#fff}
+  #side .row button{flex:1 1 0;padding:9px 2px;font-size:14px;font-weight:500}
+  #side .row button.on{background:#3a2f16;outline:2px solid var(--amber);color:#fff}
   #side .sfield label{font-size:13px;color:#8a8272;display:block;margin-bottom:3px}
   #side .sfield input[type=range]{width:100%;accent-color:var(--amber)}
   #side .sfield .val{float:left;font-variant-numeric:tabular-nums}
@@ -125,9 +130,17 @@
   </div>
   <div class="grp">
     <!-- 301: the brush lives beside the buttons that use it -->
-    <div class="sfield">
+    <div class="sfield" id="brushWrap">
       <label for="brush"><span id="brushWhat">גודל המברשת</span><span id="brushV" class="val">0.10</span></label>
       <input id="brush" type="range" min="2" max="40" value="10">
+    </div>
+    <!-- 6 (24/09): the ball is the ball; the flat one is the ball cut by what is seen -->
+    <div class="sfield" id="shapeWrap">
+      <label title="כדורית — כל מה שבתוך כדור ברדיוס המברשת, גם מה שמוסתר מהמבט. שטוחה — אותו כדור, רק מה שנראה על המסך.">צורה</label>
+      <div class="row">
+        <button id="sBall" class="on">כדורית</button>
+        <button id="sFlat">שטוחה</button>
+      </div>
     </div>
     <div class="sfield" id="growWrap" style="display:none">
       <label for="grtol">סבילות הנביטה<span id="grtolV" class="val">14</span></label>
@@ -144,6 +157,14 @@
 </div>
 <div id="side" style="display:none">
   <div id="sideTool">סימון שטח</div>
+  <!-- 10 (24/09): the area tool is picked here; a layer holds brush marks and polygons -->
+  <div class="sfield" id="areaToolWrap">
+    <label title="מברשת — שטח פני המודל שנצבע. פוליגון — שטח המצולע עצמו. שניהם באותה שכבה, והסך הוא הסכום.">כלי הסימון</label>
+    <div class="row">
+      <button id="aBrush" class="on">מברשת</button>
+      <button id="aPoly">פוליגון</button>
+    </div>
+  </div>
   <button id="mNav" class="nav on">ניווט</button>
   <button id="mAdd" class="add"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M8.8 2.6h6.4v12.2H8.8z"/><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M8.8 14.8h6.4L12 21.4z"/><path fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" d="M12 2.6v12.2M10.6 17.6h2.8"/><path fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" d="M8.8 5.4h6.4"/></svg> סימון</button>
   <button id="mRem" class="rem"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M9.2 2.6h5.6a1.4 1.4 0 0 1 1.4 1.4v4.2a1.4 1.4 0 0 1-1.4 1.4H9.2A1.4 1.4 0 0 1 7.8 8.2V4a1.4 1.4 0 0 1 1.4-1.4z"/><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M8.4 9.6h7.2l1.2 9.4a1.6 1.6 0 0 1-1.6 1.8H8.8a1.6 1.6 0 0 1-1.6-1.8z"/><path fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" d="M7.4 20.2h9.2"/></svg> מחיקה</button>

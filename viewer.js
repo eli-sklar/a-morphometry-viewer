@@ -412,15 +412,10 @@ mat.onBeforeCompile=sh=>{
   const types=[]; let activeT=0, tSeq=0;
   let activeKind='area';               // area layers XOR length layers (user round 11/08)
   const hex2rgb=h=>[parseInt(h.slice(1,3),16)/255,parseInt(h.slice(3,5),16)/255,parseInt(h.slice(5,7),16)/255];
-  // 256: how a layer MEASURES is a property of the layer, as in the editor
+  // 10 (24/09): an area layer holds brush marks AND polygons; the side bar picks the tool,
+  // as in the measurement screen. `T.am` stays as the tool last used on the layer.
   const AM_BRUSH='brush', AM_POLY='poly';
-  const AM_MODE_NAME={brush:'סימון במברשת', poly:'שטח פוליגון'};
-  function typeHasContent(T){
-    if(!T) return false;
-    for(let s=0;s<N;s++) if(T.manual[s]===1) return true;
-    for(const P of polys) if(P.at===T.id) return true;
-    return false;
-  }
+  let areaTool=AM_BRUSH;
   function mkType(name,hex){const T={design:0.6,designU:{value:0.6},id:'t'+(tSeq++),name:name,hex:hex,color:hex2rgb(hex),
     manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,area:0,
     am:AM_BRUSH};
@@ -1170,9 +1165,9 @@ mat.onBeforeCompile=sh=>{
     // ruler still reads a press in the air as the end of its chain.
     else if(!amOnSurface(e)){ if(activeKind==='rul') rulEnd(); dragging='rot'; }
     else if(mode==='grow'){growAt(e);dragging=null;}
-    else if(activeKind==='area'&&(types[activeT]||{}).am===AM_POLY&&mode==='add'){
+    else if(activeKind==='area'&&areaTool===AM_POLY&&mode==='add'){
       polyAt(e);dragging=null;}
-    else if(activeKind==='area'&&(types[activeT]||{}).am===AM_POLY&&mode==='rem'){
+    else if(activeKind==='area'&&areaTool===AM_POLY&&mode==='rem'){
       polyEraseAt(e);dragging=null;}
     else if(activeKind==='rul'&&mode==='add'){rulAt(e);dragging=null;}
     else if(activeKind==='rul'&&mode==='rem'){rulEraseAt(e);dragging=null;}
@@ -1266,10 +1261,81 @@ mat.onBeforeCompile=sh=>{
   }
 
   /* ---- brush paint ---- */
+  /* 6 (24/09): the two shapes, one meaning in every screen — the ball is the ball; the
+     flat one is the ball CUT BY what is seen on screen (Eli). One pass draws every
+     sub-face in the colour of its id, again only when the camera moved. */
+  let brushShape='ball';
+  const AMID={mat:null, rt:null, cam:null, ok:true, W:0, H:0, n:0};
+  function amIdRender(){
+    if(!AMID.ok) return false;
+    try{
+      const g=mesh.geometry, n=g.attributes.position.count;
+      if(!AMID.mat||AMID.n!==n){
+        const a=new Uint8Array(n*3);
+        for(let i=0;i<n;i++){ const f=((i/3)|0)+1;
+          a[i*3]=f&255; a[i*3+1]=(f>>8)&255; a[i*3+2]=(f>>16)&255; }
+        g.setAttribute('aFid', new THREE.BufferAttribute(a,3,true));
+        if(!AMID.mat) AMID.mat=new THREE.ShaderMaterial({
+          vertexShader:'attribute vec3 aFid; varying vec3 vFid;'
+                      +'void main(){ vFid=aFid; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+          fragmentShader:'varying vec3 vFid; void main(){ gl_FragColor=vec4(vFid,1.0); }',
+          side:THREE.DoubleSide});
+        AMID.n=n; AMID.cam=null;
+      }
+      if(AMID.cam&&camera.matrixWorld.equals(AMID.cam)&&AMID.rt) return true;
+      const sz=renderer.getDrawingBufferSize(new THREE.Vector2());
+      const W=Math.max(16,Math.min(2048,Math.round(sz.x))), H=Math.max(16,Math.min(2048,Math.round(sz.y)));
+      if(!AMID.rt||AMID.rt.width!==W||AMID.rt.height!==H){
+        if(AMID.rt) AMID.rt.dispose();
+        AMID.rt=new THREE.WebGLRenderTarget(W,H,{minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter});
+      }
+      AMID.W=W; AMID.H=H;
+      const prevT=renderer.getRenderTarget(), prevM=mesh.material, hid=[];
+      scene.traverse(o=>{ if(o!==mesh&&o.visible&&(o.isMesh||o.isLine||o.isLineSegments||o.isPoints||o.isSprite)){o.visible=false;hid.push(o);} });
+      const cc=new THREE.Color(); renderer.getClearColor(cc); const ca=renderer.getClearAlpha();
+      mesh.material=AMID.mat;
+      renderer.setRenderTarget(AMID.rt); renderer.setClearColor(0x000000,1); renderer.clear();
+      renderer.render(scene,camera);
+      renderer.setRenderTarget(prevT); renderer.setClearColor(cc,ca); mesh.material=prevM;
+      for(const o of hid) o.visible=true;
+      AMID.cam=camera.matrixWorld.clone();
+      return true;
+    }catch(_){ AMID.ok=false; return false; }
+  }
+  function amSeenUnder(e,p){
+    if(brushShape!=='flat'||!amIdRender()) return null;
+    const r=el.getBoundingClientRect();
+    const X=((e.clientX-r.left)/r.width)*AMID.W, Y=(1-(e.clientY-r.top)/r.height)*AMID.H;
+    const right=new THREE.Vector3(); camera.getWorldDirection(right);
+    right.cross(camera.up); if(right.lengthSq()<1e-12) right.set(1,0,0); right.normalize();
+    const a=p.clone().project(camera), b=p.clone().addScaledVector(right,brushR).project(camera);
+    const d=camera.position.distanceTo(p);
+    const rp=Math.max(1,Math.abs(b.x-a.x)*0.5*AMID.W*(d/Math.max(d-brushR,0.25*d)));
+    const x0=Math.max(0,Math.floor(X-rp)), y0=Math.max(0,Math.floor(Y-rp));
+    const x1=Math.min(AMID.W-1,Math.ceil(X+rp)), y1=Math.min(AMID.H-1,Math.ceil(Y+rp));
+    const w=x1-x0+1, h=y1-y0+1; if(w<1||h<1) return new Set();
+    const buf=new Uint8Array(4*w*h);
+    renderer.readRenderTargetPixels(AMID.rt,x0,y0,w,h,buf);
+    const out=new Set(), r2=rp*rp;
+    for(let j=0;j<h;j++) for(let i=0;i<w;i++){
+      const dx=x0+i-X, dy=y0+j-Y; if(dx*dx+dy*dy>r2) continue;
+      const k=4*(j*w+i), f=(buf[k]|(buf[k+1]<<8)|(buf[k+2]<<16))-1;
+      if(f>=0&&f<N) out.add(f);
+    }
+    return out;
+  }
+  function amSetShape(k){
+    brushShape=(k==='flat')?'flat':'ball';
+    const b=$('sBall'), f=$('sFlat');
+    if(b) b.classList.toggle('on',brushShape==='ball'); if(f) f.classList.toggle('on',brushShape==='flat');
+  }
+  if($('sBall')) $('sBall').onclick=()=>amSetShape('ball');
+  if($('sFlat')) $('sFlat').onclick=()=>amSetShape('flat');
   function paintAt(e){
     const hit=castAt(e); if(!hit.length)return;
     const p=hit[0].point,r2=brushR*brushR;let ch=false;
     const val=(mode==='add')?1:-1;
+    const seen=amSeenUnder(e,p);                // 6: null = the ball; a set = the flat cut
     const ix0=Math.floor((p.x-brushR)/CELL),ix1=Math.floor((p.x+brushR)/CELL);
     const iy0=Math.floor((p.y-brushR)/CELL),iy1=Math.floor((p.y+brushR)/CELL);
     const iz0=Math.floor((p.z-brushR)/CELL),iz1=Math.floor((p.z+brushR)/CELL);
@@ -1277,7 +1343,7 @@ mat.onBeforeCompile=sh=>{
       const a=grid.get(ckey(ix,iy,iz)); if(!a)continue;
       for(let n=0;n<a.length;n++){const f=a[n];
         const dx=cen[f*3]-p.x,dy=cen[f*3+1]-p.y,dz=cen[f*3+2]-p.z;
-        if(dx*dx+dy*dy+dz*dz<=r2){
+        if(dx*dx+dy*dy+dz*dz<=r2&&(!seen||seen.has(f))){
           const M=types[activeT].manual;
           if(M[f]!==val){recH(activeT,f);M[f]=val;recolorFace(f);ch=true;}
         }}}
@@ -1707,6 +1773,14 @@ mat.onBeforeCompile=sh=>{
   $('mRem').onclick=()=>setMode('rem');
 
   $('mGrow').onclick=()=>setMode('grow');
+  function amSetAreaTool(k){
+    areaTool=(k===AM_POLY)?AM_POLY:AM_BRUSH;
+    const T=types[activeT]; if(T&&T.am!==areaTool){T.am=areaTool; markUnexported(true);}
+    if(mode!=='add'&&mode!=='rem') setMode('add'); else amSideWhat();
+    applyBrush();
+  }
+  $('aBrush').onclick=()=>amSetAreaTool(AM_BRUSH);
+  $('aPoly').onclick=()=>amSetAreaTool(AM_POLY);
   // The keys stay — a keyboard may be attached, and the same page opens on a computer —
   // but the NOTE about them is gone (user decision 13/08): an iPad normally has no
   // keyboard, so a strip telling the user about Ctrl+Z described something that is not
@@ -1741,9 +1815,17 @@ mat.onBeforeCompile=sh=>{
   // other mode; while growing the side bar's title says so.
   function amSideWhat(){
     const growing=(mode==='grow'&&activeKind==='area');
+    const poly=(activeKind==='area'&&areaTool===AM_POLY&&!growing);
     const w=$('brushWhat'); if(w) w.textContent=AM_BRUSH_WHAT[activeKind]||'גודל המברשת';
-    const t=$('sideTool'); if(t) t.textContent=growing?'נביטה':(AM_TOOL_NAME[activeKind]||'סימון');
+    const t=$('sideTool'); if(t) t.textContent=growing?'נביטה':poly?'שטח פוליגון':(AM_TOOL_NAME[activeKind]||'סימון');
     const g=$('growWrap'); if(g) g.style.display=growing?'':'none';
+    // 10: the tool pair belongs to an area layer; a polygon has no brush size
+    const aw=$('areaToolWrap'); if(aw) aw.style.display=(activeKind==='area')?'':'none';
+    const bw=$('brushWrap'); if(bw) bw.style.display=poly?'none':'';
+    // 6: the shape belongs to the brush that paints faces
+    const sw=$('shapeWrap'); if(sw) sw.style.display=(activeKind==='area'&&!poly&&!growing)?'':'none';
+    const ab=$('aBrush'), apl=$('aPoly');
+    if(ab) ab.classList.toggle('on',areaTool!==AM_POLY); if(apl) apl.classList.toggle('on',areaTool===AM_POLY);
   }
   function applyBrush(){amSideWhat();const v=+$('brush').value;
     if(activeKind==='len'){lineW=0.002+(v-2)/38*0.028;$('brushV').textContent=(lineW*1000).toFixed(0)+' \u05de"\u05de';}
@@ -1824,6 +1906,7 @@ mat.onBeforeCompile=sh=>{
     syncKindUI();buildChips();
     if(mode!=='add'&&mode!=='rem')setMode('add');}
   function activateT(i){activeKind='area';activeT=i;const T=types[i];
+    areaTool=(T&&T.am===AM_POLY)?AM_POLY:AM_BRUSH;   // 10: the tool last used on this layer
     $('thr').value=Math.round(T.thr*1000);$('thrV').textContent=T.thr.toFixed(3);
     syncKindUI();buildChips();}
   function activateR(i){activeKind='rul';activeR=i;rulEnd();syncKindUI();buildChips();
@@ -1922,16 +2005,7 @@ mat.onBeforeCompile=sh=>{
       const b=document.createElement('b');b.id='tA_'+T.id;b.textContent=(T.area||0).toFixed(2);c.appendChild(b);
       const u=document.createElement('span');u.className='u';u.textContent='מ״ר';c.appendChild(u);
       // 256: the layer's measurement mode, on the layer — locked once it holds marks
-      const ms=document.createElement('select');
-      ms.disabled=typeHasContent(T);
-      ms.title=ms.disabled?'שיטת המדידה נעולה — כבר יש בשכבה סימונים':'שיטת המדידה של השכבה';
-      ms.style.cssText='font-size:11px;margin-inline-start:4px;max-width:104px';
-      for(const kk of [AM_BRUSH,AM_POLY]){
-        const o=document.createElement('option');o.value=kk;o.textContent=AM_MODE_NAME[kk];
-        if((T.am||AM_BRUSH)===kk)o.selected=true; ms.appendChild(o);}
-      ms.onclick=e=>e.stopPropagation();
-      ms.onchange=()=>{T.am=ms.value;polyCancel();markUnexported(true);buildChips();};
-      c.appendChild(ms);
+      // 10: no measurement-mode menu on the layer — the side bar picks the tool
       if(T.hid) c.style.opacity='0.45';
       c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;recolorAll();polyRebuild();buildChips();markUnexported(true);}));
       c.appendChild(amDelX('area',i));
@@ -2158,6 +2232,7 @@ mat.onBeforeCompile=sh=>{
     for(const src of (sh.counters||[])){const pts=src.pts||[];
       for(let i=0;i+2<pts.length;i+=3) addX({t:src.t,p:[pts[i],pts[i+1],pts[i+2]],obj:null});}
     if(cntTypes.length)activeC=0;
+    areaTool=(types[activeT]&&types[activeT].am===AM_POLY)?AM_POLY:AM_BRUSH;   // 10
     if(lenTypes.length)activeL=0;
     $('thr').value=Math.round(types[0].thr*1000);
     $('thrV').textContent=types[0].thr.toFixed(3);
