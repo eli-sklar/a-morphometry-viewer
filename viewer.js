@@ -1134,8 +1134,81 @@ mat.onBeforeCompile=sh=>{
   const pdist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
   const touchList=()=>[...ptrs.values()].filter(p=>p.type==='touch');
   const hasPen=()=>{for(const p of ptrs.values())if(p.type==='pen')return true;return false;};
-  function startPinch(){const t=touchList();if(t.length<2)return;
+  function startPinch(){const t=touchList();if(t.length<2)return;amPinchH=undefined;
     pinch={d:pdist(t[0],t[1]),mx:(t[0].x+t[1].x)/2,my:(t[0].y+t[1].y)/2};}
+  /* ---- 1 (24/09): NAVIGATION AROUND WHAT IS UNDER THE HAND --------------------------
+     Eli, on long models and after a crop: close to a wall, a drag moves the view by almost
+     nothing, and turning swings around a centre far away. The camera turned around the
+     bounding sphere's CENTRE and panned at a speed set by the distance to it — right for a
+     model seen whole, wrong for a wall seen from a metre (CloudCompare: "נשמע כיוון טוב").
+     Three things, each measured from the point under the cursor:
+     - TURN about the point where the drag began. The turn is made as always — yaw and
+       pitch, never a roll — and then the centre of view is carried by the SAME rigid
+       rotation about that point, so the point stays exactly where it is on the screen.
+     - GRAB: a pan moves the wall with the hand — one pixel is what one pixel is worth at
+       the depth of the point that was grabbed, not at the depth of the model's centre.
+     - ZOOM toward the point under the cursor, and stop short of the SURFACE, not of the
+       centre. Empty space behaves as before: turn about the centre of view, pan and zoom
+       at its distance. */
+  const _amNavRay=new THREE.Raycaster();
+  let amNavDown=null, amPivot=undefined, amPanK=undefined, amPinchH=undefined, amWheel=null;
+  function amNavHit(e){
+  camera.updateMatrixWorld();
+    const r=el.getBoundingClientRect();
+    _amNavRay.setFromCamera(new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,
+                                              -((e.clientY-r.top)/r.height)*2+1),camera);
+    const h=_amNavRay.intersectObject(mesh,false);
+    return h.length?h[0].point.clone():null;
+  }
+  function amApply(){ apply(); camera.updateMatrixWorld(); }
+function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=undefined; amPanK=undefined; }
+  function amDepthOf(p){ camera.updateMatrixWorld(); return p.clone().sub(camera.position).dot(camera.getWorldDirection(new THREE.Vector3())); }
+  function amWorldPerPx(depth){
+    const r=el.getBoundingClientRect();
+    return 2*Math.max(depth,1e-6)*Math.tan(camera.fov*Math.PI/360)/Math.max(1,r.height);
+  }
+  function amTurn(dAz,dPol){
+    if(amPivot===undefined) amPivot=amNavDown?amNavHit(amNavDown):null;
+    const q0=camera.quaternion.clone();
+    az+=dAz; pol+=dPol; amApply();
+    if(!amPivot) return;
+    const Rq=camera.quaternion.clone().multiply(q0.invert());
+    target.sub(amPivot).applyQuaternion(Rq).add(amPivot); amApply();
+  }
+  function amPanBy(dx,dy,k){
+    const r=new THREE.Vector3(); camera.getWorldDirection(r);
+    const right=new THREE.Vector3().crossVectors(r,camera.up).normalize();
+    const up=new THREE.Vector3().crossVectors(right,r).normalize();
+    target.addScaledVector(right,-dx*k); target.addScaledVector(up,dy*k); amApply();
+  }
+  function amPan(dx,dy){
+    if(amPanK===undefined){ const h=amNavDown?amNavHit(amNavDown):null;
+      amPanK=amWorldPerPx(h?amDepthOf(h):dist); }
+    amPanBy(dx,dy,amPanK);
+  }
+  // scale the view about h by s (<1 in, >1 out): h keeps its place on the screen
+  function amZoomAbout(h,s){
+    const Rb=bs.radius;
+    if(h&&s<1){ const d=camera.position.distanceTo(h), minD=Math.max(Rb*0.002,0.005);
+      if(d*s<minD) s=Math.min(1,minD/Math.max(d,1e-9)); }
+    if(dist*s>Rb*8) s=Rb*8/dist;
+    if(dist*s<Rb*1e-5) s=Rb*1e-5/dist;
+    if(h) target.sub(h).multiplyScalar(s).add(h);
+    dist*=s; amApply();
+  }
+  // the wheel asks once per burst: while the cursor stays put the point under it does too
+  function amWheelAt(e,s){
+    const now=performance.now();
+    if(!amWheel||now-amWheel.t>250||Math.hypot(e.clientX-amWheel.x,e.clientY-amWheel.y)>4)
+      amWheel={x:e.clientX,y:e.clientY,h:amNavHit(e)};
+    amWheel.t=now;
+    amZoomAbout(amWheel.h,s);
+  }
+  function amPinch(s,mx,my,dmx,dmy){
+    if(amPinchH===undefined) amPinchH=amNavHit({clientX:mx,clientY:my});
+    amZoomAbout(amPinchH,s);
+    amPanBy(dmx,dmy,amWorldPerPx(amPinchH?amDepthOf(amPinchH):dist));
+  }
   // Is the press ON the model, or in empty space?
   function amOnSurface(e){
     const r=el.getBoundingClientRect();
@@ -1150,7 +1223,7 @@ mat.onBeforeCompile=sh=>{
     } else if(e.pointerType==='touch'&&hasPen()) return;
     el.setPointerCapture(e.pointerId);
     ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY,type:e.pointerType});
-    last=[e.clientX,e.clientY]; dragId=e.pointerId;
+    last=[e.clientX,e.clientY]; dragId=e.pointerId; amNavArm(e);
     if(touchList().length>=2&&!hasPen()){
       if(dragging==='paint'&&paintManual)commitH();
       if(dragging==='line')endLine();
@@ -1182,17 +1255,13 @@ mat.onBeforeCompile=sh=>{
     ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY,type:e.pointerType});
     if(dragging==='pinch'){const t=touchList();if(t.length<2||!pinch)return;
       const nd=pdist(t[0],t[1]),nmx=(t[0].x+t[1].x)/2,nmy=(t[0].y+t[1].y)/2;
-      if(nd>0){dist*=pinch.d/nd;dist=Math.max(bs.radius*0.04,Math.min(bs.radius*8,dist));
-        const k=dist*0.0015;const r=new THREE.Vector3();camera.getWorldDirection(r);
-        const right=new THREE.Vector3().crossVectors(r,camera.up).normalize();
-        const up=new THREE.Vector3().crossVectors(right,r).normalize();
-        target.addScaledVector(right,-(nmx-pinch.mx)*k);target.addScaledVector(up,(nmy-pinch.my)*k);apply();}
+      if(nd>0){amPinch(pinch.d/nd,nmx,nmy,nmx-pinch.mx,nmy-pinch.my);}
       pinch={d:nd,mx:nmx,my:nmy};return;}
     if(dragId!==null&&e.pointerId!==dragId) return;       // palm guard
     // a finger that travels is navigating, not holding — the grab must not fire behind it
     if(amHold&&Math.hypot(e.clientX-amHold.x,e.clientY-amHold.y)>AM_HOLD_SLOP) amHoldClear();
     const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];
-    if(dragging==='rot'){az-=dx*0.006;pol-=dy*0.006;apply();}
+    if(dragging==='rot'){amTurn(-dx*0.006,-dy*0.006);}
     else if(dragging==='line'){lineAt(e);}
     else if(dragging==='lerase'){lineEraseAt(e);}
     else if(dragging==='xerase'){eraseXAt(e);}
