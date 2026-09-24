@@ -440,7 +440,7 @@ mat.onBeforeCompile=sh=>{
   const _vis=[];
   function recolorFace(f){
     let r=null, a=0, d=0; _vis.length=0;
-    for(let ti=0;ti<types.length;ti++) if(types[ti].op>0&&isType(ti,f)) _vis.push(ti);
+    for(let ti=0;ti<types.length;ti++) if(types[ti].op>0&&!types[ti].hid&&isType(ti,f)) _vis.push(ti);
     if(!_vis.length){ if(roi[f]){r=ROIC;a=0.45;} else {r=[1,1,1];a=0;} }
     else { const T=types[_vis[f%_vis.length]]; r=T.color; a=T.op; d=(typeof T.design==='number')?T.design:0.6; }   // alternating triangles
     const o=f*9;
@@ -455,7 +455,7 @@ mat.onBeforeCompile=sh=>{
     _desReq=false;
     for(let f=0;f<N;f++){
       _vis.length=0;
-      for(let ti=0;ti<types.length;ti++) if(types[ti].op>0 && isType(ti,f)) _vis.push(ti);
+      for(let ti=0;ti<types.length;ti++) if(types[ti].op>0 && !types[ti].hid && isType(ti,f)) _vis.push(ti);
       if(!_vis.length) continue;
       const T=types[_vis[f%_vis.length]];
       const d=(typeof T.design==='number')?T.design:0.6;
@@ -563,6 +563,7 @@ mat.onBeforeCompile=sh=>{
       if(o.material){if(o.material.map)o.material.map.dispose();o.material.dispose();}
     }
     for(const T of rulTypes){
+      if(T.hid) continue;                       // 9: hidden — measured, not drawn
       const col=new THREE.Color(T.hex||'#b8934a');
       // the ruler layer's opacity, as in the other three screens; the length tag stays
       const _op=(typeof T.op==='number')?T.op:1;
@@ -867,7 +868,7 @@ mat.onBeforeCompile=sh=>{
       sp.position.set(cx/n,cy/n,cz/n);
       polyGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
     };
-    for(const P of polys) draw(P,false);
+    for(const P of polys) if(!amHidOf(types,P.at)) draw(P,false);
     if(curPoly&&curPoly.pts.length) draw(curPoly,true);
     rescaleFixed(); invalidate();
   }
@@ -919,6 +920,7 @@ mat.onBeforeCompile=sh=>{
     const hw=r.width/2, hh=r.height/2, v=new THREE.Vector3();
     let best=null, bd=AM_GRAB_PX;
     for(const q of rulPts){
+      if(amHidOf(rulTypes,q.t)) continue;       // 9: what is not on screen cannot be grabbed
       v.set(q.x,q.y,q.z).project(camera);
       if(v.z<-1||v.z>1) continue;
       const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
@@ -927,6 +929,7 @@ mat.onBeforeCompile=sh=>{
     // a ring still being drawn is grabbable too — that is when a point is most often wrong
     const rings=curPoly?polys.concat([curPoly]):polys;
     for(const P of rings) for(let i=0;i<P.pts.length;i++){
+      if(P!==curPoly&&amHidOf(types,P.at)) break;
       const q=P.pts[i];
       v.set(q[0],q[1],q[2]).project(camera);
       if(v.z<-1||v.z>1) continue;
@@ -1005,8 +1008,8 @@ mat.onBeforeCompile=sh=>{
       AM_MK.material(T?T.hex:'#ef4444', T?(T.op!==undefined?T.op:1):1, amDesignU, m.n||1));
     dm.position.set(m.p[0],m.p[1],m.p[2]); dm.renderOrder=3; return dm;}
   function resizeCnt(T){for(const m of xmarks)if(m.t===T.id&&m.obj){
-    scene.remove(m.obj);m.obj=xObj(m);scene.add(m.obj);}}
-  function addX(m){if(!m.obj)m.obj=xObj(m); scene.add(m.obj); if(!xmarks.includes(m))xmarks.push(m);}
+    scene.remove(m.obj);m.obj=xObj(m);m.obj.visible=!T.hid;scene.add(m.obj);}}
+  function addX(m){if(!m.obj)m.obj=xObj(m); m.obj.visible=!amHidOf(cntTypes,m.t); scene.add(m.obj); if(!xmarks.includes(m))xmarks.push(m);}
   function delX(m){if(m.obj)scene.remove(m.obj); const i=xmarks.indexOf(m); if(i>=0)xmarks.splice(i,1);}
   function placeXAt(e){if(activeC<0)return;
     const hit=castAt(e); if(!hit.length)return;
@@ -1062,7 +1065,7 @@ mat.onBeforeCompile=sh=>{
     }
     updateArea();
   }
-  function addLine(L){if(!L.obj)L.obj=lineObj(L); scene.add(L.obj); if(!lines.includes(L))lines.push(L);}
+  function addLine(L){if(!L.obj)L.obj=lineObj(L); L.obj.visible=!amHidOf(lenTypes,L.t); scene.add(L.obj); if(!lines.includes(L))lines.push(L);}
   function delLine(L){if(L.obj)scene.remove(L.obj); const i=lines.indexOf(L); if(i>=0)lines.splice(i,1);}
   function lineLen(pts){let s2=0;for(let i=3;i<pts.length;i+=3)
     s2+=Math.hypot(pts[i]-pts[i-3],pts[i+1]-pts[i-2],pts[i+2]-pts[i-1]);return s2;}
@@ -1607,7 +1610,7 @@ mat.onBeforeCompile=sh=>{
       if(T.manual[f]!==0)m.push([f,T.manual[f]]);
       if(T.faceThr&&!isNaN(T.faceThr[f]))ov.push([f,Math.round(T.faceThr[f]*1000)/1000]);
     }
-    return {id:T.id,name:T.name,color:T.hex,thr:T.thr,op:T.op,am:(T.am||AM_BRUSH),manual:m,faceThr:ov,
+    return {id:T.id,name:T.name,color:T.hex,thr:T.thr,op:T.op,hid:!!T.hid,am:(T.am||AM_BRUSH),manual:m,faceThr:ov,
       hasProb:T.hasProb,
       prob:T.hasProb?(()=>{const p=new Array(FO);
         for(let fo=0;fo<FO;fo++)p[fo]=Math.round(T.prob[OFF[fo]]*1000)/1000;return p;})():null};
@@ -1627,8 +1630,8 @@ mat.onBeforeCompile=sh=>{
       subScheme:AM_SUB_SCHEME,
       hasProb:t0.hasProb,prob:t0.prob,
       types:types.map(typeState),
-      lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex,op:(typeof T.op==='number')?T.op:1})),
-      cntTypes:cntTypes.map(T=>({id:T.id,name:T.name,color:T.hex,
+      lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,op:(typeof T.op==='number')?T.op:1})),
+      cntTypes:cntTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,
         size:Math.round((T.size||cntDefSize())*1000)/1000,
         op:(typeof T.op==='number')?T.op:1})),
       counters:cntTypes.map(T=>({t:T.id,
@@ -1642,7 +1645,7 @@ mat.onBeforeCompile=sh=>{
         pts:P.pts.map(q=>[Math.round(q[0]*1000)/1000,
                           Math.round(q[1]*1000)/1000,
                           Math.round(q[2]*1000)/1000])})),
-      rulTypes:rulTypes.map(T=>({id:T.id,name:T.name,color:T.hex,
+      rulTypes:rulTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,
         op:(typeof T.op==='number')?T.op:1})),
       rulerPts:rulPts.map(q=>({id:q.id,t:q.t,
         p:[Math.round(q.x*1000)/1000,Math.round(q.y*1000)/1000,Math.round(q.z*1000)/1000]})),
@@ -1660,7 +1663,9 @@ mat.onBeforeCompile=sh=>{
     o.typeAreas=types.map((T,ti)=>{let a=0;const fs=[];
       for(let f=0;f<N;f++)if(isType(ti,f)){a+=area[f];fs.push(f);}
       ar+=a;
-      return {id:T.id,name:T.name,color:T.hex,areaM2:Math.round(a*1000)/1000,faces:fs};});
+      return {id:T.id,name:T.name,color:T.hex,areaM2:Math.round(a*1000)/1000,
+              op:(typeof T.op==='number')?Math.round(T.op*100)/100:0.75,
+              design:Math.round(((typeof T.design==='number')?T.design:0.6)*100)/100,faces:fs};});
     o.lenTotals=lenTypes.map(T=>{let s2=0;for(const L of lines)if(L.t===T.id)s2+=L.len;
       return {id:T.id,name:T.name,color:T.hex,lenM:Math.round(s2*1000)/1000};});
     o.cntTotals=cntTypes.map(T=>{let n2=0;for(const m of xmarks)if(m.t===T.id)n2++;
@@ -1776,7 +1781,34 @@ mat.onBeforeCompile=sh=>{
       if(!T.designU)T.designU={value:v}; T.designU.value=v; amDessSoon();}}
     // this viewer renders on a continuous tick, so nothing has to be poked to redraw
   };
-  function syncKindUI(){amSyncDesign();const other=activeKind!=='area';
+  // 7 (24/09): the layer's opacity, through the same one path every activation crosses
+  function amActiveLayer(){
+    if(activeKind==='cnt') return cntTypes[activeC];
+    if(activeKind==='len') return lenTypes[activeL];
+    if(activeKind==='rul') return rulTypes[activeR];
+    if(activeKind==='area') return types[activeT];
+    return null;
+  }
+  function amSyncOp(){
+    const r=$('repop'), rv=$('repopV'); if(!r) return;
+    const T=amActiveLayer();
+    r.disabled=!T;
+    if(T){const o=(typeof T.op==='number')?T.op:(activeKind==='area'?0.75:1);
+          r.value=Math.round(o*100); rv.textContent=Math.round(o*100)+'%';}
+  }
+  if($('repop')) $('repop').oninput=e=>{
+    const v=e.target.value/100, T=amActiveLayer();
+    $('repopV').textContent=e.target.value+'%';
+    if(!T) return;
+    T.op=v;
+    if(activeKind==='area'){recolorAll(); if(polys.length||curPoly) polyRebuild();}
+    else if(activeKind==='len') applyLenOp(T);
+    else if(activeKind==='cnt'){for(const m of xmarks) if(m.t===T.id&&m.obj){
+      m.obj.material.transparent=v<1; m.obj.material.opacity=v; m.obj.material.needsUpdate=true;}}
+    else if(activeKind==='rul') rulRebuild();
+    markUnexported(true);
+  };
+  function syncKindUI(){amSyncDesign();amSyncOp();const other=activeKind!=='area';
     $('auto').disabled=other; $('thr').disabled=other;
     // grow floods FACES by similarity — meaningless for lines and counters (12/08)
     $('mGrow').disabled=other; $('grtol').disabled=other;
@@ -1793,6 +1825,19 @@ mat.onBeforeCompile=sh=>{
     if(mode!=='add'&&mode!=='rem')setMode('add');}
   function activateL(i){activeKind='len';activeL=i;syncKindUI();buildChips();
     if(mode!=='add'&&mode!=='rem')setMode('add');}
+  // 9 (24/09): one eye on every layer, as in the measurement screen — display only; a
+  // hidden layer is still measured and saved, drops out of the alternating triangles,
+  // and marking on it does not show it again (Eli's ruling).
+  function amEye(shown,toggle){
+    const e=document.createElement('i'); e.className='eye'+(shown?'':' off'); e.textContent='👁';
+    e.title=shown?'השכבה מוצגת · נגיעה מסתירה אותה (תצוגה בלבד — המדידה נשארת)'
+                 :'השכבה מוסתרת · נגיעה מציגה אותה';
+    e.onclick=ev=>{ev.stopPropagation();toggle();};
+    return e;
+  }
+  const amHidOf=(list,id)=>{const T=list.find(x=>x.id===id);return !!(T&&T.hid);};
+  function amShowLines(){for(const L of lines) if(L.obj) L.obj.visible=!amHidOf(lenTypes,L.t);}
+  function amShowCnts(){for(const m of xmarks) if(m.obj) m.obj.visible=!amHidOf(cntTypes,m.t);}
   function buildChips(){
     const A=$('chipsA');if(!A)return;A.innerHTML='';
     types.forEach((T,i)=>{
@@ -1814,6 +1859,8 @@ mat.onBeforeCompile=sh=>{
       ms.onclick=e=>e.stopPropagation();
       ms.onchange=()=>{T.am=ms.value;polyCancel();markUnexported(true);buildChips();};
       c.appendChild(ms);
+      if(T.hid) c.style.opacity='0.45';
+      c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;recolorAll();polyRebuild();buildChips();markUnexported(true);}));
       c.onclick=()=>{activateT(i);if(mode==='nav')setMode('add');};
       A.appendChild(c);});
     const C=$('chipsC');if(C){C.innerHTML='';
@@ -1825,6 +1872,8 @@ mat.onBeforeCompile=sh=>{
       c.appendChild(inp);
       const b=document.createElement('b');b.id='cA_'+T.id;b.textContent='0';c.appendChild(b);
       const u=document.createElement('span');u.className='u';u.textContent='יח׳';c.appendChild(u);
+      if(T.hid) c.style.opacity='0.45';
+      c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;amShowCnts();buildChips();markUnexported(true);}));
       c.onclick=()=>activateC(i);
       C.appendChild(c);});}
     const L=$('chipsL');if(!L)return;L.innerHTML='';
@@ -1836,6 +1885,8 @@ mat.onBeforeCompile=sh=>{
       c.appendChild(inp);
       const b=document.createElement('b');b.id='lA_'+T.id;b.textContent='0.00';c.appendChild(b);
       const u=document.createElement('span');u.className='u';u.textContent='מ״א';c.appendChild(u);
+      if(T.hid) c.style.opacity='0.45';
+      c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;amShowLines();buildChips();markUnexported(true);}));
       c.onclick=()=>activateL(i);
       L.appendChild(c);});
     const R=$('chipsR');
@@ -1854,6 +1905,8 @@ mat.onBeforeCompile=sh=>{
         let tot=0; for(const g of rulRuns(T.id)) tot+=g.len;
         b.textContent=tot.toFixed(2); c.appendChild(b);
         const u=document.createElement('span');u.className='u';u.textContent='מ׳';c.appendChild(u);
+        if(T.hid) c.style.opacity='0.45';
+        c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;rulRebuild();buildChips();markUnexported(true);}));
         c.onclick=()=>activateR(i);
         R.appendChild(c);});
     }
@@ -1973,7 +2026,7 @@ mat.onBeforeCompile=sh=>{
     cntTypes.length=0; activeC=-1;
     types.length=1; activeT=0;
     const T0=types[0]; T0.manual.fill(0); T0.faceThr=null; T0.prob=prob; T0.hasProb=false;
-    T0.name='תיקון'; T0.hex='#4dff4d'; T0.color=hex2rgb(T0.hex);
+    T0.name='תיקון'; T0.hex='#4dff4d'; T0.color=hex2rgb(T0.hex); T0.hid=false;
     roi.fill(0);roiCount=0;
     for(const fo of (sh.roiPainted||sh.roiFaces||[])) if(fo<FO)
       for(let t=OFF[fo];t<OFF[fo+1];t++){ if(!roi[t]){roi[t]=1;roiCount++;} }
@@ -1983,6 +2036,7 @@ mat.onBeforeCompile=sh=>{
       if(src.color){T.hex=src.color;T.color=hex2rgb(src.color);}
       if(typeof src.thr==='number')T.thr=src.thr;
       if(typeof src.op==='number')T.op=src.op;
+      T.hid=(src.hid===true);
       for(const pr of (src.manual||[])) amEach(MAP,pr[0],t=>{T.manual[t]=pr[1];});
       if((src.faceThr||[]).length){T.faceThr=new Float32Array(N).fill(NaN);
         for(const pr of src.faceThr) amEach(MAP,pr[0],t=>{T.faceThr[t]=pr[1];});}
@@ -2003,7 +2057,7 @@ mat.onBeforeCompile=sh=>{
     polys.length=0; curPoly=null; pSeq=0; polyRebuild();
     rulRebuild();
     for(const src of (sh.rulTypes||[])){const T=mkRulType(src.name||'',src.color||'#b8934a');
-      if(src.id)T.id=src.id; if(typeof src.op==='number')T.op=src.op;}
+      if(src.id)T.id=src.id; if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true);}
     for(const src of (sh.rulerPts||[])){const q=src.p||[];
       rulPts.push({id:src.id,t:src.t,x:q[0],y:q[1],z:q[2]});
       if(src.id>rpSeq) rpSeq=src.id;}
@@ -2015,7 +2069,7 @@ mat.onBeforeCompile=sh=>{
     if(polys.length) polyRebuild();
     if(rulTypes.length){activeR=0; rulRebuild();}
     for(const src of (sh.lenTypes||[])){const T=mkLenType(src.name||'',src.color||'#eab308');if(src.id)T.id=src.id;
-      if(typeof src.op==='number')T.op=src.op;}
+      if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true);}
     for(const src of (sh.lengths||[])){
       const L={t:src.t,pts:src.pts.slice(),fit:src.fit||null,
         len:(src.fit&&typeof src.fit.length_m==='number')?src.fit.length_m:lineLen(src.pts),
@@ -2023,7 +2077,7 @@ mat.onBeforeCompile=sh=>{
       addLine(L);}
     for(const src of (sh.cntTypes||[])){const T=mkCntType(src.name||'',src.color||'#ef4444');if(src.id)T.id=src.id;
       if(typeof src.size==='number')T.size=src.size;
-      if(typeof src.op==='number')T.op=src.op;}
+      if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true);}
     for(const src of (sh.counters||[])){const pts=src.pts||[];
       for(let i=0;i+2<pts.length;i+=3) addX({t:src.t,p:[pts[i],pts[i+1],pts[i+2]],obj:null});}
     if(cntTypes.length)activeC=0;
