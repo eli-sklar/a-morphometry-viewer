@@ -1077,7 +1077,9 @@ mat.onBeforeCompile=sh=>{
   const recH=(ti,f)=>{const k=ti*N+f;
     if(curT&&!curT.has(k)){curT.add(k);curDiff.push([ti,f,types[ti].manual[f]]);}};
   // op-log entries carry the type's colour+name, so a restore can rebuild the palette
-  const typedOps=diff=>diff.filter(d=>d[0]!=='L+'&&d[0]!=='L-')
+  // only area strokes are sub-face values; every other entry ('X+', 'M', 'D', lines)
+  // carries an object, and reading it as a stroke threw halfway through an undo (24/09)
+  const typedOps=diff=>diff.filter(d=>typeof d[0]==='number')
     .map(([ti,f])=>({s:f,v:types[ti].manual[f],c:types[ti].hex,n:types[ti].name}));
   function commitH(){
     if(curDiff&&curDiff.length){
@@ -1109,6 +1111,9 @@ mat.onBeforeCompile=sh=>{
         else if(m.ring&&m.ring.pts[m.i]){
           inv.push(['M',{kind:'poly',ring:m.ring,i:m.i,from:m.ring.pts[m.i].slice()}]);
           m.ring.pts[m.i]=m.from.slice(); polyRecompute(m.ring); polyRebuild();}}
+      // 2: a deleted layer comes back whole, in its place; redo takes it again
+      else if(d[0]==='D'){inv.push(['D-',d[1]]);amLayerIn(d[1]);}
+      else if(d[0]==='D-'){inv.push(['D',d[1]]);amLayerOut(d[1]);}
       else {const [ti,f,o]=d;inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;recolorFace(f);}}
     inv.reverse();
     logOps(typedOps(diff));
@@ -1838,6 +1843,74 @@ mat.onBeforeCompile=sh=>{
   const amHidOf=(list,id)=>{const T=list.find(x=>x.id===id);return !!(T&&T.hid);};
   function amShowLines(){for(const L of lines) if(L.obj) L.obj.visible=!amHidOf(lenTypes,L.t);}
   function amShowCnts(){for(const m of xmarks) if(m.obj) m.obj.visible=!amHidOf(cntTypes,m.t);}
+  // 2 (24/09): deleting a layer, as in the measurement screen — a ✕ on every chip, a
+  // question when marks go with it, and Ctrl+Z brings it back whole IN ITS PLACE (an area
+  // stroke in the history names its layer by position). The last area layer leaves an
+  // empty one behind.
+  const AM_KIND_LIST={area:()=>types,len:()=>lenTypes,cnt:()=>cntTypes,rul:()=>rulTypes};
+  function amLayerHeld(kind,T){
+    if(kind==='area'){const np=polys.filter(P=>P.at===T.id).length;
+      return {n:((T.area||0)>0?1:0)+np,
+              say:(T.area||0).toFixed(2)+' מ״ר'+(np?(' · '+np+' פוליגונים'):'')};}
+    if(kind==='len'){const n=lines.filter(L=>L.t===T.id).length; return {n:n,say:n+' קווים'};}
+    if(kind==='cnt'){const n=xmarks.filter(m=>m.t===T.id).length; return {n:n,say:n+' סמנים'};}
+    const n=rulPts.filter(q=>q.t===T.id).length; return {n:n,say:n+' נקודות'};
+  }
+  function amLayerOut(snap){
+    const list=AM_KIND_LIST[snap.kind](), T=snap.T;
+    if(snap.kind==='area'){
+      if(curPoly&&curPoly.at===T.id) curPoly=null;
+      snap.polys=polys.filter(P=>P.at===T.id);
+      for(const P of snap.polys) polys.splice(polys.indexOf(P),1);
+    } else if(snap.kind==='len'){snap.lines=lines.filter(L=>L.t===T.id); for(const L of snap.lines) delLine(L);}
+    else if(snap.kind==='cnt'){snap.xs=xmarks.filter(m=>m.t===T.id); for(const m of snap.xs) delX(m);}
+    else {
+      if(rulLast!==null&&(rulPtById(rulLast)||{}).t===T.id) rulLast=null;
+      snap.pts=rulPts.filter(q=>q.t===T.id); snap.segs=rulSegs.filter(g=>g.t===T.id);
+      for(const q of snap.pts) rulPts.splice(rulPts.indexOf(q),1);
+      for(const g of snap.segs) rulSegs.splice(rulSegs.indexOf(g),1);
+    }
+    list.splice(snap.i,1);
+    if(snap.kind==='area'&&!types.length){
+      if(!snap.fill) snap.fill=mkType('','#4dff4d'); else types.push(snap.fill);
+    }
+    amLayerAfter();
+  }
+  function amLayerIn(snap){
+    const list=AM_KIND_LIST[snap.kind]();
+    if(snap.fill){const k=types.indexOf(snap.fill); if(k>=0) types.splice(k,1);}
+    list.splice(snap.i,0,snap.T);
+    if(snap.kind==='area') for(const P of (snap.polys||[])) polys.push(P);
+    else if(snap.kind==='len') for(const L of (snap.lines||[])) addLine(L);
+    else if(snap.kind==='cnt') for(const m of (snap.xs||[])) addX(m);
+    else {for(const q of (snap.pts||[])) rulPts.push(q);
+          for(const g of (snap.segs||[])) rulSegs.push(g);}
+    amLayerAfter();
+  }
+  function amLayerAfter(){
+    const clamp=(i,list)=>Math.max(-1,Math.min(i,list.length-1));
+    activeT=Math.max(0,clamp(activeT,types)); activeL=clamp(activeL,lenTypes);
+    activeC=clamp(activeC,cntTypes); activeR=clamp(activeR,rulTypes);
+    if((activeKind==='len'&&activeL<0)||(activeKind==='cnt'&&activeC<0)
+       ||(activeKind==='rul'&&activeR<0)) activeKind='area';
+    recolorAll(); polyRebuild(); rulRebuild(); syncKindUI(); buildChips(); updateArea();
+    markUnexported(true);
+  }
+  function amLayerDelete(kind,i){
+    const list=AM_KIND_LIST[kind](), T=list[i]; if(!T) return;
+    const held=amLayerHeld(kind,T);
+    if(held.n&&!confirm('למחוק את השכבה "'+(T.name||'ללא שם')+'"?\n\nיימחקו איתה: '+held.say
+                        +'.\nאפשר להחזיר אותה בכפתור הביטול.')) return;
+    const snap={kind:kind,i:i,T:T};
+    amLayerOut(snap);
+    undoStack.push([['D',snap]]); redoStack.length=0; updateHB();
+  }
+  function amDelX(kind,i){
+    const e=document.createElement('i'); e.className='del'; e.textContent='✕';
+    e.title='מחיקת השכבה · אפשר להחזיר בכפתור הביטול';
+    e.onclick=ev=>{ev.stopPropagation();amLayerDelete(kind,i);};
+    return e;
+  }
   function buildChips(){
     const A=$('chipsA');if(!A)return;A.innerHTML='';
     types.forEach((T,i)=>{
@@ -1861,6 +1934,7 @@ mat.onBeforeCompile=sh=>{
       c.appendChild(ms);
       if(T.hid) c.style.opacity='0.45';
       c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;recolorAll();polyRebuild();buildChips();markUnexported(true);}));
+      c.appendChild(amDelX('area',i));
       c.onclick=()=>{activateT(i);if(mode==='nav')setMode('add');};
       A.appendChild(c);});
     const C=$('chipsC');if(C){C.innerHTML='';
@@ -1874,6 +1948,7 @@ mat.onBeforeCompile=sh=>{
       const u=document.createElement('span');u.className='u';u.textContent='יח׳';c.appendChild(u);
       if(T.hid) c.style.opacity='0.45';
       c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;amShowCnts();buildChips();markUnexported(true);}));
+      c.appendChild(amDelX('cnt',i));
       c.onclick=()=>activateC(i);
       C.appendChild(c);});}
     const L=$('chipsL');if(!L)return;L.innerHTML='';
@@ -1887,6 +1962,7 @@ mat.onBeforeCompile=sh=>{
       const u=document.createElement('span');u.className='u';u.textContent='מ״א';c.appendChild(u);
       if(T.hid) c.style.opacity='0.45';
       c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;amShowLines();buildChips();markUnexported(true);}));
+      c.appendChild(amDelX('len',i));
       c.onclick=()=>activateL(i);
       L.appendChild(c);});
     const R=$('chipsR');
@@ -1907,6 +1983,7 @@ mat.onBeforeCompile=sh=>{
         const u=document.createElement('span');u.className='u';u.textContent='מ׳';c.appendChild(u);
         if(T.hid) c.style.opacity='0.45';
         c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;rulRebuild();buildChips();markUnexported(true);}));
+        c.appendChild(amDelX('rul',i));
         c.onclick=()=>activateR(i);
         R.appendChild(c);});
     }
