@@ -564,10 +564,13 @@ mat.onBeforeCompile=sh=>{
     }
     for(const T of rulTypes){
       const col=new THREE.Color(T.hex||'#b8934a');
+      // the ruler layer's opacity, as in the other three screens; the length tag stays
+      const _op=(typeof T.op==='number')?T.op:1;
+      const _lm=()=>({color:col,depthTest:false,transparent:_op<0.999,opacity:_op});
       for(const q of rulPts){
         if(q.t!==T.id) continue;
         const m=new THREE.Mesh(new THREE.SphereGeometry(1,14,10),
-          new THREE.MeshBasicMaterial({color:col,depthTest:false}));
+          new THREE.MeshBasicMaterial(_lm()));
         m.position.set(q.x,q.y,q.z); m.renderOrder=999;
         rulGroup.add(m); keepOnScreen(m,RUL_PT_K);
       }
@@ -576,7 +579,7 @@ mat.onBeforeCompile=sh=>{
         const A=rulPtById(g.a), B=rulPtById(g.b); if(!A||!B) continue;
         const gm=new THREE.BufferGeometry().setFromPoints(
           [new THREE.Vector3(A.x,A.y,A.z),new THREE.Vector3(B.x,B.y,B.z)]);
-        const ln=new THREE.Line(gm,new THREE.LineBasicMaterial({color:col,depthTest:false}));
+        const ln=new THREE.Line(gm,new THREE.LineBasicMaterial(_lm()));
         ln.renderOrder=999; rulGroup.add(ln);
       }
       // one tag per run, at its centroid: "3 : 4.67 מ'" — the number and the sum, which is
@@ -814,9 +817,12 @@ mat.onBeforeCompile=sh=>{
     const draw=(P,open)=>{
       const T=types.find(t=>t.id===P.at)||types[0];
       const col=new THREE.Color((T&&T.hex)||'#4dff4d');
+      // the whole layer fades, outline and corners included (Eli, 24/09); the tag stays
+      const _op=(T&&typeof T.op==='number')?T.op:0.75;
+      const _lm=()=>({color:col,depthTest:false,transparent:_op<0.999,opacity:_op});
       for(const q of P.pts){
         const m=new THREE.Mesh(new THREE.SphereGeometry(1,14,10),
-          new THREE.MeshBasicMaterial({color:col,depthTest:false}));
+          new THREE.MeshBasicMaterial(_lm()));
         m.position.set(q[0],q[1],q[2]); m.renderOrder=999;
         polyGroup.add(m); keepOnScreen(m,RUL_PT_K);
       }
@@ -825,7 +831,7 @@ mat.onBeforeCompile=sh=>{
         const a=P.pts[i], b=P.pts[(i+1)%n];
         const gm=new THREE.BufferGeometry().setFromPoints(
           [new THREE.Vector3(a[0],a[1],a[2]),new THREE.Vector3(b[0],b[1],b[2])]);
-        const ln=new THREE.Line(gm,new THREE.LineBasicMaterial({color:col,depthTest:false}));
+        const ln=new THREE.Line(gm,new THREE.LineBasicMaterial(_lm()));
         ln.renderOrder=999; polyGroup.add(ln);
       }
       if(open) return;
@@ -1127,6 +1133,13 @@ mat.onBeforeCompile=sh=>{
   const hasPen=()=>{for(const p of ptrs.values())if(p.type==='pen')return true;return false;};
   function startPinch(){const t=touchList();if(t.length<2)return;
     pinch={d:pdist(t[0],t[1]),mx:(t[0].x+t[1].x)/2,my:(t[0].y+t[1].y)/2};}
+  // Is the press ON the model, or in empty space?
+  function amOnSurface(e){
+    const r=el.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,
+                                        -((e.clientY-r.top)/r.height)*2+1),camera);
+    return ray.intersectObject(mesh,false).length>0;
+  }
   el.addEventListener('pointerdown',e=>{
     if(e.pointerType==='pen'){
       for(const [id,p] of [...ptrs]) if(p.type==='touch'){try{el.releasePointerCapture(id);}catch(_){}ptrs.delete(id);}
@@ -1144,6 +1157,10 @@ mat.onBeforeCompile=sh=>{
     // 258: a finger rotates, and a finger that STAYS on a point for a moment grabs it
     if(e.pointerType==='touch'){dragging='rot'; amHoldArm(e);}
     else if(mode==='nav'){dragging='rot';}
+    // 12 (24/09): a pencil press that meets NOTHING turns the model, in every marking
+    // mode — the measurement screen's rule and the training screen's since 297. The
+    // ruler still reads a press in the air as the end of its chain.
+    else if(!amOnSurface(e)){ if(activeKind==='rul') rulEnd(); dragging='rot'; }
     else if(mode==='grow'){growAt(e);dragging=null;}
     else if(activeKind==='area'&&(types[activeT]||{}).am===AM_POLY&&mode==='add'){
       polyAt(e);dragging=null;}
@@ -1671,6 +1688,7 @@ mat.onBeforeCompile=sh=>{
     ['mNav','mAdd','mRem','mGrow'].forEach(id=>{const b=$(id);if(b)b.classList.remove('on');});
     const _b=$({nav:'mNav',add:'mAdd',rem:'mRem',grow:'mGrow'}[m]);
     if(_b)_b.classList.add('on');
+    amSideWhat();
     // 256: an UNCLOSED ring survives leaving the tool — turning the model is part of
     // placing the points (Eli, 18/09). Escape is the way out, and the only one.
   }
@@ -1709,10 +1727,13 @@ mat.onBeforeCompile=sh=>{
   const AM_BRUSH_WHAT={area:'רדיוס המברשת', len:'רוחב הקו', cnt:'קוטר המעוין',
                        rul:'רדיוס המברשת', vol:'רדיוס המברשת'};
   const AM_TOOL_NAME={area:'סימון שטח', len:'סרט מדידה', cnt:'מונה', rul:'סרגל', vol:'נפח אזור'};
+  // The tolerance belongs to growing alone (Eli, 24/09) — hidden, not dimmed, in every
+  // other mode; while growing the side bar's title says so.
   function amSideWhat(){
+    const growing=(mode==='grow'&&activeKind==='area');
     const w=$('brushWhat'); if(w) w.textContent=AM_BRUSH_WHAT[activeKind]||'גודל המברשת';
-    const t=$('sideTool'); if(t) t.textContent=AM_TOOL_NAME[activeKind]||'סימון';
-    const g=$('growWrap'); if(g) g.classList.toggle('off', activeKind!=='area');
+    const t=$('sideTool'); if(t) t.textContent=growing?'נביטה':(AM_TOOL_NAME[activeKind]||'סימון');
+    const g=$('growWrap'); if(g) g.style.display=growing?'':'none';
   }
   function applyBrush(){amSideWhat();const v=+$('brush').value;
     if(activeKind==='len'){lineW=0.002+(v-2)/38*0.028;$('brushV').textContent=(lineW*1000).toFixed(0)+' \u05de"\u05de';}
