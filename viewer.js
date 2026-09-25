@@ -547,11 +547,98 @@ mat.onBeforeCompile=sh=>{
      The environment differences are kept OUT of the shared text, in these two shims. */
   function invalidate(){}                    // the iPad draws every frame already
   function markDirty(){ if(window.amMarkDirty) window.amMarkDirty(); }
+  /* 25/09 · THE RULER'S LINE, WITH A WIDTH AND A DASH (Eli: "גם עיצוב (שיהפוך למקווקוו) וגם
+     גלגלת רוחב קו, כמו לסרט המדידה"). WebGL draws a THREE.Line one pixel wide and ignores any
+     other width, so each segment is drawn as a STRIP: four corners, which the vertex shader
+     pushes apart across the segment ON THE SCREEN by the layer's width in screen pixels —
+     the "fixed on the screen at every zoom" the ruler's stations and tags have kept since 250
+     (Eli's choice ב). The width is measured against the canvas as laid out, so a snapshot
+     rendered into a larger buffer keeps the line in the same proportion as on the screen.
+     The dash is cut by the distance ALONG the segment in model units — the 302 definition,
+     unchanged: a dash of 1.2% of the model's radius, a gap of 3·design times that. */
+  const AM_RUL_VS=[
+    'attribute vec3 aA; attribute vec3 aB;',
+    'uniform vec2 uRes; uniform float uWidth;',
+    'varying float vDist;',
+    'void amTrim(const in vec4 s, inout vec4 e){',
+    '  float a=projectionMatrix[2][2], b=projectionMatrix[3][2];',
+    '  float nz=-0.5*b/a; float al=(nz-s.z)/(e.z-s.z); e.xyz=mix(s.xyz,e.xyz,al); }',
+    'void main(){',
+    '  vec4 s=modelViewMatrix*vec4(aA,1.0), e=modelViewMatrix*vec4(aB,1.0);',
+    '  if(projectionMatrix[2][3]==-1.0){',          // perspective: an end behind the eye is cut back to it
+    '    if(s.z<0.0&&e.z>=0.0) amTrim(s,e); else if(e.z<0.0&&s.z>=0.0) amTrim(e,s); }',
+    '  vec4 cs=projectionMatrix*s, ce=projectionMatrix*e;',
+    '  float asp=uRes.x/max(uRes.y,1.0);',
+    '  vec2 d=ce.xy/ce.w-cs.xy/cs.w; d.x*=asp;',
+    '  float L=length(d); d=(L>1e-9)?d/L:vec2(1.0,0.0);',
+    '  vec2 off=vec2(-d.y,d.x); off.x/=asp; off*=uWidth/max(uRes.y,1.0);',
+    '  vec4 c=(position.x<0.5)?cs:ce;',
+    '  c.xy+=off*position.y*c.w;',
+    '  gl_Position=c;',
+    '  vDist=(position.x<0.5)?0.0:distance(aA,aB);',
+    '}'].join('\n');
+  const AM_RUL_FS=[
+    'uniform vec3 diffuse; uniform float opacity; uniform float uDash; uniform float uGap;',
+    'varying float vDist;',
+    'void main(){',
+    '  if(uGap>0.0&&mod(vDist,uDash+uGap)>uDash) discard;',
+    '  gl_FragColor=vec4(diffuse,opacity);',
+    '  #include <colorspace_fragment>',
+    '}'].join('\n');
+  const AM_RUL_W0=2;                        // pixels: a new ruler layer, and a sheet without one
+  const AM_RUL_WMAX=10;
+  function amRulWOf(T){const w=+((T&&T.w)||AM_RUL_W0); return Math.min(AM_RUL_WMAX,Math.max(1,w));}
+  // the side bar's one slider, read as a width in pixels on a ruler layer (1..10)
+  function amRulWFromSlider(v,mn,mx){return Math.max(1,Math.min(AM_RUL_WMAX,
+    Math.round(1+(v-mn)/Math.max(1,mx-mn)*(AM_RUL_WMAX-1))));}
+  function amRulWToSlider(w,mn,mx){return Math.round(mn+(w-1)/(AM_RUL_WMAX-1)*(mx-mn));}
+  const _amRulRes=new THREE.Vector2();
+  function amRulSeg(A,B,col,op,wPx){
+    const g=new THREE.BufferGeometry();
+    // x: which end (0 = A, 1 = B), y: which side of the line; the ends themselves ride in aA/aB
+    g.setAttribute('position',new THREE.Float32BufferAttribute([0,1,0, 0,-1,0, 1,1,0, 1,-1,0],3));
+    const a=[A.x,A.y,A.z], b=[B.x,B.y,B.z];
+    g.setAttribute('aA',new THREE.Float32BufferAttribute([].concat(a,a,a,a),3));
+    g.setAttribute('aB',new THREE.Float32BufferAttribute([].concat(b,b,b,b),3));
+    g.setIndex([0,2,1, 2,3,1]);
+    const u={diffuse:{value:new THREE.Color(col)},opacity:{value:(typeof op==='number')?op:1},
+             uRes:{value:new THREE.Vector2(1,1)},uWidth:{value:wPx||AM_RUL_W0},
+             uDash:{value:1},uGap:{value:0}};
+    const mat=new THREE.ShaderMaterial({uniforms:u,vertexShader:AM_RUL_VS,fragmentShader:AM_RUL_FS,
+                                        transparent:true,depthTest:false,depthWrite:false,
+                                        side:THREE.DoubleSide});
+    // the names every other overlay answers to, so the gold highlight and the opacity
+    // wheels reach this line exactly as they reached the old one
+    mat.color=u.diffuse.value;
+    Object.defineProperty(mat,'opacity',{get(){return u.opacity.value;},
+                                         set(v){u.opacity.value=v;},configurable:true});
+    const m=new THREE.Mesh(g,mat);
+    m.frustumCulled=false;                  // its positions are corner codes, not places
+    m.raycast=function(){};                 // nor a surface to be hit
+    m.userData.amRulLine=true; m.userData.col=new THREE.Color(col);
+    m.onBeforeRender=function(r){
+      r.getSize(_amRulRes);
+      const cw=(r.domElement&&r.domElement.clientWidth)||_amRulRes.x;
+      const ch=(r.domElement&&r.domElement.clientHeight)||_amRulRes.y;
+      u.uRes.value.set(cw,ch);
+    };
+    m.renderOrder=999;
+    return m;
+  }
+  // the dash, in model units (302): unit = 1.2% of the model's radius; design 0 = solid
+  function amRulSegStyle(m,wPx,design,radius){
+    if(!m||!m.material||!m.material.uniforms) return;
+    const u=m.material.uniforms, d=(typeof design==='number')?design:0;
+    const unit=Math.max(1e-6,(radius||1)*0.012);
+    u.uWidth.value=wPx||AM_RUL_W0;
+    u.uDash.value=unit; u.uGap.value=(d>0.005)?unit*3*d:0;
+  }
   const rulTypes=[]; let activeR=-1, rSeq=0, rpSeq=0;
   const rulPts=[];                 // {id, t, x, y, z}
   const rulSegs=[];                // {t, a, b}  — ids, undirected
   let rulLast=null;
-  function mkRulType(name,hex){const T={id:'r'+(rSeq++),name:name,hex:hex,op:1.0};
+  // `w`: the line's width in pixels (25/09); the design (the dash) is absent = solid
+  function mkRulType(name,hex){const T={id:'r'+(rSeq++),name:name,hex:hex,op:1.0,w:AM_RUL_W0};
     rulTypes.push(T);return T;}
   const SCREEN_FIXED=[];
   const RUL_PT_K=0.006, RUL_LAB_K=0.040;
@@ -635,13 +722,14 @@ mat.onBeforeCompile=sh=>{
         m.position.set(q.x,q.y,q.z); m.renderOrder=999;
         rulGroup.add(m); keepOnScreen(m,RUL_PT_K);
       }
+      // 25/09: a strip of the layer's width in pixels, dashed by its design (302)
+      const _w=amRulWOf(T);
       for(const g of rulSegs){
         if(g.t!==T.id) continue;
         const A=rulPtById(g.a), B=rulPtById(g.b); if(!A||!B) continue;
-        const gm=new THREE.BufferGeometry().setFromPoints(
-          [new THREE.Vector3(A.x,A.y,A.z),new THREE.Vector3(B.x,B.y,B.z)]);
-        const ln=new THREE.Line(gm,new THREE.LineBasicMaterial(_lm()));
-        ln.renderOrder=999; rulGroup.add(ln);
+        const ln=amRulSeg(A,B,col,_op,_w);
+        amRulSegStyle(ln,_w,T.design,bs.radius);
+        rulGroup.add(ln);
       }
       // one tag per run, at its centroid: "3 : 4.67 מ'" — the number and the sum, which is
       // what the report prints too, so the model and the table cannot disagree
@@ -1854,7 +1942,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
                           Math.round(q[1]*1000)/1000,
                           Math.round(q[2]*1000)/1000])})),
       rulTypes:rulTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,
-        op:(typeof T.op==='number')?T.op:1})),
+        op:(typeof T.op==='number')?T.op:1,
+        // 25/09: the dash and the width travel, as on the desktop
+        design:Math.round(((typeof T.design==='number')?T.design:0)*100)/100,
+        w:amRulWOf(T)})),
       rulerPts:rulPts.map(q=>({id:q.id,t:q.t,
         p:[Math.round(q.x*1000)/1000,Math.round(q.y*1000)/1000,Math.round(q.z*1000)/1000]})),
       rulerSegs:rulSegs.map(g=>({t:g.t,a:g.a,b:g.b})),
@@ -1946,7 +2037,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   /* WHAT THE SLIDER MEANS NOW, in words (301). It has changed meaning with the layer
      since 256 and never said which. */
   const AM_BRUSH_WHAT={area:'רדיוס המברשת', len:'רוחב הקו', cnt:'קוטר הסמן',
-                       rul:'רדיוס המברשת', vol:'רדיוס המברשת'};
+                       rul:'רוחב הקו', vol:'רדיוס המברשת'};
   const AM_TOOL_NAME={area:'סימון שטח', len:'סרט מדידה', cnt:'מונה', rul:'סרגל', vol:'נפח אזור'};
   // The tolerance belongs to growing alone (Eli, 24/09) — hidden, not dimmed, in every
   // other mode; while growing the side bar's title says so.
@@ -1971,6 +2062,12 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       const T=cntTypes[activeC];
       $('brushV').textContent=v.toFixed(0)+' ס"מ';
       if(T&&Math.abs((T.size||0)-v/100)>1e-9){T.size=v/100;resizeCnt(T);markUnexported(true);}}
+    // 25/09: on a ruler layer the slider is the LINE'S WIDTH, in screen pixels (Eli's choice
+    // ב) — the layer's own, like a counter's diameter, and it redraws live
+    else if(activeKind==='rul'){const T=rulTypes[activeR], br=$('brush');
+      const w=amRulWFromSlider(v,+br.min,+br.max);
+      $('brushV').textContent=w+(w===1?' פיקסל':' פיקסלים');
+      if(T&&amRulWOf(T)!==w){T.w=w;rulRebuild();markUnexported(true);}}
     else {brushR=v/100;$('brushV').textContent=(brushR*100).toFixed(0)+' ס"מ';}}
   $('brush').oninput=applyBrush;
   $('grtol').oninput=e=>{growTol=+e.target.value;$('grtolV').textContent=e.target.value;};
@@ -1988,6 +2085,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(activeKind==='cnt'){const T=cntTypes[activeC]; v=T?(T.design??0.6):null;}
     else if(activeKind==='len'){const T=lenTypes[activeL]; v=T?(T.design||0):null;}
     else if(activeKind==='area'){const T=types[activeT]; v=T?(T.design??0.6):null;}
+    else if(activeKind==='rul'){const T=rulTypes[activeR]; v=T?(T.design||0):null;}
     ds.disabled=(v===null);
     if(v!==null){ds.value=Math.round(v*100);dv.textContent=Math.round(v*100)+'%';}
   }
@@ -2003,6 +2101,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     // designU has to move with it — a brush layer repaints, a polygon layer does not
     else if(activeKind==='area'){const T=types[activeT];if(T){T.design=v;
       if(!T.designU)T.designU={value:v}; T.designU.value=v; amDessSoon();}}
+    // 25/09: a ruler's design is its dash — the 302 definition
+    else if(activeKind==='rul'){const T=rulTypes[activeR];if(T){T.design=v;rulRebuild();markUnexported(true);}}
     // this viewer renders on a continuous tick, so nothing has to be poked to redraw
   };
   // 7 (24/09): the layer's opacity, through the same one path every activation crosses
@@ -2036,6 +2136,13 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     $('auto').disabled=other; $('thr').disabled=other;
     // grow floods FACES by similarity — meaningless for lines and counters (12/08)
     $('mGrow').disabled=other; $('grtol').disabled=other;
+    // 25/09: ONE slider, and each kind's own value in it. A ruler's width and a counter's
+    // diameter are the layer's; the area and volume brush's radius and the tape's width are
+    // the hand's. Without this the slider kept the last kind's position, and the next kind
+    // read it as its own — a ruler at 10 pixels came back to the area brush as 60 cm.
+    {const br=$('brush');
+     if(activeKind==='area'||activeKind==='vol') br.value=Math.round(brushR*100);
+     else if(activeKind==='len') br.value=Math.round(+br.min+(lineW-0.002)/0.028*(+br.max-(+br.min)));}
     applyBrush();}
   function activateC(i){activeKind='cnt';activeC=i;
     const T=cntTypes[i];
@@ -2046,7 +2153,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     areaTool=(T&&T.am===AM_POLY)?AM_POLY:AM_BRUSH;   // 10: the tool last used on this layer
     $('thr').value=Math.round(T.thr*1000);$('thrV').textContent=T.thr.toFixed(3);
     syncKindUI();buildChips();}
-  function activateR(i){activeKind='rul';activeR=i;rulEnd();syncKindUI();buildChips();
+  function activateR(i){activeKind='rul';activeR=i;rulEnd();
+    const T=rulTypes[i];                                    // 25/09: the layer's width
+    if(T){const br=$('brush'); br.value=amRulWToSlider(amRulWOf(T),+br.min,+br.max);}
+    syncKindUI();buildChips();
     if(mode!=='add'&&mode!=='rem')setMode('add');}
   function activateL(i){activeKind='len';activeL=i;syncKindUI();buildChips();
     if(mode!=='add'&&mode!=='rem')setMode('add');}
@@ -2346,7 +2456,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     polys.length=0; curPoly=null; pSeq=0; polyRebuild();
     rulRebuild();
     for(const src of (sh.rulTypes||[])){const T=mkRulType(src.name||'',src.color||'#b8934a');
-      if(src.id)T.id=src.id; if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true);}
+      if(src.id)T.id=src.id; if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true);
+      if(typeof src.design==='number')T.design=src.design;
+      if(typeof src.w==='number')T.w=amRulWOf({w:src.w});}
     for(const src of (sh.rulerPts||[])){const q=src.p||[];
       rulPts.push({id:src.id,t:src.t,x:q[0],y:q[1],z:q[2]});
       if(src.id>rpSeq) rpSeq=src.id;}
