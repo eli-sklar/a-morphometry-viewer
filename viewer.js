@@ -77,12 +77,16 @@ function amAsk(text,buttons,safe){
     const box=document.createElement('div');
     box.style.cssText='background:#141210;border:2px solid #6b5a33;border-radius:2px;'
       +'padding:22px 26px;color:#d8cdb8;font:15px system-ui,Arial,sans-serif;max-width:480px;'
+      +'max-height:88vh;display:flex;flex-direction:column;box-sizing:border-box;'
       +'box-shadow:inset 0 0 0 3px #141210, inset 0 0 0 4px rgba(184,147,74,.45)';
     const q=document.createElement('div');
-    q.style.cssText='margin-bottom:16px;line-height:1.7;white-space:pre-line';
+    // 26/09, Eli: a long list (the islands cleanup) pushed the buttons off the screen, and the
+    // window had no scroll — the removal could not be confirmed. The text scrolls inside
+    // the window now, and the buttons never leave it.
+    q.style.cssText='margin-bottom:16px;line-height:1.7;white-space:pre-line;overflow-y:auto;min-height:0;flex:1 1 auto';
     q.textContent=text;
     const row=document.createElement('div');
-    row.style.cssText='display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-start';
+    row.style.cssText='display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-start;flex:0 0 auto';
     let focusEl=null;
     const done=v=>{window.removeEventListener('keydown',key,true);wrap.remove();res(v);};
     function key(e){
@@ -339,6 +343,47 @@ vec3 amPatchShade(vec3 wall, float isPatch, vec3 p){
   // small canvas puts the number on all twelve faces and it reads from any angle.
   const AM_DODE_POS=new Float32Array([0.57735,0.57735,-0.57735,0.35682,0.93417,0,0.57735,0.57735,0.57735,0.57735,0.57735,-0.57735,0.57735,0.57735,0.57735,0.93417,0,0.35682,0.57735,0.57735,-0.57735,0.93417,0,0.35682,0.93417,0,-0.35682,0.57735,-0.57735,0.57735,0.93417,0,0.35682,0.57735,0.57735,0.57735,0.57735,-0.57735,0.57735,0.57735,0.57735,0.57735,0,0.35682,0.93417,0.57735,-0.57735,0.57735,0,0.35682,0.93417,0,-0.35682,0.93417,-0.57735,0.57735,0.57735,0,0.35682,0.93417,0.57735,0.57735,0.57735,-0.57735,0.57735,0.57735,0.57735,0.57735,0.57735,0.35682,0.93417,0,-0.57735,0.57735,0.57735,0.35682,0.93417,0,-0.35682,0.93417,0,0,-0.35682,-0.93417,0,0.35682,-0.93417,0.57735,0.57735,-0.57735,0,-0.35682,-0.93417,0.57735,0.57735,-0.57735,0.93417,0,-0.35682,0,-0.35682,-0.93417,0.93417,0,-0.35682,0.57735,-0.57735,-0.57735,-0.35682,0.93417,0,0.35682,0.93417,0,0.57735,0.57735,-0.57735,-0.35682,0.93417,0,0.57735,0.57735,-0.57735,0,0.35682,-0.93417,-0.35682,0.93417,0,0,0.35682,-0.93417,-0.57735,0.57735,-0.57735,0.93417,0,-0.35682,0.93417,0,0.35682,0.57735,-0.57735,0.57735,0.93417,0,-0.35682,0.57735,-0.57735,0.57735,0.35682,-0.93417,0,0.93417,0,-0.35682,0.35682,-0.93417,0,0.57735,-0.57735,-0.57735,-0.35682,-0.93417,0,0.35682,-0.93417,0,0.57735,-0.57735,0.57735,-0.35682,-0.93417,0,0.57735,-0.57735,0.57735,0,-0.35682,0.93417,-0.35682,-0.93417,0,0,-0.35682,0.93417,-0.57735,-0.57735,0.57735,-0.57735,-0.57735,-0.57735,0,-0.35682,-0.93417,0.57735,-0.57735,-0.57735,-0.57735,-0.57735,-0.57735,0.57735,-0.57735,-0.57735,0.35682,-0.93417,0,-0.57735,-0.57735,-0.57735,0.35682,-0.93417,0,-0.35682,-0.93417,0,-0.93417,0,-0.35682,-0.93417,0,0.35682,-0.57735,0.57735,0.57735,-0.93417,0,-0.35682,-0.57735,0.57735,0.57735,-0.35682,0.93417,0,-0.93417,0,-0.35682,-0.35682,0.93417,0,-0.57735,0.57735,-0.57735,0,-0.35682,0.93417,0,0.35682,0.93417,-0.57735,0.57735,0.57735,0,-0.35682,0.93417,-0.57735,0.57735,0.57735,-0.93417,0,0.35682,0,-0.35682,0.93417,-0.93417,0,0.35682,-0.57735,-0.57735,0.57735,-0.57735,-0.57735,-0.57735,-0.93417,0,-0.35682,-0.57735,0.57735,-0.57735,-0.57735,-0.57735,-0.57735,-0.57735,0.57735,-0.57735,0,0.35682,-0.93417,-0.57735,-0.57735,-0.57735,0,0.35682,-0.93417,0,-0.35682,-0.93417,-0.57735,-0.57735,-0.57735,-0.35682,-0.93417,0,-0.57735,-0.57735,0.57735,-0.57735,-0.57735,-0.57735,-0.57735,-0.57735,0.57735,-0.93417,0,0.35682,-0.57735,-0.57735,-0.57735,-0.93417,0,0.35682,-0.93417,0,-0.35682]);
   const AM_DODE_UV=new Float32Array([0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094,0.5,0.05,0.92798,0.36094,0.7645,0.86406,0.5,0.05,0.7645,0.86406,0.2355,0.86406,0.5,0.05,0.2355,0.86406,0.07202,0.36094]);
+  // 26/09, Eli: "the numbers on the counters come out upside down relative to the model".
+  // Every facet mapped the pentagon the same way, so the digit's top pointed wherever that
+  // facet's first corner happened to point. Each facet now takes the one of the pentagon's
+  // five turns whose top corner points most nearly UP (+Y, the model's up in every screen) —
+  // within 36 degrees. A facet facing straight up or down keeps its turn: no side is up there.
+  function amDodeUpright(){
+    if(amDodeUpright.cache) return amDodeUpright.cache;
+    const P=AM_DODE_POS, U=AM_DODE_UV, out=U.slice();
+    const key=(u,v)=>Math.round(u*1000)+','+Math.round(v*1000);
+    // the pentagon's five corners, in UV order, taken from the first facet's three triangles
+    const corners=[]; const seen=new Set();
+    for(let k=0;k<9;k++){ const kk=key(U[k*2],U[k*2+1]); if(!seen.has(kk)){seen.add(kk); corners.push([U[k*2],U[k*2+1]]);} }
+    // order them around the centre, starting at the top one (smallest v)
+    const cu=corners.reduce((a,c)=>a+c[0],0)/corners.length, cv=corners.reduce((a,c)=>a+c[1],0)/corners.length;
+    corners.sort((a,b)=>Math.atan2(a[1]-cv,a[0]-cu)-Math.atan2(b[1]-cv,b[0]-cu));
+    let top=0; for(let j=1;j<corners.length;j++) if(corners[j][1]<corners[top][1]) top=j;
+    const C=[]; for(let j=0;j<corners.length;j++) C.push(corners[(top+j)%corners.length]);
+    const idxOf=(u,v)=>{ for(let j=0;j<C.length;j++) if(Math.abs(C[j][0]-u)<1e-4&&Math.abs(C[j][1]-v)<1e-4) return j; return -1; };
+    const nF=P.length/27;                     // 12 facets, 3 triangles, 3 corners
+    for(let f=0;f<nF;f++){
+      const o=f*9;
+      // the facet's centre and normal, and each pentagon corner's 3-D position
+      let cx=0,cy=0,cz=0; for(let k=0;k<9;k++){cx+=P[(o+k)*3];cy+=P[(o+k)*3+1];cz+=P[(o+k)*3+2];} cx/=9;cy/=9;cz/=9;
+      const pos=new Array(C.length);
+      for(let k=0;k<9;k++){ const j=idxOf(U[(o+k)*2],U[(o+k)*2+1]); if(j>=0) pos[j]=[P[(o+k)*3],P[(o+k)*3+1],P[(o+k)*3+2]]; }
+      const a=[P[o*3],P[o*3+1],P[o*3+2]], b=[P[(o+1)*3],P[(o+1)*3+1],P[(o+1)*3+2]], c=[P[(o+2)*3],P[(o+2)*3+1],P[(o+2)*3+2]];
+      let nx=(b[1]-a[1])*(c[2]-a[2])-(b[2]-a[2])*(c[1]-a[1]), ny=(b[2]-a[2])*(c[0]-a[0])-(b[0]-a[0])*(c[2]-a[2]), nz=(b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);
+      const nl=Math.hypot(nx,ny,nz)||1; nx/=nl;ny/=nl;nz/=nl;
+      // up, laid into the facet's plane
+      let ux=-ny*nx, uy=1-ny*ny, uz=-ny*nz; const ul=Math.hypot(ux,uy,uz);
+      if(ul<0.2||pos.some(p=>!p)) continue;
+      ux/=ul;uy/=ul;uz/=ul;
+      let best=0,bd=-2;
+      for(let j=0;j<C.length;j++){ const d=[pos[j][0]-cx,pos[j][1]-cy,pos[j][2]-cz], dl=Math.hypot(d[0],d[1],d[2])||1;
+        const s=(d[0]*ux+d[1]*uy+d[2]*uz)/dl; if(s>bd){bd=s;best=j;} }
+      // corner `best` takes the top of the pentagon; the others follow round in the same sense
+      for(let k=0;k<9;k++){ const j=idxOf(U[(o+k)*2],U[(o+k)*2+1]); if(j<0) continue;
+        const t=C[(j-best+C.length)%C.length]; out[(o+k)*2]=t[0]; out[(o+k)*2+1]=t[1]; }
+    }
+    amDodeUpright.cache=out; return out;
+  }
   // ---- the counter marker (decision 71) ------------------------------------------------
   // The number lives ON the object, on every one of the twelve facets, so it reads from any
   // angle without the marker ever being rotated. The floating tag is gone: a screen-space
@@ -406,7 +451,7 @@ vec3 amPatchShade(vec3 wall, float isPatch, vec3 p){
       const p=new Float32Array(AM_DODE_POS.length);
       for(let i=0;i<p.length;i++) p[i]=AM_DODE_POS[i]*rad;
       g.setAttribute('position',new THREE.BufferAttribute(p,3));
-      g.setAttribute('uv',new THREE.BufferAttribute(AM_DODE_UV.slice(),2));
+      g.setAttribute('uv',new THREE.BufferAttribute(amDodeUpright().slice(),2));
       g.computeVertexNormals();
       return g;
     }
