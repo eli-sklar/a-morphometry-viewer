@@ -237,7 +237,7 @@ function load(buf){
     tex.needsUpdate=true;
     engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet);
     $('hello').style.display='none';
-    $('bar').style.display='flex';
+    $('bar').style.display='block';           // 322: rows of zones, not one flex row
     $('side').style.display='flex';
     URL.revokeObjectURL(image.src);
   };
@@ -780,6 +780,7 @@ mat.onBeforeCompile=sh=>{
       // what the report prints too, so the model and the table cannot disagree
       for(const run of rulRuns(T.id)){
         const sp=rulTag(run.n+' : '+run.len.toFixed(2)+' מ\u05f3', T.hex);
+        sp.userData.amTag={kind:'rul', t:T.id, ids:run.pts.map(x=>x.id)};   // 321: the run, by its tag
         sp.position.set(run.c.x,run.c.y,run.c.z);
         rulGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
       }
@@ -851,13 +852,53 @@ mat.onBeforeCompile=sh=>{
     box.appendChild(q);box.appendChild(row);wrap.appendChild(box);
     document.body.appendChild(wrap);
   }
+  // 321 (27/09): an erasure is in the history — Ctrl+Z puts the points and their segments
+  // back in their places (a run keeps its number: it is numbered by its lowest point id)
   function rulDropPoints(ids){
-    const kill=new Set(ids);
-    for(let k=rulPts.length-1;k>=0;k--) if(kill.has(rulPts[k].id)) rulPts.splice(k,1);
-    for(let k=rulSegs.length-1;k>=0;k--)
-      if(kill.has(rulSegs[k].a)||kill.has(rulSegs[k].b)) rulSegs.splice(k,1);
-    if(rulLast!==null&&kill.has(rulLast)) rulLast=null;
+    const kill=new Set(ids), gone={pts:[],segs:[]};
+    for(let k=0;k<rulPts.length;k++) if(kill.has(rulPts[k].id)) gone.pts.push([k,rulPts[k]]);
+    for(let k=0;k<rulSegs.length;k++)
+      if(kill.has(rulSegs[k].a)||kill.has(rulSegs[k].b)) gone.segs.push([k,rulSegs[k]]);
+    if(!gone.pts.length&&!gone.segs.length) return;
+    amRulOut(gone);
+    undoStack.push([['RD',gone]]); redoStack.length=0; updateHB();
+  }
+  function amRulOut(g){
+    const P=new Set(g.pts.map(x=>x[1])), S=new Set(g.segs.map(x=>x[1]));
+    for(let k=rulPts.length-1;k>=0;k--) if(P.has(rulPts[k])) rulPts.splice(k,1);
+    for(let k=rulSegs.length-1;k>=0;k--) if(S.has(rulSegs[k])) rulSegs.splice(k,1);
+    if(rulLast!==null&&g.pts.some(x=>x[1].id===rulLast)) rulLast=null;
     rulRebuild(); markDirty();
+  }
+  function amRulIn(g){
+    for(const [k,q] of g.pts) rulPts.splice(Math.min(k,rulPts.length),0,q);
+    for(const [k,q] of g.segs) rulSegs.splice(Math.min(k,rulSegs.length),0,q);
+    rulRebuild(); markDirty();
+  }
+  // a click on a run's tag, or a ring's, with the eraser: the whole of it, no question —
+  // the tag IS the run (Eli: "delete a ruler run or a polygon by clicking its label too")
+  const _amTagRay=new THREE.Raycaster();
+  function amTagAt(e,kind){
+    const r=el.getBoundingClientRect();
+    _amTagRay.setFromCamera(new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1),camera);
+    const tags=[];
+    for(const g of [rulGroup,polyGroup]) for(const o of g.children)
+      if(o.isSprite&&o.visible&&o.userData.amTag&&o.userData.amTag.kind===kind) tags.push(o);
+    const hit=_amTagRay.intersectObjects(tags,false);
+    return hit.length?hit[0].object.userData.amTag:null;
+  }
+  function amTagErase(e){
+    if(activeKind==='rul'){ const t=amTagAt(e,'rul');
+      if(!t||(activeR>=0&&t.t!==rulTypes[activeR].id)) return false;
+      rulDropPoints(t.ids); return true; }
+    if(activeKind==='area'&&areaTool===AM_POLY){ const t=amTagAt(e,'poly');
+      if(!t) return false; const i=polys.indexOf(t.ring); if(i<0) return false;
+      amPolyOut(i); return true; }
+    return false;
+  }
+  function amPolyOut(i){
+    const ring=polys[i]; polys.splice(i,1); polyRebuild(); markDirty();
+    undoStack.push([['PD',{i:i,ring:ring}]]); redoStack.length=0; updateHB(); updateArea();
   }
   function rulEraseAt(e){
     const q=rulPointAt(e); if(!q) return;
@@ -1061,6 +1102,7 @@ mat.onBeforeCompile=sh=>{
       const _pi=polys.filter(q=>q.at===P.at).indexOf(P);
       const _pn=(_pi>=0)?_pi+1:polys.filter(q=>q.at===P.at).length+1;
       const sp=rulTag(_pn+' : '+P.area.toFixed(2)+' מ\u05f4ר', '#'+col.getHexString());
+      if(!open) sp.userData.amTag={kind:'poly', ring:P};     // 321: the eraser takes the ring by its tag
       sp.position.set(cx/n,cy/n,cz/n);
       polyGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
     };
@@ -1100,7 +1142,7 @@ mat.onBeforeCompile=sh=>{
       }
     }
     if(best<0) return;
-    polys.splice(best,1); polyRebuild(); markDirty();
+    amPolyOut(best);
   }
   // ---- 258: moving a point that is already placed ---------------------------------------
   // Eli, 18/09: "I want to add the option of dragging a point of a polygon or a ruler."
@@ -1309,6 +1351,11 @@ mat.onBeforeCompile=sh=>{
           m.ring.pts[m.i]=m.from.slice(); polyRecompute(m.ring); polyRebuild();}}
       // 2: a deleted layer comes back whole, in its place; redo takes it again
       else if(d[0]==='D'){inv.push(['D-',d[1]]);amLayerIn(d[1]);}
+      // 321: an erased run or ring comes back in its place; redo takes it again
+      else if(d[0]==='RD'){inv.push(['RA',d[1]]);amRulIn(d[1]);}
+      else if(d[0]==='RA'){inv.push(['RD',d[1]]);amRulOut(d[1]);}
+      else if(d[0]==='PD'){inv.push(['PA',d[1]]);polys.splice(Math.min(d[1].i,polys.length),0,d[1].ring);polyRebuild();}
+      else if(d[0]==='PA'){inv.push(['PD',d[1]]);const k=polys.indexOf(d[1].ring);if(k>=0)polys.splice(k,1);polyRebuild();}
       else if(d[0]==='D-'){inv.push(['D',d[1]]);amLayerOut(d[1]);}
       else {const [ti,f,o]=d;inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;recolorFace(f);}}
     inv.reverse();
@@ -1437,6 +1484,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     // 12 (24/09): a pencil press that meets NOTHING turns the model, in every marking
     // mode — the measurement screen's rule and the training screen's since 297. The
     // ruler still reads a press in the air as the end of its chain.
+    // 321: the eraser takes a run or a ring by its tag — tried before the model, since
+    // a tag often floats over empty space
+    else if(mode==='rem'&&amTagErase(e)){dragging=null;}
     else if(!amOnSurface(e)){ if(activeKind==='rul') rulEnd(); dragging='rot'; }
     else if(mode==='grow'){growAt(e);dragging=null;}
     else if(activeKind==='area'&&areaTool===AM_POLY&&mode==='add'){
