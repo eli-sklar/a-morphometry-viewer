@@ -144,7 +144,7 @@ scene.background=new THREE.Color(0x15171a);   // dark working background, as on 
 const camera=new THREE.PerspectiveCamera(50,innerWidth/Math.max(1,innerHeight),0.01,1000);
 function resize(){renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/Math.max(1,innerHeight);camera.updateProjectionMatrix();}
 addEventListener('resize',resize); resize();
-(function tick(){requestAnimationFrame(tick);if(window.amRescaleFixed)window.amRescaleFixed();renderer.render(scene,camera);})();
+(function tick(){requestAnimationFrame(tick);if(window.amMarkTick)window.amMarkTick();if(window.amRescaleFixed)window.amRescaleFixed();renderer.render(scene,camera);})();
 
 $('openBtn').onclick=()=>$('file').click();
 $('mImport').onclick=()=>$('file').click();     // slice 2 (decision 42): the reverse button
@@ -495,6 +495,7 @@ vec3 amPatchShade(vec3 wall, float isPatch, vec3 p){
     const ms=Array.isArray(mesh.material)?mesh.material:[mesh.material];
     for(const m of ms){ m.transparent=(v<0.999); m.opacity=v;
                         m.depthWrite=(v>=0.999); m.needsUpdate=true; }
+    if(amMarkMat){ amMarkMat.transparent=(v<0.999); amMarkMat.opacity=v; amMarkMat.depthWrite=(v>=0.999); amMarkMat.needsUpdate=true; }
   }
 mat.onBeforeCompile=sh=>{
     sh.uniforms.amDesign=amDesignU;
@@ -540,15 +541,579 @@ mat.onBeforeCompile=sh=>{
   function isRepair(f){for(let ti=0;ti<types.length;ti++)if(isType(ti,f))return true;return false;}
   const ROIC=[1.0,0.80,0.45];
   const _vis=[];
+  /* ---- 324: THE SMOOTH MARK ----------------------------------------------------------------
+     Eli, 27/09: "now the brush is approved — all the brushes in the program will become like
+     this." The area brush now marks as the crop brush cuts since 314-319. The marking by
+     sub-faces stays exactly what it was — the automatic detection, the grow, the sub-faces a
+     stroke reaches — and each stroke also keeps its BALLS, in its layer. A sub-face the line
+     crosses is cut along it, drawn by the part of it that is marked, and COUNTS by that part.
+     Every sub-face starts as the automatic detection has it, and the strokes and the grows act
+     on it in their order — so the eraser cuts a smooth line into a detected area too, and a
+     grow after an erasure fills again what it grows over. The engine below is generated from
+     the training screen's (ccPlan and its helpers, with a sub-face's own start and the
+     'faces' ops added); the same text runs in the iPad. */
+  const CC_SNAP=1e-4, CC_FOLD=0.08, CC_ITERS=24;
+  const CC_BIG=1e3;                 // a sub-face wholly inside, or wholly outside, before any stroke
+  const CC_GRID=new WeakMap();
+  const ccCellKey=(i,j,k)=>(i*73856093)^(j*19349663)^(k*83492791);
+  function ccGrid(op){
+    let g=CC_GRID.get(op); if(g&&g.n===op.c.length) return g;
+    const cs=Math.max(2*op.r,1e-6), m=new Map(), c=op.c;
+    const lo=[Infinity,Infinity,Infinity], hi=[-Infinity,-Infinity,-Infinity];
+    for(let i=0;i+2<c.length;i+=3){
+      for(let k=0;k<3;k++){ if(c[i+k]<lo[k])lo[k]=c[i+k]; if(c[i+k]>hi[k])hi[k]=c[i+k]; }
+      const k=ccCellKey(Math.floor(c[i]/cs),Math.floor(c[i+1]/cs),Math.floor(c[i+2]/cs));
+      let a=m.get(k); if(!a){a=[];m.set(k,a);} a.push(i); }
+    const pad=2*op.r;
+    g={cs:cs,m:m,n:c.length,lo:[lo[0]-pad,lo[1]-pad,lo[2]-pad],hi:[hi[0]+pad,hi[1]+pad,hi[2]+pad]};
+    CC_GRID.set(op,g); return g;
+  }
+  function ccOpField(op,x,y,z){
+    if(op.t==='balls'){ const c=op.c; let m=Infinity;
+      if(c.length>60){ const g=ccGrid(op);
+        // the key collides now and then: every dab it returns is measured, so a collision
+        // only adds a candidate, never loses one
+        if(x<g.lo[0]||x>g.hi[0]||y<g.lo[1]||y>g.hi[1]||z<g.lo[2]||z>g.hi[2]) return op.r;
+        const ix=Math.floor(x/g.cs), iy=Math.floor(y/g.cs), iz=Math.floor(z/g.cs);
+        for(let a=-1;a<=1;a++) for(let b=-1;b<=1;b++) for(let d=-1;d<=1;d++){
+          const L=g.m.get(ccCellKey(ix+a,iy+b,iz+d)); if(!L) continue;
+          for(const i of L){const dx=x-c[i],dy=y-c[i+1],dz=z-c[i+2];const q=dx*dx+dy*dy+dz*dz;if(q<m)m=q;} }
+        if(m===Infinity) return op.r;          // farther than 2r: outside, by more than r
+        return Math.sqrt(m)-op.r; }
+      for(let i=0;i+2<c.length;i+=3){const dx=x-c[i],dy=y-c[i+1],dz=z-c[i+2];const d=dx*dx+dy*dy+dz*dz;if(d<m)m=d;}
+      return Math.sqrt(m)-op.r; }
+    if(op.t==='box'){ const [qx,qy,qz,qw]=op.q, c=op.c, h=op.h;
+      const R=[[1-2*(qy*qy+qz*qz),2*(qx*qy-qz*qw),2*(qx*qz+qy*qw)],
+               [2*(qx*qy+qz*qw),1-2*(qx*qx+qz*qz),2*(qy*qz-qx*qw)],
+               [2*(qx*qz-qy*qw),2*(qy*qz+qx*qw),1-2*(qx*qx+qy*qy)]];
+      const d=[x-c[0],y-c[1],z-c[2]]; let m=-Infinity;
+      for(let j=0;j<3;j++){ const v=d[0]*R[0][j]+d[1]*R[1][j]+d[2]*R[2][j]; const e=Math.abs(v)-h[j]; if(e>m)m=e; }
+      return m; }
+    return Infinity;
+  }
+  function ccIndex(ops){
+    let rmax=0, farPos=Infinity, n=0;
+    for(const op of ops){ if(op.t==='faces') continue; if(op.t!=='balls') return null;
+      if(op.c.length){ rmax=Math.max(rmax,op.r); if(op.s>=0) farPos=Math.min(farPos,op.r); } n+=(op.c.length/3)|0; }
+    const cs=Math.max(2*rmax,1e-6);
+    let size=16; while(size<4*n) size*=2; const mask=size-1;
+    const KI=new Int32Array(size), KJ=new Int32Array(size), KK=new Int32Array(size), used=new Uint8Array(size), cnt=new Int32Array(size);
+    const slotOf=new Int32Array(n), dOp=new Int32Array(n), dI=new Int32Array(n); let q=0;
+    ops.forEach((op,k)=>{ if(op.t!=='balls') return; const c=op.c;
+      for(let i=0;i+2<c.length;i+=3){ const a=Math.floor(c[i]/cs), b=Math.floor(c[i+1]/cs), d=Math.floor(c[i+2]/cs);
+        let h=(Math.imul(a,73856093)^Math.imul(b,19349663)^Math.imul(d,83492791))&mask;
+        while(used[h]&&!(KI[h]===a&&KJ[h]===b&&KK[h]===d)) h=(h+1)&mask;
+        if(!used[h]){used[h]=1;KI[h]=a;KJ[h]=b;KK[h]=d;}
+        cnt[h]++; slotOf[q]=h; dOp[q]=k; dI[q]=i; q++; } });
+    const start=new Int32Array(size+1); for(let h=0;h<size;h++) start[h+1]=start[h]+cnt[h];
+    const fill=start.slice(0,size), EO=new Int32Array(n), EI=new Int32Array(n);
+    for(let t=0;t<q;t++){ const h=slotOf[t], w=fill[h]++; EO[w]=dOp[t]; EI[w]=dI[t]; }
+    const fops=[]; ops.forEach((op,k)=>{ if(op.t==='faces') fops.push(k); });
+    return {fops:fops, cs:cs, mask:mask, KI:KI, KJ:KJ, KK:KK, used:used, start:start, EO:EO, EI:EI, farPos:farPos, stamp:0,
+            seen:new Int32Array(ops.length), best:new Float64Array(ops.length), touch:new Int32Array(ops.length)};
+  }
+  function ccFieldIx(ix,ops,x,y,z,en){
+    const cs=ix.cs, ix0=Math.floor(x/cs), iy0=Math.floor(y/cs), iz0=Math.floor(z/cs);
+    const st=++ix.stamp, S=ix.seen, B=ix.best, T=ix.touch, mask=ix.mask, KI=ix.KI, KJ=ix.KJ, KK=ix.KK,
+          U=ix.used, ST=ix.start, EO=ix.EO, EI=ix.EI; let nt=0;
+    for(let a=ix0-1;a<=ix0+1;a++){ const ha=Math.imul(a,73856093);
+      for(let b=iy0-1;b<=iy0+1;b++){ const hb=ha^Math.imul(b,19349663);
+        for(let d=iz0-1;d<=iz0+1;d++){
+          let h=(hb^Math.imul(d,83492791))&mask;
+          while(U[h]&&!(KI[h]===a&&KJ[h]===b&&KK[h]===d)) h=(h+1)&mask;
+          if(!U[h]) continue;
+          for(let w=ST[h],we=ST[h+1];w<we;w++){ const k=EO[w], i=EI[w], c=ops[k].c;
+            const dx=x-c[i],dy=y-c[i+1],dz=z-c[i+2], d2=dx*dx+dy*dy+dz*dz;
+            if(S[k]!==st){S[k]=st;B[k]=d2;T[nt++]=k;} else if(d2<B[k]) B[k]=d2; } } } }
+    for(let i=1;i<nt;i++){ const v=T[i]; let j=i-1; while(j>=0&&T[j]>v){T[j+1]=T[j];j--;} T[j+1]=v; }
+    // the sub-face's own start, and the face-level acts in their place among the strokes
+    let f=(en&&en.st)?(en.st(en.cur)?-CC_BIG:CC_BIG):Infinity;
+    const FO=ix.fops; let fi=0;
+    for(let q=0;q<=nt;q++){ const kb=(q<nt)?T[q]:Infinity;
+      while(fi<FO.length&&FO[fi]<kb){ const v=ops[FO[fi]].m.get(en?en.cur:-1); if(v!==undefined) f=(v>0)?-CC_BIG:CC_BIG; fi++; }
+      if(q===nt) break;
+      const op=ops[T[q]], r=op.r, d2=B[T[q]];
+      const g=(d2>4*r*r)?r:Math.sqrt(d2)-r; f=(op.s>=0)?Math.min(f,g):Math.max(f,-g); }
+    return f===Infinity?ix.farPos:f;
+  }
+  function ccField(en,x,y,z){
+    if(en._ix){ const f=ccFieldIx(en._ix,en.ops,x,y,z,en); return en.inv?-f:f; }
+    let f=en.st?(en.st(en.cur)?-CC_BIG:CC_BIG):Infinity;
+    for(const op of en.ops){ if(op.t==='faces'){ const v=op.m.get(en.cur); if(v!==undefined) f=(v>0)?-CC_BIG:CC_BIG; continue; }
+      const g=ccOpField(op,x,y,z); f=(op.s>=0)?Math.min(f,g):Math.max(f,-g); }
+    return en.inv?-f:f; }
+  function ccBBox(en){ const lo=[Infinity,Infinity,Infinity], hi=[-Infinity,-Infinity,-Infinity];
+    for(const op of en.ops){
+      if(op.t==='balls'){ for(let i=0;i+2<op.c.length;i+=3) for(let k=0;k<3;k++){
+          lo[k]=Math.min(lo[k],op.c[i+k]-op.r); hi[k]=Math.max(hi[k],op.c[i+k]+op.r);} }
+      else if(op.t==='box'){ const rad=Math.hypot(op.h[0],op.h[1],op.h[2]);
+        for(let k=0;k<3;k++){ lo[k]=Math.min(lo[k],op.c[k]-rad); hi[k]=Math.max(hi[k],op.c[k]+rad);} } }
+    return [lo,hi]; }
+  function ccEdgeZero(Pi,Pj,fi,fj,en){
+    const less=(a,b)=>a[0]!==b[0]?a[0]<b[0]:(a[1]!==b[1]?a[1]<b[1]:a[2]<b[2]);
+    const swap=less(Pj,Pi);
+    if(swap){ const t=Pi;Pi=Pj;Pj=t; const u=fi;fi=fj;fj=u; }
+    let lo=0,hi=1,flo=fi;
+    for(let k=0;k<CC_ITERS;k++){ const mid=0.5*(lo+hi);
+      const fm=ccField(en,Pi[0]+mid*(Pj[0]-Pi[0]),Pi[1]+mid*(Pj[1]-Pi[1]),Pi[2]+mid*(Pj[2]-Pi[2]));
+      if((fm>0)===(flo>0)){lo=mid;flo=fm;} else hi=mid; }
+    const t=0.5*(lo+hi); return swap?1-t:t; }
+  const CC_EDGE_MIN=8, CC_EDGE_STEP=0.01, CC_EDGE_MAX=64, CC_ARC_TOL=0.0015, CC_ARC_DEPTH=4;
+  function ccLess(a,b){return a[0]!==b[0]?a[0]<b[0]:(a[1]!==b[1]?a[1]<b[1]:a[2]<b[2]);}
+  function ccLerp(a,b,t){return [a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1]),a[2]+t*(b[2]-a[2])];}
+  function ccZeroRaw(A,B,fa,en){ let lo=0,hi=1,flo=fa;
+    for(let k=0;k<CC_ITERS;k++){ const m=0.5*(lo+hi); const q=ccLerp(A,B,m); const fm=ccField(en,q[0],q[1],q[2]);
+      if((fm>0)===(flo>0)){lo=m;flo=fm;} else hi=m; }
+    return 0.5*(lo+hi); }
+  function ccEdgeCrossings(Pi,Pj,fi,fj,en){
+    const swap=ccLess(Pj,Pi); const A=swap?Pj:Pi, B=swap?Pi:Pj, fa=swap?fj:fi, fb=swap?fi:fj;
+    const L=Math.hypot(B[0]-A[0],B[1]-A[1],B[2]-A[2]);
+    const n=Math.min(CC_EDGE_MAX,Math.max(CC_EDGE_MIN,Math.ceil(L/CC_EDGE_STEP)));
+    const ts=[], fs=[]; for(let k=0;k<=n;k++) ts.push(k/n);
+    // numpy's linspace: the same probe points to the last bit where it matters
+    for(let k=0;k<=n;k++){ if(k===0) fs.push(fa); else if(k===n) fs.push(fb);
+      else { const q=[A[0]+ts[k]*(B[0]-A[0]),A[1]+ts[k]*(B[1]-A[1]),A[2]+ts[k]*(B[2]-A[2])]; fs.push(ccField(en,q[0],q[1],q[2])); } }
+    const out=[];
+    for(let k=0;k<n;k++) if((fs[k]>0)!==(fs[k+1]>0)){
+      const a0=[A[0]+ts[k]*(B[0]-A[0]),A[1]+ts[k]*(B[1]-A[1]),A[2]+ts[k]*(B[2]-A[2])];
+      const b0=[A[0]+ts[k+1]*(B[0]-A[0]),A[1]+ts[k+1]*(B[1]-A[1]),A[2]+ts[k+1]*(B[2]-A[2])];
+      const u=ccZeroRaw(a0,b0,fs[k],en); out.push(ts[k]+u*(ts[k+1]-ts[k])); }
+    return (swap?out.map(t=>1-t):out).sort((a,b)=>a-b); }
+  function ccBary(P,Q){ const e1=[P[1][0]-P[0][0],P[1][1]-P[0][1],P[1][2]-P[0][2]], e2=[P[2][0]-P[0][0],P[2][1]-P[0][1],P[2][2]-P[0][2]], w=[Q[0]-P[0][0],Q[1]-P[0][1],Q[2]-P[0][2]];
+    const a11=e1[0]*e1[0]+e1[1]*e1[1]+e1[2]*e1[2], a12=e1[0]*e2[0]+e1[1]*e2[1]+e1[2]*e2[2], a22=e2[0]*e2[0]+e2[1]*e2[1]+e2[2]*e2[2];
+    const b1=w[0]*e1[0]+w[1]*e1[1]+w[2]*e1[2], b2=w[0]*e2[0]+w[1]*e2[1]+w[2]*e2[2], det=a11*a22-a12*a12;
+    if(Math.abs(det)<1e-30) return null; const u=(b1*a22-b2*a12)/det, v=(a11*b2-a12*b1)/det; return [1-u-v,u,v]; }
+  function ccArc(Qa,Ba,Qb,Bb,P,B,fv,en,depth){
+    if(depth<=0) return [];
+    const S3=[0.25,0.5,0.75]; let w=0, fm=0, best=-1;
+    const Qs=S3.map(t=>ccLerp(Qa,Qb,t));
+    for(let k=0;k<3;k++){ const f=ccField(en,Qs[k][0],Qs[k][1],Qs[k][2]); if(Math.abs(f)>best){best=Math.abs(f);w=k;fm=f;} }
+    if(Math.abs(fm)<=CC_ARC_TOL) return [];
+    const Qm=Qs[w], Bm=ccLerp(Ba,Bb,S3[w]);
+    const d=[Qb[0]-Qa[0],Qb[1]-Qa[1],Qb[2]-Qa[2]];
+    const e1=[P[1][0]-P[0][0],P[1][1]-P[0][1],P[1][2]-P[0][2]], e2=[P[2][0]-P[0][0],P[2][1]-P[0][1],P[2][2]-P[0][2]];
+    const nr=[e1[1]*e2[2]-e1[2]*e2[1],e1[2]*e2[0]-e1[0]*e2[2],e1[0]*e2[1]-e1[1]*e2[0]];
+    let u=[nr[1]*d[2]-nr[2]*d[1],nr[2]*d[0]-nr[0]*d[2],nr[0]*d[1]-nr[1]*d[0]];
+    const ul=Math.hypot(u[0],u[1],u[2]); if(ul<1e-18) return []; u=[u[0]/ul,u[1]/ul,u[2]/ul];
+    const lm=ccBary(P,Qm), l1=ccBary(P,[Qm[0]+u[0],Qm[1]+u[1],Qm[2]+u[2]]); if(!lm||!l1) return [];
+    const dl=[l1[0]-lm[0],l1[1]-lm[1],l1[2]-lm[2]];
+    let bestZ=null, bestS=Infinity;
+    for(const sg of [1,-1]){
+      let smax=Infinity; for(let i=0;i<3;i++){ const r=sg*dl[i]; if(r<-1e-15) smax=Math.min(smax,-lm[i]/r); }
+      if(!(smax>1e-12)||smax===Infinity) continue;
+      const E=[Qm[0]+sg*smax*u[0],Qm[1]+sg*smax*u[1],Qm[2]+sg*smax*u[2]];
+      const fE=ccField(en,E[0],E[1],E[2]); if((fE>0)===(fm>0)) continue;
+      const t=ccEdgeZero(Qm,E,fm,fE,en);
+      if(t*smax<bestS){ bestS=t*smax; bestZ=[E,t]; } }
+    if(!bestZ) return [];
+    const [E,t]=bestZ, lE=ccBary(P,E);
+    const BE=[0,1,2].map(c=>lE[0]*B[0][c]+lE[1]*B[1][c]+lE[2]*B[2][c]);
+    const Z=ccLerp(Qm,E,t), BZ=ccLerp(Bm,BE,t);
+    return ccArc(Qa,Ba,Z,BZ,P,B,fv,en,depth-1).concat([[Z,BZ]],ccArc(Z,BZ,Qb,Bb,P,B,fv,en,depth-1)); }
+  function ccArea2(a,b,c){return (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);}
+  function ccEarclip(pp,bb){
+    let idx=pp.map((_,i)=>i); const uv=bb.map(b=>[b[1],b[2]]); const out=[];
+    const ang=(p,q,r)=>{const v1=[q[0]-p[0],q[1]-p[1]],v2=[r[0]-p[0],r[1]-p[1]];const n1=Math.hypot(v1[0],v1[1]),n2=Math.hypot(v2[0],v2[1]);
+      if(n1<1e-18||n2<1e-18) return 0; return Math.acos(Math.max(-1,Math.min(1,(v1[0]*v2[0]+v1[1]*v2[1])/(n1*n2))));};
+    while(idx.length>3){ let best=null,bq=-1; const n=idx.length;
+      for(let k=0;k<n;k++){ const ia=idx[(k-1+n)%n], ib=idx[k], ic=idx[(k+1)%n];
+        const A=uv[ia],Bq=uv[ib],C=uv[ic]; if(ccArea2(A,Bq,C)<=1e-18) continue;
+        let inside=false;
+        for(const m of idx){ if(m===ia||m===ib||m===ic) continue; const Pm=uv[m];
+          if(ccArea2(A,Bq,Pm)>1e-18&&ccArea2(Bq,C,Pm)>1e-18&&ccArea2(C,A,Pm)>1e-18){inside=true;break;} }
+        if(inside) continue;
+        const q=Math.min(ang(A,Bq,C),ang(Bq,C,A),ang(C,A,Bq)); if(q>bq+1e-12){best=k;bq=q;} }
+      if(best===null){ for(let k=1;k<idx.length-1;k++) out.push([[pp[idx[0]],pp[idx[k]],pp[idx[k+1]]],[bb[idx[0]],bb[idx[k]],bb[idx[k+1]]]]); idx=[]; break; }
+      const n2=idx.length, ia=idx[(best-1+n2)%n2], ib=idx[best], ic=idx[(best+1)%n2];
+      out.push([[pp[ia],pp[ib],pp[ic]],[bb[ia],bb[ib],bb[ic]]]); idx.splice(best,1); }
+    if(idx.length===3&&ccArea2(uv[idx[0]],uv[idx[1]],uv[idx[2]])>1e-18) out.push([[pp[idx[0]],pp[idx[1]],pp[idx[2]]],[bb[idx[0]],bb[idx[1]],bb[idx[2]]]]);
+    return out; }
+  function ccClipPoly(P,B,en,fv,cross){
+    let pp=[], bb=[], nw=[];
+    for(let i=0;i<3;i++){ const j=(i+1)%3;
+      if(fv[i]>0){pp.push(P[i]);bb.push(B[i]);nw.push(false);}
+      for(let t of cross[i]){ if(t<CC_SNAP)t=0; else if(t>1-CC_SNAP)t=1;
+        pp.push(ccLerp(P[i],P[j],t)); bb.push(ccLerp(B[i],B[j],t)); nw.push(true); } }
+    if(pp.length>=2){ const n=pp.length, p2=[], b2=[], n2=[];
+      for(let k=0;k<n;k++){ p2.push(pp[k]); b2.push(bb[k]); n2.push(nw[k]);
+        if(nw[k]&&nw[(k+1)%n]&&n>1) for(const [q,b] of ccArc(pp[k],bb[k],pp[(k+1)%n],bb[(k+1)%n],P,B,fv,en,CC_ARC_DEPTH)){p2.push(q);b2.push(b);n2.push(true);} }
+      pp=p2; bb=b2; nw=n2; }
+    return {pp:pp, bb:bb, nw:nw};
+  }
+  const CC_SPLIT=4;
+  function ccMid(a,b){ return ccLess(b,a)?ccLerp(b,a,0.5):ccLerp(a,b,0.5); }
+  function ccPk(p){ return p[0]+','+p[1]+','+p[2]; }
+  function ccLinks(P,fv,X,en,depth,L){
+    const cr=[0,1,2].map(i=>{ if(X[i]) return X[i]; const j=(i+1)%3;
+      const sw=ccLess(P[j],P[i]), A=sw?P[j]:P[i], Z=sw?P[i]:P[j], fa=sw?fv[j]:fv[i], fz=sw?fv[i]:fv[j];
+      return ccEdgeCrossings(A,Z,fa,fz,en).map(t=>{ const q=ccLerp(A,Z,t); return {t:sw?1-t:t, id:ccPk(q), p:q}; })
+        .sort((a,b)=>a.t-b.t); });
+    const n=cr[0].length+cr[1].length+cr[2].length;
+    if(n>2&&depth<CC_SPLIT){
+      const M=[ccMid(P[0],P[1]),ccMid(P[1],P[2]),ccMid(P[2],P[0])];
+      const fm=M.map(q=>ccField(en,q[0],q[1],q[2]));
+      const lo=c=>c.filter(x=>x.t<0.5).map(x=>({t:2*x.t,id:x.id,p:x.p})),
+            hi=c=>c.filter(x=>x.t>=0.5).map(x=>({t:2*x.t-1,id:x.id,p:x.p}));
+      return ccLinks([P[0],M[0],M[2]],[fv[0],fm[0],fm[2]],[lo(cr[0]),null,hi(cr[2])],en,depth+1,L)
+          && ccLinks([M[0],P[1],M[1]],[fm[0],fv[1],fm[1]],[hi(cr[0]),lo(cr[1]),null],en,depth+1,L)
+          && ccLinks([M[2],M[1],P[2]],[fm[2],fm[1],fv[2]],[null,hi(cr[1]),lo(cr[2])],en,depth+1,L)
+          && ccLinks([M[0],M[1],M[2]],[fm[0],fm[1],fm[2]],[null,null,null],en,depth+1,L); }
+    if(n===0) return true;
+    if(n!==2) return false;                  // still tangled at the deepest split: the caller falls back
+    const xs=cr[0].concat(cr[1],cr[2]);
+    L.push({a:xs[0], b:xs[1], P:P, fv:fv}); return true;
+  }
+  function ccMultiPolys(P,B,en,fv,cross){
+    const E=[[],[],[]];
+    for(let i=0;i<3;i++){ const j=(i+1)%3;
+      cross[i].forEach((t0,k)=>{ let t=t0; if(t<CC_SNAP)t=0; else if(t>1-CC_SNAP)t=1;
+        E[i].push({t:t0, id:'e'+i+'_'+k, p:ccLerp(P[i],P[j],t), b:ccLerp(B[i],B[j],t)}); }); }
+    const Lk=[]; if(!ccLinks(P,fv,E,en,0,Lk)) return null;
+    const adj=new Map(), add=(a,b,seg)=>{ let l=adj.get(a.id); if(!l){l=[];adj.set(a.id,l);} l.push({o:b,seg:seg}); };
+    for(const seg of Lk){ add(seg.a,seg.b,seg); add(seg.b,seg.a,seg); }
+    const I3=[[1,0,0],[0,1,0],[0,0,1]], Z3=[0,0,0];
+    // the line from a crossing on the triangle's edge to where it leaves it, and its points
+    const trace=s0=>{ const pts=[]; let cur=s0, prev=null;
+      for(let g=0;g<4096;g++){ const nb=(adj.get(cur.id)||[]).filter(q=>q.seg!==prev); if(nb.length!==1) return null;
+        const q=nb[0];
+        for(const [z] of ccArc(cur.p,Z3,q.o.p,Z3,q.seg.P,I3,q.seg.fv,en,CC_ARC_DEPTH)) pts.push(z);
+        if(q.o.id[0]==='e') return {end:q.o, pts:pts};
+        pts.push(q.o.p); prev=q.seg; cur=q.o; }
+      return null; };
+    const Bd=[]; for(let i=0;i<3;i++){ Bd.push({c:i,k:fv[i]>0}); for(const x of E[i]) Bd.push({x:x}); }
+    const nB=Bd.length, at=new Map(); Bd.forEach((q,i)=>{ if(q.x) at.set(q.x.id,i); });
+    // after a crossing the boundary is kept or not: the corner that follows says, or — the next
+    // crossing on the same edge — the middle between them
+    const enters=i=>{ const nx=Bd[(i+1)%nB]; if(nx.c!==undefined) return nx.k;
+      const m=ccLerp(Bd[i].x.p,nx.x.p,0.5); return ccField(en,m[0],m[1],m[2])>0; };
+    const seen=new Set(), polys=[];
+    for(let s0=0;s0<nB;s0++){ if(!Bd[s0].x||seen.has(Bd[s0].x.id)||!enters(s0)) continue;
+      const pp=[], bb=[]; let i=s0, g=0;
+      for(;;){ if(++g>64) return null;
+        const x=Bd[i].x; seen.add(x.id); pp.push(x.p); bb.push(x.b);
+        let k=(i+1)%nB;
+        while(Bd[k].c!==undefined){ if(!Bd[k].k) return null; pp.push(P[Bd[k].c]); bb.push(B[Bd[k].c]); k=(k+1)%nB; }
+        if(enters(k)) return null;
+        const e=Bd[k].x; seen.add(e.id); pp.push(e.p); bb.push(e.b);
+        const tr=trace(e); if(!tr) return null;
+        for(const z of tr.pts){ const l=ccBary(P,z); if(!l) return null; pp.push(z);
+          bb.push([0,1,2].map(c=>l[0]*B[0][c]+l[1]*B[1][c]+l[2]*B[2][c])); }
+        i=at.get(tr.end.id); if(!enters(i)) return null;
+        if(i===s0) break; }
+      polys.push({pp:pp,bb:bb}); }
+    return polys.length?polys:null;
+  }
+  function ccTriangulate(pp,bb,out){
+    const d=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2]);
+    if(pp.length===3) out.push([pp,bb]);
+    else if(pp.length===4){
+      // the shorter diagonal — when it lies inside: a quad the line bends into is not convex,
+      // and its other diagonal runs outside it (318: kept and cut overlapped by 1-2%)
+      const A=(i,j,k)=>ccArea2([bb[i][1],bb[i][2]],[bb[j][1],bb[j][2]],[bb[k][1],bb[k][2]]);
+      const ok02=A(0,1,2)*A(0,2,3)>0, ok13=A(0,1,3)*A(1,2,3)>0;
+      if(ok02&&(!ok13||d(pp[0],pp[2])<=d(pp[1],pp[3]))){ out.push([[pp[0],pp[1],pp[2]],[bb[0],bb[1],bb[2]]]); out.push([[pp[0],pp[2],pp[3]],[bb[0],bb[2],bb[3]]]); }
+      else if(ok13){ out.push([[pp[0],pp[1],pp[3]],[bb[0],bb[1],bb[3]]]); out.push([[pp[1],pp[2],pp[3]],[bb[1],bb[2],bb[3]]]); }
+      else for(const t of ccEarclip(pp,bb)) out.push(t); }
+    else if(pp.length>4) for(const t of ccEarclip(pp,bb)) out.push(t);
+  }
+  function ccClipTri(P,B,en){
+    const fv=[ccField(en,...P[0]),ccField(en,...P[1]),ccField(en,...P[2])];
+    const cross=[0,1,2].map(i=>ccEdgeCrossings(P[i],P[(i+1)%3],fv[i],fv[(i+1)%3],en));
+    const nx=cross[0].length+cross[1].length+cross[2].length;
+    if(!nx) return (fv[0]<=0&&fv[1]<=0&&fv[2]<=0)?[]:[[P,B]];
+    let polys=nx>2?ccMultiPolys(P,B,en,fv,cross):null;
+    if(!polys){ const r=ccClipPoly(P,B,en,fv,cross); polys=[{pp:r.pp,bb:r.bb}]; }
+    const out=[]; for(const q of polys) ccTriangulate(q.pp,q.bb,out);
+    return out.filter(([p])=>{const ax=p[1][0]-p[0][0],ay=p[1][1]-p[0][1],az=p[1][2]-p[0][2],
+      bx=p[2][0]-p[0][0],by=p[2][1]-p[0][1],bz=p[2][2]-p[0][2];
+      return Math.hypot(ay*bz-az*by,az*bx-ax*bz,ax*by-ay*bx)>1e-14;});
+  }
+  function ccCorner(f,c){const o=f*9+c*3;return [pos[o],pos[o+1],pos[o+2]];}
+  function ccCutFace(f,idx,entries){
+    let tris=[[[ccCorner(f,0),ccCorner(f,1),ccCorner(f,2)],[[1,0,0],[0,1,0],[0,0,1]]]];
+    for(const ei of idx){ entries[ei].cur=f; const nx=[]; for(const [p,b] of tris) for(const t of ccClipTri(p,b,entries[ei])) nx.push(t);
+      tris=nx; if(!tris.length) break; }
+    return tris; }
+  function ccPlan(entries,cand,seeds){
+    const removed=cand?null:new Uint8Array(N), cuts=new Map();
+    const vkey=(f,c)=>{const o=f*9+c*3;return Math.round(pos[o]*1e5)+','+Math.round(pos[o+1]*1e5)+','+Math.round(pos[o+2]*1e5);};
+    entries.forEach((en,ei)=>{
+      if(!en.ops||!en.ops.length){ for(const f of en.faces) if(f<N) removed[f]=1; return; }
+      if(en._ix===undefined) en._ix=en.ops.length>1?ccIndex(en.ops):null;
+      const S=en.S||(()=>{const a=new Uint8Array(N); for(const f of en.faces) if(f<N) a[f]=1; return a;})();
+      const [lo,hi]=ccBBox(en);
+      const fv=new Map(), mixed=new Set(), bitten=new Set();
+      // `cand`: only these faces are looked at (26/09: the red while the hand paints)
+      const nC=cand?cand.length:N;
+      for(let q=0;q<nC;q++){ const f=cand?cand[q]:q; if(f>=N) continue; const o=f*9; let inb=false; en.cur=f;
+        for(let c=0;c<3&&!inb;c++){ const x=pos[o+c*3],y=pos[o+c*3+1],z=pos[o+c*3+2];
+          if(x>=lo[0]&&x<=hi[0]&&y>=lo[1]&&y<=hi[1]&&z>=lo[2]&&z<=hi[2]) inb=true; }
+        if(!inb) continue;
+        const v=[0,1,2].map(c=>ccField(en,pos[o+c*3],pos[o+c*3+1],pos[o+c*3+2]));
+        const n=(v[0]<=0)+(v[1]<=0)+(v[2]<=0);
+        if(n>0&&n<3){ mixed.add(f); fv.set(f,v); continue; }
+        // corners that agree may hide an edge the shape enters and leaves (crop_clip.py)
+        const P=[ccCorner(f,0),ccCorner(f,1),ccCorner(f,2)];
+        const el=Math.max(Math.hypot(P[1][0]-P[0][0],P[1][1]-P[0][1],P[1][2]-P[0][2]),
+                          Math.hypot(P[2][0]-P[1][0],P[2][1]-P[1][1],P[2][2]-P[1][2]),
+                          Math.hypot(P[0][0]-P[2][0],P[0][1]-P[2][1],P[0][2]-P[2][2]));
+        if(Math.min(Math.abs(v[0]),Math.abs(v[1]),Math.abs(v[2]))<el)
+          for(let i=0;i<3;i++) if(ccEdgeCrossings(P[i],P[(i+1)%3],v[i],v[(i+1)%3],en).length){
+            mixed.add(f); fv.set(f,v); bitten.add(f); break; } }
+      if(!cand){ for(const f of en.faces) if(f<N&&!mixed.has(f)) removed[f]=1; }   // whole, as before
+      // the crossed edges of the mixed faces, keyed by their welded ends
+      const edges=new Map(), nrm=new Map();
+      for(const f of mixed){ const v=fv.get(f), k=[vkey(f,0),vkey(f,1),vkey(f,2)];
+        const a=ccCorner(f,0),b=ccCorner(f,1),c=ccCorner(f,2);
+        const ux=b[0]-a[0],uy=b[1]-a[1],uz=b[2]-a[2],wx=c[0]-a[0],wy=c[1]-a[1],wz=c[2]-a[2];
+        const nx=uy*wz-uz*wy,ny=uz*wx-ux*wz,nz=ux*wy-uy*wx,nl=Math.hypot(nx,ny,nz)||1;
+        nrm.set(f,[nx/nl,ny/nl,nz/nl]);
+        for(let i=0;i<3;i++){ const j=(i+1)%3;
+          const ek=k[i]<k[j]?k[i]+'|'+k[j]:k[j]+'|'+k[i];
+          (edges.get(ek)||edges.set(ek,[]).get(ek)).push(f); } }
+      // an edge is crossed when its ends disagree, or — beside a bitten face — when it has a crossing
+      const ekCross=new Map();
+      const crossedEdge=(f,i)=>{ const v=fv.get(f), j=(i+1)%3;
+        if((v[i]<=0)!==(v[j]<=0)) return true;
+        const k=[vkey(f,0),vkey(f,1),vkey(f,2)], ek=k[i]<k[j]?k[i]+'|'+k[j]:k[j]+'|'+k[i];
+        const gs=edges.get(ek)||[]; if(!gs.some(g=>bitten.has(g))) return false;
+        en.cur=f; if(!ekCross.has(ek)) ekCross.set(ek,ccEdgeCrossings(ccCorner(f,i),ccCorner(f,j),v[i],v[j],en).length>0);
+        return ekCross.get(ek); };
+      const band=new Set(), q=[];
+      // `seeds`: faces already known to be on the line just outside the region asked about —
+      // the neighbours a face in it may be reached from (26/09)
+      for(const f of mixed) if(S[f]||(seeds&&seeds.has(f))){band.add(f);q.push(f);}
+      while(q.length){ const f=q.pop(), v=fv.get(f), k=[vkey(f,0),vkey(f,1),vkey(f,2)], n1=nrm.get(f);
+        for(let i=0;i<3;i++){ const j=(i+1)%3; if(!crossedEdge(f,i)) continue;
+          const ek=k[i]<k[j]?k[i]+'|'+k[j]:k[j]+'|'+k[i];
+          for(const g of (edges.get(ek)||[])){ if(band.has(g)) continue;
+            const n2=nrm.get(g); if(Math.abs(n1[0]*n2[0]+n1[1]*n2[1]+n1[2]*n2[2])<=CC_FOLD) continue;
+            band.add(g); q.push(g); } } }
+      for(const f of band) if(!removed||!removed[f]) (cuts.get(f)||cuts.set(f,[]).get(f)).push(ei);
+    });
+    if(removed) for(const f of [...cuts.keys()]) if(removed[f]) cuts.delete(f);
+    return {removed:removed, cuts:cuts};
+  }
+  let ccReachFor=null, ccReachV=0.3;
+  function ccReach(){
+    if(ccReachFor===pos) return ccReachV;
+    // the 99th percentile of the edges, sampled: the few longer ones are the stroke end's
+    const E=[]; for(let f=0;f<N;f+=7){ const o=f*9;
+      for(let c=0;c<3;c++){ const j=(c+1)%3; E.push(Math.hypot(pos[o+c*3]-pos[o+j*3],pos[o+c*3+1]-pos[o+j*3+1],pos[o+c*3+2]-pos[o+j*3+2])); } }
+    E.sort((x,y)=>x-y);
+    ccReachFor=pos; ccReachV=Math.min(1.0,E.length?E[Math.floor(0.99*(E.length-1))]:0.3); return ccReachV;
+  }
+  let ccLongFor=null, ccLong=null;
+  function ccLongFaces(){
+    if(ccLongFor===pos) return ccLong;
+    const R=ccReach(), L=[];
+    for(let f=0;f<N;f++){ const o=f*9; let e=0;
+      for(let c=0;c<3;c++){ const j=(c+1)%3; e=Math.max(e,Math.hypot(pos[o+c*3]-pos[o+j*3],pos[o+c*3+1]-pos[o+j*3+1],pos[o+c*3+2]-pos[o+j*3+2])); }
+      if(e>R){ const lo=[Infinity,Infinity,Infinity], hi=[-Infinity,-Infinity,-Infinity];
+        for(let c=0;c<3;c++) for(let k=0;k<3;k++){ lo[k]=Math.min(lo[k],pos[o+c*3+k]); hi[k]=Math.max(hi[k],pos[o+c*3+k]); }
+        L.push({f:f,lo:lo,hi:hi}); } }
+    ccLongFor=pos; ccLong=L; return L;
+  }
+  let amMarkDue=false, amMarkHold=0, amMarkTimer=0, amLive=null, amLiveT=-1, amWatch=null;
+  const amSeen=new WeakMap();                // a stroke -> how many of its dabs the line has asked
+  // where a sub-face starts: inside when the automatic detection marks it (no manual mark)
+  function amStartOf(T,ti){ return f=>{ if(!T.hasProb||!T.prob) return false; if(roiCount>0&&!roi[f]) return false;
+    return T.prob[f]>effThr(ti,f); }; }                  // the iPad's isType, without the manual mark
+  function amEnOf(T){ return {faces:null, S:T.S, ops:T.ops, inv:false, cur:-1, st:amStartOf(T,types.indexOf(T))}; }
+  function amSOf(T){ const ti=types.indexOf(T); if(!T.S||T.S.length!==N) T.S=new Uint8Array(N);
+    for(let f=0;f<N;f++) T.S[f]=isType(ti,f)?1:0; }
+  function amHasBalls(T){ return !!(T.ops&&T.ops.some(o=>o.t==='balls'&&o.c.length)); }
+  function amTriA(p){ const ax=p[1][0]-p[0][0],ay=p[1][1]-p[0][1],az=p[1][2]-p[0][2],bx=p[2][0]-p[0][0],by=p[2][1]-p[0][1],bz=p[2][2]-p[0][2];
+    return 0.5*Math.sqrt((ay*bz-az*by)**2+(az*bx-ax*bz)**2+(ax*by-ay*bx)**2); }
+  // the marked part of one sub-face on the line: its triangles, their texture, their barycentrics
+  // in the sub-face (what the sheet carries to the report), and the fraction of the sub-face
+  function amPiecesOf(f,en){
+    const inside={faces:null, S:en.S, ops:en.ops, inv:true, cur:f, st:en.st, _ix:en._ix};
+    const P=[], U=[], BB=[]; let a=0;
+    for(const [p,b] of ccCutFace(f,[0],[inside])){ a+=amTriA(p);
+      for(let i=0;i<3;i++){ P.push(p[i][0],p[i][1],p[i][2]);
+        let u=0,v=0; for(let c=0;c<3;c++){u+=b[i][c]*uv[(f*3+c)*2]; v+=b[i][c]*uv[(f*3+c)*2+1];}
+        U.push(u,v); BB.push(b[i][1],b[i][2]); } }
+    const full=amTriA([ccCorner(f,0),ccCorner(f,1),ccCorner(f,2)]);
+    return {pos:P, uvs:U, bb:BB, fr:full>0?Math.min(1,a/full):0};
+  }
+  function amStash(T,f){ if(amWatch&&amWatch.T===T&&!amWatch.m.has(f)) amWatch.m.set(f,T.band.has(f)?T.pieces.get(f):null); }
+  // the line where these points (dabs) are, in one layer: every sub-face near them asked again,
+  // the faces already on the line just beyond as the ones they may be reached from (317)
+  function amMarkLocal(T,pts,rmax){
+    if(!T.band){ T.band=new Set(); T.pieces=new Map(); }
+    if(!amHasBalls(T)){ for(const f of T.band) recolorFace(f); T.band.clear(); T.pieces.clear(); return; }
+    const reach=rmax+ccReach(), span=Math.ceil(reach/CELL)+1, ring=span+2;
+    const region=new Set(), outer=new Set(), cells=new Set();
+    for(let i=0;i<pts.length;i+=3){
+      const ix=Math.floor(pts[i]/CELL), iy=Math.floor(pts[i+1]/CELL), iz=Math.floor(pts[i+2]/CELL);
+      const ck=ccCellKey(ix,iy,iz); if(cells.has(ck)) continue; cells.add(ck);
+      for(let a=-ring;a<=ring;a++) for(let b=-ring;b<=ring;b++) for(let c=-ring;c<=ring;c++){
+        const L=grid.get(ckey(ix+a,iy+b,iz+c)); if(!L) continue;
+        const inner=Math.abs(a)<=span&&Math.abs(b)<=span&&Math.abs(c)<=span;
+        for(const f of L){ if(inner) region.add(f); else outer.add(f); } } }
+    const pl=[Infinity,Infinity,Infinity], ph=[-Infinity,-Infinity,-Infinity];
+    for(let i=0;i<pts.length;i+=3) for(let k=0;k<3;k++){ pl[k]=Math.min(pl[k],pts[i+k]); ph[k]=Math.max(ph[k],pts[i+k]); }
+    for(const q of ccLongFaces()){
+      if(q.hi[0]<pl[0]-rmax||q.lo[0]>ph[0]+rmax||q.hi[1]<pl[1]-rmax||q.lo[1]>ph[1]+rmax||q.hi[2]<pl[2]-rmax||q.lo[2]>ph[2]+rmax) continue;
+      for(let i=0;i<pts.length;i+=3)
+        if(pts[i]>=q.lo[0]-rmax&&pts[i]<=q.hi[0]+rmax&&pts[i+1]>=q.lo[1]-rmax&&pts[i+1]<=q.hi[1]+rmax&&pts[i+2]>=q.lo[2]-rmax&&pts[i+2]<=q.hi[2]+rmax){ region.add(q.f); break; } }
+    for(const f of region) outer.delete(f);
+    const seeds=new Set(); for(const f of outer) if(T.band.has(f)) seeds.add(f);
+    const en=amEnOf(T);
+    const plan=ccPlan([en],[...region,...seeds],seeds);
+    for(const f of region){ if(T.band.has(f)&&!plan.cuts.has(f)){ amStash(T,f); T.band.delete(f); T.pieces.delete(f); recolorFace(f); } }
+    for(const f of plan.cuts.keys()){ if(!region.has(f)) continue; amStash(T,f); const was=T.band.has(f); T.band.add(f);
+      T.pieces.set(f,amPiecesOf(f,en)); if(!was) recolorFace(f); }
+  }
+  function amOpPts(op){ if(op.t==='balls') return op.c;
+    const p=[]; for(const f of op.m.keys()) p.push(cen[f*3],cen[f*3+1],cen[f*3+2]); return p; }
+  function amMarkAt(T,op){ const p=amOpPts(op); if(p.length) amMarkLocal(T,p,op.t==='balls'?op.r:0); }
+  // the whole layer: after a threshold, a learning, a load — every stroke's dabs at once
+  function amMarkFull(T){
+    if(T.band) for(const f of T.band) recolorFace(f);
+    T.band=new Set(); T.pieces=new Map();
+    if(!amHasBalls(T)) return;
+    const pts=[]; let rmax=0;
+    for(const op of T.ops){ if(op.t!=='balls') continue; for(let i=0;i+2<op.c.length;i+=3) pts.push(op.c[i],op.c[i+1],op.c[i+2]);
+      if(op.c.length) rmax=Math.max(rmax,op.r); amSeen.set(op,op.c.length); }
+    amMarkLocal(T,pts,rmax);
+  }
+  function amMarkAll(){
+    amMarkTimer=0;
+    for(const T of types){ if(!T.ops) T.ops=[]; amSOf(T); amMarkFull(T); }
+    colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true;
+    updateArea(); amMarkDraw(); invalidate();
+  }
+  function amMarkSoon(){ if(amMarkTimer) clearTimeout(amMarkTimer); amMarkTimer=setTimeout(amMarkAll,120); }
+  // while the hand paints: the dabs added since the last frame (317)
+  function amMarkNear(T){
+    const pts=[]; let rmax=0;
+    for(const op of T.ops){ if(op.t!=='balls') continue; const k0=amSeen.get(op)||0;
+      for(let i=k0;i+2<op.c.length;i+=3) pts.push(op.c[i],op.c[i+1],op.c[i+2]);
+      if(op.c.length>k0) rmax=Math.max(rmax,op.r); amSeen.set(op,op.c.length); }
+    if(pts.length) amMarkLocal(T,pts,rmax);
+  }
+  function amMarkTick(){
+    const t0=performance.now(); if(t0<amMarkHold) return;
+    amMarkDue=false;
+    if(amLive&&types[amLiveT]){ amMarkNear(types[amLiveT]);
+      colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true; amMarkDraw(); }
+    const dt=performance.now()-t0; amMarkHold=dt>25?performance.now()+16:0;
+  }
+  // the marked parts, drawn over the sub-faces they cut with the layer's colour, opacity and
+  // design, in the model's own texture; one layer kept and rewritten in place (322)
+  let amMarkMesh=null, amMarkMat=null, amMarkCap=0;
+  function amMarkDraw(){
+    let nv=0;
+    for(const T of types) if(T.pieces&&T.op>0&&!T.hid) for(const q of T.pieces.values()) nv+=q.pos.length/3;
+    if(amMarkMesh&&amMarkCap<nv){ scene.remove(amMarkMesh); amMarkMesh.geometry.dispose(); amMarkMesh=null; }
+    if(!nv){ if(amMarkMesh) amMarkMesh.visible=false; invalidate(); return; }
+    if(!amMarkMat){ amMarkMat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide,polygonOffset:true,
+        polygonOffsetFactor:-1,polygonOffsetUnits:-4}); amMarkMat.onBeforeCompile=mat.onBeforeCompile; }
+    amMarkMat.transparent=mat.transparent; amMarkMat.opacity=mat.opacity; amMarkMat.depthWrite=mat.depthWrite;
+    if(!amMarkMesh){ let cap=4096; while(cap<nv) cap*=2;
+      const g=new THREE.BufferGeometry();
+      g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(cap*3),3));
+      g.setAttribute('uv',new THREE.BufferAttribute(new Float32Array(cap*2),2));
+      g.setAttribute('aCol',new THREE.BufferAttribute(new Float32Array(cap*3),3));
+      g.setAttribute('aFlat',new THREE.BufferAttribute(new Float32Array(cap),1));
+      g.setAttribute('aDes',new THREE.BufferAttribute(new Float32Array(cap),1));
+      g.setAttribute('aPatch',new THREE.BufferAttribute(new Float32Array(cap),1));
+      amMarkMesh=new THREE.Mesh(g,amMarkMat); amMarkMesh.frustumCulled=false; amMarkMesh.renderOrder=1;
+      amMarkCap=cap; scene.add(amMarkMesh); }
+    const g=amMarkMesh.geometry, A=g.attributes;
+    let o=0;
+    for(const T of types){ if(!T.pieces||!(T.op>0)||T.hid) continue;
+      const c=T.color, d=(typeof T.design==='number')?T.design:0.6;
+      for(const [f,q] of T.pieces){ const n=q.pos.length/3, pf=(f>=PATCH0)?1:0;
+        A.position.array.set(q.pos,o*3); A.uv.array.set(q.uvs,o*2);
+        for(let k=0;k<n;k++){ const w=o+k; A.aCol.array[w*3]=c[0]; A.aCol.array[w*3+1]=c[1]; A.aCol.array[w*3+2]=c[2];
+          A.aFlat.array[w]=T.op; A.aDes.array[w]=d; A.aPatch.array[w]=pf; }
+        o+=n; } }
+    for(const k of ['position','uv','aCol','aFlat','aDes','aPatch']){ const at=A[k];
+      at.clearUpdateRanges(); at.addUpdateRange(0,o*at.itemSize); at.needsUpdate=true; }
+    g.setDrawRange(0,o); amMarkMesh.visible=true; invalidate();
+  }
+  // a stroke of the area brush: its balls go into the layer the moment it starts
+  function amStrokeBegin(){
+    if(!(activeKind==='area'&&areaTool===AM_BRUSH&&(mode==='add'||mode==='rem'))) return;
+    const T=types[activeT]; if(!T) return;
+    if(!T.ops) T.ops=[]; if(!T.S) amSOf(T);
+    amLive={t:'balls',c:[],r:brushR,s:(mode==='add')?1:-1}; amLiveT=activeT; T.ops.push(amLive);
+    if(curDiff) curDiff.push(['OP',activeT,amLive]);
+    amWatch={T:T, m:new Map()};
+  }
+  function amStrokeDab(p){
+    if(!amLive) return;
+    const c=amLive.c, n=c.length;
+    if(!n||Math.hypot(p.x-c[n-3],p.y-c[n-2],p.z-c[n-1])>0.2*amLive.r){ c.push(p.x,p.y,p.z); amMarkDue=true; }
+  }
+  // 319's rule: a stroke that chose no new sub-face stays when it moved the line
+  function amKeeps(T,op){
+    if(!amWatch||!op.c.length) return false;
+    const c=op.c, r=op.r-1e-5;
+    for(const [f,old] of amWatch.m){
+      if(!!old!==T.band.has(f)) return true;
+      if(!old) continue;
+      const o=f*9, P=old.pos;
+      for(let k=0;k<P.length;k+=3){ const x=P[k], y=P[k+1], z=P[k+2];
+        let corner=false; for(let q=0;q<3;q++) if(x===pos[o+q*3]&&y===pos[o+q*3+1]&&z===pos[o+q*3+2]) corner=true;
+        if(corner) continue;
+        for(let i=0;i+2<c.length;i+=3){ const dx=x-c[i],dy=y-c[i+1],dz=z-c[i+2]; if(dx*dx+dy*dy+dz*dz<r*r) return true; } } }
+    const rest=T.ops.filter(o=>o!==op);
+    const eo={ops:rest, inv:false, cur:-1, st:amStartOf(T,types.indexOf(T))}; eo._ix=rest.length>1?ccIndex(rest):null;
+    for(const f of amWatch.m.keys()){ const now=T.pieces.get(f); if(!now) continue;
+      const o=f*9, P=now.pos; eo.cur=f;
+      for(let k=0;k<P.length;k+=3){ const x=P[k], y=P[k+1], z=P[k+2];
+        let corner=false; for(let q=0;q<3;q++) if(x===pos[o+q*3]&&y===pos[o+q*3+1]&&z===pos[o+q*3+2]) corner=true;
+        if(!corner&&Math.abs(ccField(eo,x,y,z))>1e-5) return true; } }
+    return false;
+  }
+  function amStrokeEnd(){
+    if(!amLive) return;
+    const T=types[amLiveT], op=amLive;
+    if(T){ amMarkNear(T);
+      const chose=!!(curDiff&&curDiff.some(d=>d[0]!=='OP'));
+      if(!chose&&!amKeeps(T,op)){ const k=T.ops.lastIndexOf(op); if(k>=0) T.ops.splice(k,1);
+        if(curDiff) curDiff=curDiff.filter(d=>d[2]!==op);
+        amWatch=null; amMarkAt(T,op); } }
+    amLive=null; amWatch=null;
+    colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true; updateArea(); amMarkDraw();
+  }
+  // undo and redo: an op leaves or comes back, and the line is asked again where it was
+  function amOpOut(ti,op){ const T=types[ti]; if(!T||!T.ops) return;
+    const k=T.ops.lastIndexOf(op); if(k>=0) T.ops.splice(k,1); amMarkAt(T,op); amMarkDraw(); }
+  function amOpIn(ti,op){ const T=types[ti]; if(!T) return; if(!T.ops) T.ops=[];
+    T.ops.push(op); if(op.t==='balls') amSeen.set(op,op.c.length); amMarkAt(T,op); amMarkDraw(); }
+  function amSUpd(ti,f){ const T=types[ti]; if(T&&T.S) T.S[f]=isType(ti,f)?1:0; }
+  // the sheet: the strokes' balls and the grows' sub-faces, in their order
+  function amOpsOut(T){ return (T.ops||[]).map(op=>op.t==='balls'
+      ? {t:'balls', r:Math.round(op.r*1e5)/1e5, s:op.s, c:op.c.map(v=>Math.round(v*1e5)/1e5)}
+      : {t:'faces', f:[...op.m.keys()], v:[...op.m.values()]}).filter(o=>o.t!=='balls'||o.c.length); }
+  // the marked parts each layer carries to the report (324): the part of every sub-face on the
+  // line, and its triangles in the sub-face's own barycentrics
+  function amMarkDerived(T,ti){
+    let a=0; const fs=[], frac=[], pcs=[];
+    const B=T.band;
+    for(let f=0;f<N;f++) if(isType(ti,f)&&!(B&&B.has(f))){ a+=area[f]; fs.push(f); }
+    if(T.pieces) for(const [f,q] of T.pieces){ if(!(q.fr>1e-6)) continue;
+      a+=q.fr*area[f]; fs.push(f); frac.push([f,Math.round(q.fr*1e4)/1e4]);
+      pcs.push([f].concat(q.bb.map(v=>Math.round(v*1e4)/1e4))); }
+    return {a:a, faces:fs, frac:frac, pieces:pcs};
+  }
+  // the iPad draws every frame; the frame asks the line first (317)
+  window.amMarkTick=()=>{ if(amMarkDue) amMarkTick(); };
   function recolorFace(f){
     let r=null, a=0, d=0; _vis.length=0;
-    for(let ti=0;ti<types.length;ti++) if(types[ti].op>0&&!types[ti].hid&&isType(ti,f)) _vis.push(ti);
+    for(let ti=0;ti<types.length;ti++) if(types[ti].op>0&&!types[ti].hid&&isType(ti,f)&&!(types[ti].band&&types[ti].band.has(f))) _vis.push(ti);
     if(!_vis.length){ if(roi[f]){r=ROIC;a=0.45;} else {r=[1,1,1];a=0;} }
     else { const T=types[_vis[f%_vis.length]]; r=T.color; a=T.op; d=(typeof T.design==='number')?T.design:0.6; }   // alternating triangles
     const o=f*9;
     for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;dess[f*3+c]=d;}
   }
-  function recolorAll(){for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();}
+  function recolorAll(){for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();
+    amMarkDraw(); amMarkSoon(); }   // 324: the line follows whatever changed
   // Design-only repaint (decision 93) — same words as the editor: the wheel touches
   // only aDes, and a full recolour per drag tick killed the GL context on a 168k-face
   // building. One attribute pass, coalesced to a frame.
@@ -557,18 +1122,20 @@ mat.onBeforeCompile=sh=>{
     _desReq=false;
     for(let f=0;f<N;f++){
       _vis.length=0;
-      for(let ti=0;ti<types.length;ti++) if(types[ti].op>0 && !types[ti].hid && isType(ti,f)) _vis.push(ti);
+      for(let ti=0;ti<types.length;ti++) if(types[ti].op>0 && !types[ti].hid && isType(ti,f) && !(types[ti].band&&types[ti].band.has(f))) _vis.push(ti);
       if(!_vis.length) continue;
       const T=types[_vis[f%_vis.length]];
       const d=(typeof T.design==='number')?T.design:0.6;
       dess[f*3]=d;dess[f*3+1]=d;dess[f*3+2]=d;
     }
-    desAttr.needsUpdate=true;
+    desAttr.needsUpdate=true; amMarkDraw();
   }
   function amDessSoon(){ if(_desReq) return; _desReq=true; requestAnimationFrame(amDessOnly); }
   function updateArea(){
     for(let ti=0;ti<types.length;ti++){const T=types[ti];let a=0;
-      for(let f=0;f<N;f++)if(isType(ti,f))a+=area[f];
+      // 324: a sub-face the line crosses counts by its marked part
+      {const B=T.band; if(B&&B.size){ for(let f=0;f<N;f++)if(isType(ti,f)&&!B.has(f))a+=area[f]; for(const [f,q] of T.pieces)a+=q.fr*area[f]; }
+       else for(let f=0;f<N;f++)if(isType(ti,f))a+=area[f];}
       // 258: a polygon layer's area lives in its rings, not in painted faces
       for(const P of polys) if(P.at===T.id) a+=P.area;
       T.area=a;
@@ -1351,13 +1918,16 @@ mat.onBeforeCompile=sh=>{
           m.ring.pts[m.i]=m.from.slice(); polyRecompute(m.ring); polyRebuild();}}
       // 2: a deleted layer comes back whole, in its place; redo takes it again
       else if(d[0]==='D'){inv.push(['D-',d[1]]);amLayerIn(d[1]);}
+      // 324: a stroke's balls, or a grow, leave with its undo and come back with its redo
+      else if(d[0]==='OP'){inv.push(['OP-',d[1],d[2]]);amOpOut(d[1],d[2]);}
+      else if(d[0]==='OP-'){inv.push(['OP',d[1],d[2]]);amOpIn(d[1],d[2]);}
       // 321: an erased run or ring comes back in its place; redo takes it again
       else if(d[0]==='RD'){inv.push(['RA',d[1]]);amRulIn(d[1]);}
       else if(d[0]==='RA'){inv.push(['RD',d[1]]);amRulOut(d[1]);}
       else if(d[0]==='PD'){inv.push(['PA',d[1]]);polys.splice(Math.min(d[1].i,polys.length),0,d[1].ring);polyRebuild();}
       else if(d[0]==='PA'){inv.push(['PD',d[1]]);const k=polys.indexOf(d[1].ring);if(k>=0)polys.splice(k,1);polyRebuild();}
       else if(d[0]==='D-'){inv.push(['D',d[1]]);amLayerOut(d[1]);}
-      else {const [ti,f,o]=d;inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;recolorFace(f);}}
+      else {const [ti,f,o]=d;inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;amSUpd(ti,f);recolorFace(f);}}
     inv.reverse();
     logOps(typedOps(diff));
     colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();return inv;
@@ -1473,7 +2043,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY,type:e.pointerType});
     last=[e.clientX,e.clientY]; dragId=e.pointerId; amNavArm(e);
     if(touchList().length>=2&&!hasPen()){
-      if(dragging==='paint'&&paintManual)commitH();
+      if(dragging==='paint'&&paintManual){amStrokeEnd();commitH();}
       if(dragging==='line')endLine();
       startPinch();dragging='pinch';return;}
     // a finger ALWAYS navigates — marking/erasing/growing is pencil-only
@@ -1499,7 +2069,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     else if(activeKind==='len'&&mode==='rem'){dragging='lerase';lineEraseAt(e);}
     else if(activeKind==='cnt'&&mode==='add'){placeXAt(e);dragging=null;}
     else if(activeKind==='cnt'&&mode==='rem'){dragging='xerase';eraseXAt(e);}
-    else {dragging='paint';paintManual=true;beginH();paintAt(e);}
+    else {dragging='paint';paintManual=true;beginH();amStrokeBegin();paintAt(e);}
   });
   el.addEventListener('pointermove',e=>{
     if(!ptrs.has(e.pointerId)) return;                    // hovering pencil guard
@@ -1524,7 +2094,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(e){ptrs.delete(e.pointerId);if(e.pointerId===dragId)dragId=null;}
     if(dragging==='pinch'){if(touchList().length>=2)startPinch();else{pinch=null;dragging=null;}return;}
     if(dragging==='grab')amGrabEnd();
-    if(dragging==='paint'&&paintManual)commitH();
+    if(dragging==='paint'&&paintManual){amStrokeEnd();commitH();}
     if(dragging==='line')endLine();
     dragging=null;dragId=null;
   }
@@ -1562,8 +2132,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     let head=0,added=0; const CAP=80000;
     const M=types[activeT].manual;
     beginH();
+    const gop={t:'faces', m:new Map()};        // 324: the grow, as an act in the layer's order
     while(head<q.length&&added<CAP){const s=q[head++];
-      if(M[s]!==1){recH(activeT,s);M[s]=1;recolorFace(s);} added++;
+      gop.m.set(s,1);
+      if(M[s]!==1){recH(activeT,s);M[s]=1;amSUpd(activeT,s);recolorFace(s);} added++;
       const cx=cen[s*3],cy=cen[s*3+1],cz=cen[s*3+2];
       const ix0=Math.floor((cx-RG)/CELL),ix1=Math.floor((cx+RG)/CELL);
       const iy0=Math.floor((cy-RG)/CELL),iy1=Math.floor((cy+RG)/CELL);
@@ -1577,7 +2149,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
           visited[g2]=1; if(ok)q.push(g2);
         }}
     }
-    colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();commitH();
+    { const T=types[activeT]; if(!T.ops) T.ops=[];
+      if(gop.m.size){ T.ops.push(gop); if(curDiff) curDiff.push(['OP',activeT,gop]); if(amHasBalls(T)) amMarkAt(T,gop); } }
+    colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();amMarkDraw();commitH();
   }
 
   /* ---- brush paint ---- */
@@ -1655,6 +2229,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const hit=castAt(e); if(!hit.length)return;
     const p=hit[0].point,r2=brushR*brushR;let ch=false;
     const val=(mode==='add')?1:-1;
+    amStrokeDab(p);                             // 324: the stroke's balls
     const seen=amSeenUnder(e,p);                // 6: null = the ball; a set = the flat cut
     const ix0=Math.floor((p.x-brushR)/CELL),ix1=Math.floor((p.x+brushR)/CELL);
     const iy0=Math.floor((p.y-brushR)/CELL),iy1=Math.floor((p.y+brushR)/CELL);
@@ -1665,7 +2240,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         const dx=cen[f*3]-p.x,dy=cen[f*3+1]-p.y,dz=cen[f*3+2]-p.z;
         if(dx*dx+dy*dy+dz*dz<=r2&&(!seen||seen.has(f))){
           const M=types[activeT].manual;
-          if(M[f]!==val){recH(activeT,f);M[f]=val;recolorFace(f);ch=true;}
+          if(M[f]!==val){recH(activeT,f);M[f]=val;amSUpd(activeT,f);recolorFace(f);ch=true;}
         }}}
     if(ch){colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();}
   }
@@ -2002,6 +2577,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       if(T.faceThr&&!isNaN(T.faceThr[f]))ov.push([f,Math.round(T.faceThr[f]*1000)/1000]);
     }
     return {id:T.id,name:T.name,color:T.hex,thr:T.thr,op:T.op,hid:!!T.hid,am:(T.am||AM_BRUSH),manual:m,faceThr:ov,
+      ops:amOpsOut(T),     // 324: the strokes' balls and the grows, in their order
       hasProb:T.hasProb,
       prob:T.hasProb?(()=>{const p=new Array(FO);
         for(let fo=0;fo<FO;fo++)p[fo]=Math.round(T.prob[OFF[fo]]*1000)/1000;return p;})():null};
@@ -2051,15 +2627,19 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       minReader:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1)),
       saved:new Date().toISOString(),
       jobId:AM.jobId,exportedBy:'A-morphometry iPad'};
-    const rep=[];let un=0;
-    for(let f=0;f<N;f++)if(isRepair(f)){rep.push(f);un+=area[f];}
+    // 324: every layer with the parts of the sub-faces on its line — the report counts them
+    // as the screen does, and draws them as the screen does
+    const per=types.map((T,ti)=>amMarkDerived(T,ti));
+    const unF=new Map();
+    per.forEach(d=>{ const fr=new Map(d.frac); for(const f of d.faces){ const v=fr.has(f)?fr.get(f):1; if(!(unF.get(f)>=v)) unF.set(f,v); } });
+    const rep=[...unF.keys()].sort((x,y)=>x-y); let un=0; for(const [f,v] of unF) un+=v*area[f];
     let ar=0;
-    o.typeAreas=types.map((T,ti)=>{let a=0;const fs=[];
-      for(let f=0;f<N;f++)if(isType(ti,f)){a+=area[f];fs.push(f);}
+    o.typeAreas=types.map((T,ti)=>{const a=per[ti].a, fs=per[ti].faces;
       ar+=a;
       return {id:T.id,name:T.name,color:T.hex,areaM2:Math.round(a*1000)/1000,
               op:(typeof T.op==='number')?Math.round(T.op*100)/100:0.75,
-              design:Math.round(((typeof T.design==='number')?T.design:0.6)*100)/100,faces:fs};});
+              design:Math.round(((typeof T.design==='number')?T.design:0.6)*100)/100,faces:fs,
+              frac:per[ti].frac, pieces:per[ti].pieces};});
     o.lenTotals=lenTypes.map(T=>{let s2=0;for(const L of lines)if(L.t===T.id)s2+=L.len;
       return {id:T.id,name:T.name,color:T.hex,lenM:Math.round(s2*1000)/1000};});
     o.cntTotals=cntTypes.map(T=>{let n2=0;for(const m of xmarks)if(m.t===T.id)n2++;
@@ -2532,6 +3112,14 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       if(typeof src.op==='number')T.op=src.op;
       T.hid=(src.hid===true);
       for(const pr of (src.manual||[])) amEach(MAP,pr[0],t=>{T.manual[t]=pr[1];});
+      // 324: the strokes and the grows come back in their order; a sheet from before them has
+      // its marks as one face-level act, so a new eraser stroke cuts into them smoothly too
+      T.ops=[];
+      if(Array.isArray(src.ops)){ for(const o of src.ops){
+          if(o&&o.t==='balls'&&Array.isArray(o.c)&&o.c.length) T.ops.push({t:'balls',r:(+o.r>0)?+o.r:0.1,s:(o.s<0)?-1:1,c:o.c.slice()});
+          else if(o&&o.t==='faces'&&Array.isArray(o.f)){ const m=new Map();
+            o.f.forEach((f,i)=>amEach(MAP,f,t=>m.set(t,(o.v&&o.v[i]<0)?-1:1))); if(m.size) T.ops.push({t:'faces',m:m}); } } }
+      else { const m=new Map(); for(let t=0;t<N;t++) if(T.manual[t]!==0) m.set(t,T.manual[t]); if(m.size) T.ops.push({t:'faces',m:m}); }
       if((src.faceThr||[]).length){T.faceThr=new Float32Array(N).fill(NaN);
         for(const pr of src.faceThr) amEach(MAP,pr[0],t=>{T.faceThr[t]=pr[1];});}
       if(src.hasProb&&src.prob&&src.prob.length===FO){
