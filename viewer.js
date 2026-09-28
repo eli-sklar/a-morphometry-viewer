@@ -736,7 +736,7 @@ mat.onBeforeCompile=sh=>{
         pp.push(ccLerp(P[i],P[j],t)); bb.push(ccLerp(B[i],B[j],t)); nw.push(true); } }
     if(pp.length>=2){ const n=pp.length, p2=[], b2=[], n2=[];
       for(let k=0;k<n;k++){ p2.push(pp[k]); b2.push(bb[k]); n2.push(nw[k]);
-        if(nw[k]&&nw[(k+1)%n]&&n>1) for(const [q,b] of ccArc(pp[k],bb[k],pp[(k+1)%n],bb[(k+1)%n],P,B,fv,en,CC_ARC_DEPTH)){p2.push(q);b2.push(b);n2.push(true);} }
+        if(nw[k]&&nw[(k+1)%n]&&(n>2||k===n-1)) for(const [q,b] of ccArc(pp[k],bb[k],pp[(k+1)%n],bb[(k+1)%n],P,B,fv,en,CC_ARC_DEPTH)){p2.push(q);b2.push(b);n2.push(true);} }
       pp=p2; bb=b2; nw=n2; }
     return {pp:pp, bb:bb, nw:nw};
   }
@@ -1006,7 +1006,7 @@ mat.onBeforeCompile=sh=>{
   let amMarkMesh=null, amMarkMat=null, amMarkCap=0;
   function amMarkDraw(){
     let nv=0;
-    for(const T of types) if(T.pieces&&T.op>0&&!T.hid) for(const q of T.pieces.values()) nv+=q.pos.length/3;
+    for(const T of amMarkLayers()) if(T.pieces&&T.op>0&&!T.hid) for(const q of T.pieces.values()) nv+=q.pos.length/3;
     if(amMarkMesh&&amMarkCap<nv){ scene.remove(amMarkMesh); amMarkMesh.geometry.dispose(); amMarkMesh=null; }
     if(!nv){ if(amMarkMesh) amMarkMesh.visible=false; invalidate(); return; }
     if(!amMarkMat){ amMarkMat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide,polygonOffset:true,
@@ -1024,7 +1024,7 @@ mat.onBeforeCompile=sh=>{
       amMarkCap=cap; scene.add(amMarkMesh); }
     const g=amMarkMesh.geometry, A=g.attributes;
     let o=0;
-    for(const T of types){ if(!T.pieces||!(T.op>0)||T.hid) continue;
+    for(const T of amMarkLayers()){ if(!T.pieces||!(T.op>0)||T.hid) continue;
       const c=T.color, d=(typeof T.design==='number')?T.design:0.6;
       for(const [f,q] of T.pieces){ const n=q.pos.length/3, pf=(f>=PATCH0)?1:0;
         A.position.array.set(q.pos,o*3); A.uv.array.set(q.uvs,o*2);
@@ -1112,6 +1112,7 @@ mat.onBeforeCompile=sh=>{
     const o=f*9;
     for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;dess[f*3+c]=d;}
   }
+  function amMarkLayers(){ return types; }       // 325: the iPad has no volume brush
   function recolorAll(){for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();
     amMarkDraw(); amMarkSoon(); }   // 324: the line follows whatever changed
   // Design-only repaint (decision 93) — same words as the editor: the wheel touches
