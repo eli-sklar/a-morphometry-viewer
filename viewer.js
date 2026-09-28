@@ -1113,6 +1113,12 @@ mat.onBeforeCompile=sh=>{
   window.amMarkTick=()=>{ if(amMarkDue) amMarkTick(); };
   function recolorFace(f){
     let r=null, a=0, d=0; _vis.length=0;
+    // 329: the smoothed-surface brush, while it is down — the sub-faces it has taken
+    if(typeof smLive!=='undefined'&&smLive&&smLive[f]){
+      const T=types[activeT], c=(mode==='rem')?[1,0.3,0.3]:((T&&T.color)||[0.3,1,0.3]), o0=f*9;
+      for(let k=0;k<3;k++){colors[o0+k*3]=c[0];colors[o0+k*3+1]=c[1];colors[o0+k*3+2]=c[2];flats[f*3+k]=0.8;dess[f*3+k]=0;}
+      return;
+    }
     for(let ti=0;ti<types.length;ti++) if(types[ti].op>0&&!types[ti].hid&&isType(ti,f)&&!(types[ti].band&&types[ti].band.has(f))) _vis.push(ti);
     if(!_vis.length){ if(roi[f]){r=ROIC;a=0.45;} else {r=[1,1,1];a=0;} }
     else { const T=types[_vis[f%_vis.length]]; r=T.color; a=T.op; d=(typeof T.design==='number')?T.design:0.6; }   // alternating triangles
@@ -1146,6 +1152,7 @@ mat.onBeforeCompile=sh=>{
        else for(let f=0;f<N;f++)if(isType(ti,f))a+=area[f];}
       // 258: a polygon layer's area lives in its rings, not in painted faces
       for(const P of polys) if(P.at===T.id) a+=P.area;
+      if(typeof SMR!=='undefined'&&SMR) for(const r of SMR) if(r.at===T.id) a+=r.area;   // 329
       T.area=a;
       const e2=document.getElementById('tA_'+T.id); if(e2)e2.textContent=a.toFixed(2);}
     $('area').textContent='';
@@ -1457,7 +1464,7 @@ mat.onBeforeCompile=sh=>{
     const r=el.getBoundingClientRect();
     _amTagRay.setFromCamera(new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1),camera);
     const tags=[];
-    for(const g of [rulGroup,polyGroup]) for(const o of g.children)
+    for(const g of [rulGroup,polyGroup,smGroup]) for(const o of g.children)
       if(o.isSprite&&o.visible&&o.userData.amTag&&o.userData.amTag.kind===kind) tags.push(o);
     const hit=_amTagRay.intersectObjects(tags,false);
     return hit.length?hit[0].object.userData.amTag:null;
@@ -1469,6 +1476,8 @@ mat.onBeforeCompile=sh=>{
     if(activeKind==='area'&&areaTool===AM_POLY){ const t=amTagAt(e,'poly');
       if(!t) return false; const i=polys.indexOf(t.ring); if(i<0) return false;
       amPolyOut(i); return true; }
+    if(activeKind==='area'&&areaTool===AM_SMOOTH){ const t=amTagAt(e,'smooth');   // 329: a whole region
+      if(!t) return false; smRemoveRegion(t.reg); return true; }
     return false;
   }
   function amPolyOut(i){
@@ -1618,6 +1627,198 @@ mat.onBeforeCompile=sh=>{
     return s;
   }
   function polyRecompute(P){ P.area=polyArea(P.pts); }
+  /* ---- 329: THE SMOOTHED SURFACE -----------------------------------------------------------
+     Eli, 26/09 (approved): a third tool of an area layer, "מוחלק". The brush marks faces; each
+     connected region of them is a free COPY — the layer's colour, no texture, not stitched to
+     the model — smoothed by its own level (0-10, ten Taubin passes a level; the rim smoothed
+     along itself only, so the copy does not shrink in from its edge). Its area is the painted
+     area of its faces, measured as every area here is, times what the smoothing did to the
+     copy: at level 0 it IS the painted area. The same text runs in the iPad, and the report
+     builder computes it again in Python on the same quantized positions (smooth_surface.py),
+     which a gate holds to the digit. */
+  const SM_LAMBDA=0.5, SM_MU=-0.5, SM_PASSES=10, SM_WELD=1e-5, SM_CELL=1e-4, SM_MAXLEVEL=10;
+  // the copy as a mesh: its corners welded where they coincide (the first one met is kept)
+  function smMesh(P,faces){
+    const n=faces.length, X=[], T=new Int32Array(n*3), grid=new Map(), w2=SM_WELD*SM_WELD;
+    for(let a=0;a<n;a++){ const f=faces[a];
+      for(let c=0;c<3;c++){ const o=f*9+c*3, x=P[o], y=P[o+1], z=P[o+2];
+        const i=Math.floor(x/SM_CELL), j=Math.floor(y/SM_CELL), k=Math.floor(z/SM_CELL); let id=-1;
+        for(let di=-1;di<=1&&id<0;di++) for(let dj=-1;dj<=1&&id<0;dj++) for(let dk=-1;dk<=1&&id<0;dk++){
+          const L=grid.get((i+di)+','+(j+dj)+','+(k+dk)); if(!L) continue;
+          for(const v of L){ const dx=X[v*3]-x, dy=X[v*3+1]-y, dz=X[v*3+2]-z;
+            if(dx*dx+dy*dy+dz*dz<=w2){ id=v; break; } } }
+        if(id<0){ id=X.length/3; X.push(x,y,z); const kk=i+','+j+','+k;
+          let L=grid.get(kk); if(!L){ L=[]; grid.set(kk,L); } L.push(id); }
+        T[a*3+c]=id; } }
+    return {X:Float64Array.from(X), T:T};
+  }
+  // Taubin, uniform weights: a vertex inside moves toward all its neighbours, a vertex on the
+  // rim toward its two neighbours ALONG the rim (a pinch — any other count — stays put)
+  function smTaubin(X,T,passes){
+    const nV=X.length/3, nF=T.length/3, E=new Map();
+    for(let f=0;f<nF;f++) for(let c=0;c<3;c++){ const a=T[f*3+c], b=T[f*3+(c+1)%3];
+      const k=a<b?a*nV+b:b*nV+a; E.set(k,(E.get(k)||0)+1); }
+    const nb=[], bn=[]; for(let v=0;v<nV;v++){ nb.push([]); bn.push([]); }
+    for(const [k,c] of E){ const a=Math.floor(k/nV), b=k-a*nV;
+      nb[a].push(b); nb[b].push(a); if(c===1){ bn[a].push(b); bn[b].push(a); } }
+    let A=Float64Array.from(X), B=new Float64Array(A.length);
+    const step=w=>{
+      for(let v=0;v<nV;v++){ const L=bn[v].length?bn[v]:nb[v], o=v*3;
+        if(!L.length||(bn[v].length&&bn[v].length!==2)){ B[o]=A[o]; B[o+1]=A[o+1]; B[o+2]=A[o+2]; continue; }
+        let sx=0, sy=0, sz=0; for(const u of L){ sx+=A[u*3]; sy+=A[u*3+1]; sz+=A[u*3+2]; }
+        const m=1/L.length;
+        B[o]=A[o]+w*(sx*m-A[o]); B[o+1]=A[o+1]+w*(sy*m-A[o+1]); B[o+2]=A[o+2]+w*(sz*m-A[o+2]); }
+      const t=A; A=B; B=t; };
+    for(let i=0;i<passes;i++){ step(SM_LAMBDA); step(SM_MU); }
+    return A;
+  }
+  function smArea(X,T){
+    let s=0; for(let f=0;f<T.length;f+=3){ const a=T[f]*3, b=T[f+1]*3, c=T[f+2]*3;
+      const ux=X[b]-X[a], uy=X[b+1]-X[a+1], uz=X[b+2]-X[a+2], vx=X[c]-X[a], vy=X[c+1]-X[a+1], vz=X[c+2]-X[a+2];
+      s+=0.5*Math.sqrt((uy*vz-uz*vy)**2+(uz*vx-ux*vz)**2+(ux*vy-uy*vx)**2); }
+    return s;
+  }
+  // one region: its copy smoothed to its level, and its area
+  function smRegion(P,AREA,faces,level){
+    const fs=Array.from(faces).sort((a,b)=>a-b), lv=Math.max(0,Math.min(SM_MAXLEVEL,Math.round(level||0)));
+    let painted=0; for(const f of fs) painted+=AREA[f];
+    const M=smMesh(P,fs);
+    if(!lv||!fs.length) return {X:M.X, T:M.T, area:painted, painted:painted, level:lv};
+    const a0=smArea(M.X,M.T), Xs=smTaubin(M.X,M.T,SM_PASSES*lv), a1=smArea(Xs,M.T);
+    return {X:Xs, T:M.T, area:painted*(a0>0?a1/a0:1), painted:painted, level:lv};
+  }
+  // the connected pieces of a set of sub-faces, by shared corner position (a stroke that
+  // touches a region joins it; an erasure that cuts one through splits it)
+  function smPieces(P,faces){
+    const fs=Array.from(faces).sort((a,b)=>a-b); if(!fs.length) return [];
+    const M=smMesh(P,fs), n=fs.length, par=new Int32Array(n); for(let i=0;i<n;i++) par[i]=i;
+    const find=x=>{ while(par[x]!==x){ par[x]=par[par[x]]; x=par[x]; } return x; };
+    const owner=new Map();
+    for(let a=0;a<n;a++) for(let c=0;c<3;c++){ const v=M.T[a*3+c];
+      if(owner.has(v)){ const r1=find(a), r2=find(owner.get(v)); if(r1!==r2) par[Math.max(r1,r2)]=Math.min(r1,r2); }
+      else owner.set(v,a); }
+    const by=new Map(); for(let a=0;a<n;a++){ const r=find(a); if(!by.has(r)) by.set(r,[]); by.get(r).push(fs[a]); }
+    return [...by.values()];
+  }
+  /* ---- end 329 core ---------------------------------------------------------------------- */
+  // 329: the regions, their copies on the screen, and the brush that marks them
+  const AM_SMOOTH='smooth';
+  const smGroup=new THREE.Group(); scene.add(smGroup);
+  var SMR=[], smSeq=0, smSel=null, smStroke=null, smLive=new Uint8Array(N), smWheelFrom=null, smWheelT=0;
+  function smCompute(r){ const g=smRegion(pos,area,r.faces,r.level); r.X=g.X; r.T=g.T; r.area=g.area; r.level=g.level; }
+  function smSnap(at){ return SMR.filter(r=>r.at===at).map(r=>({id:r.id,level:r.level,faces:r.faces.slice()})); }
+  function smSetLayer(at,list){
+    for(let i=SMR.length-1;i>=0;i--) if(SMR[i].at===at) SMR.splice(i,1);
+    for(const q of list){ const r={id:q.id,at:at,level:q.level,faces:q.faces.slice()}; smCompute(r); SMR.push(r); }
+    if(smSel) smSel=SMR.find(r=>r.id===smSel.id)||null;
+    smSyncWheel(); smRebuild(); updateArea(); markUnexported(true);
+  }
+  function smWheelLevel(){ const e=document.getElementById('smLevel'); return e?Math.max(0,Math.min(SM_MAXLEVEL,Math.round(+e.value||0))):3; }
+  function smSyncWheel(){ const e=document.getElementById('smLevel'), v=document.getElementById('smLevelV');
+    if(!e) return; if(smSel) e.value=smSel.level; if(v) v.textContent=e.value; }
+  function smCommitLayer(at,before,after){
+    const key=L=>JSON.stringify(L.map(q=>[q.id,q.level,q.faces]));
+    if(key(before)===key(after)) return false;
+    undoStack.push([['SMR',{at:at,before:before,after:after}]]); redoStack.length=0; updateHB();
+    smSetLayer(at,after); return true;
+  }
+  // a stroke marked (or erased) these sub-faces of the layer: the regions are its connected
+  // pieces again — a piece keeps the id and level of the region most of it came from, a piece
+  // that is all new takes the wheel's level
+  function smApply(at,faces,add){
+    const before=smSnap(at); let after=[];
+    if(add){
+      const all=new Set(faces), owner=new Map();
+      for(const q of before) for(const f of q.faces){ all.add(f); owner.set(f,q); }
+      const used=new Set();
+      for(const piece of smPieces(pos,all)){
+        const cnt=new Map(); for(const f of piece){ const q=owner.get(f); if(q) cnt.set(q,(cnt.get(q)||0)+1); }
+        let best=null, bn=0; for(const [q,n] of cnt) if(n>bn&&!used.has(q)){ best=q; bn=n; }
+        if(best){ used.add(best); after.push({id:best.id,level:best.level,faces:piece}); }
+        else after.push({id:'s'+(++smSeq),level:smWheelLevel(),faces:piece});
+      }
+    } else {
+      const gone=new Set(faces);
+      for(const q of before){ const left=q.faces.filter(f=>!gone.has(f)); if(!left.length) continue;
+        const ps=smPieces(pos,left).sort((a,b)=>b.length-a.length);
+        ps.forEach((p,k)=>after.push({id:k?('s'+(++smSeq)):q.id,level:q.level,faces:p})); }
+    }
+    if(!smCommitLayer(at,before,after)) return;
+    const f0=faces[faces.length-1];
+    smSel=SMR.find(r=>r.at===at&&r.faces.includes(f0))||SMR.filter(r=>r.at===at).slice(-1)[0]||null;
+    smSyncWheel(); smRebuild();
+  }
+  function smRemoveRegion(r){ const before=smSnap(r.at);
+    smCommitLayer(r.at,before,before.filter(q=>q.id!==r.id)); if(smSel===r) smSel=null; smRebuild(); }
+  // the brush: the sub-faces under it, the same ball (or flat cut) every face brush uses
+  function smPaintAt(e){
+    if(!smStroke) return;
+    const hit=castAt(e); if(!hit.length) return;
+    const p=hit[0].point, r2=brushR*brushR, seen=amSeenUnder(e,p);
+    const i0=Math.floor((p.x-brushR)/CELL), i1=Math.floor((p.x+brushR)/CELL);
+    const j0=Math.floor((p.y-brushR)/CELL), j1=Math.floor((p.y+brushR)/CELL);
+    const k0=Math.floor((p.z-brushR)/CELL), k1=Math.floor((p.z+brushR)/CELL);
+    let ch=false;
+    for(let ix=i0;ix<=i1;ix++)for(let iy=j0;iy<=j1;iy++)for(let iz=k0;iz<=k1;iz++){
+      const a=grid.get(ckey(ix,iy,iz)); if(!a)continue;
+      for(let n=0;n<a.length;n++){ const f=a[n], dx=cen[f*3]-p.x, dy=cen[f*3+1]-p.y, dz=cen[f*3+2]-p.z;
+        if(dx*dx+dy*dy+dz*dz<=r2 && (!seen||seen.has(f)) && !smStroke.has(f)){
+          smStroke.add(f); smLive[f]=1; recolorFace(f); ch=true; } } }
+    if(ch){ colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true; invalidate(); }
+  }
+  function smStrokeEnd(){
+    const s=smStroke; smStroke=null; if(!s) return;
+    for(const f of s){ smLive[f]=0; recolorFace(f); }
+    colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true;
+    const T=types[activeT];
+    if(s.size&&T) smApply(T.id,[...s].sort((a,b)=>a-b),mode!=='rem');
+    invalidate();
+  }
+  // each region's copy: the layer's colour, its opacity and design, over the model, and its tag
+  function smRebuild(){
+    for(let i=smGroup.children.length-1;i>=0;i--){ const o=smGroup.children[i]; forgetOnScreen(o); smGroup.remove(o);
+      if(o.geometry) o.geometry.dispose(); if(o.material){ if(o.material.map) o.material.map.dispose(); o.material.dispose(); } }
+    const num={};
+    for(const r of SMR){
+      const T=types.find(t=>t.id===r.at); if(!T) continue;
+      num[r.at]=(num[r.at]||0)+1;
+      if(amHidOf(types,r.at)||!r.T||!r.T.length) continue;
+      const col=new THREE.Color(T.hex||'#4dff4d');
+      const g=new THREE.BufferGeometry();
+      g.setAttribute('position',new THREE.BufferAttribute(Float32Array.from(r.X),3));
+      g.setIndex(Array.from(r.T));
+      const mm=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:col,transparent:true,
+        opacity:(typeof T.op==='number')?T.op:0.75,side:THREE.DoubleSide,depthWrite:false,
+        polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-6}));
+      const _du=T.designU||(T.designU={value:(typeof T.design==='number')?T.design:0.6});
+      mm.material.onBeforeCompile=sh=>{
+        sh.uniforms.amDesign=_du;
+        sh.fragmentShader=sh.fragmentShader
+          .replace('#include <common>','#include <common>\nuniform float amDesign;'+AM_SHADER_FN)
+          .replace('#include <opaque_fragment>','diffuseColor.a=amStippleA(diffuseColor.a,amDesign);\n#include <opaque_fragment>');
+      };
+      mm.renderOrder=997; smGroup.add(mm);
+      let cx=0,cy=0,cz=0; const nv=r.X.length/3;
+      for(let v=0;v<nv;v++){ cx+=r.X[v*3]; cy+=r.X[v*3+1]; cz+=r.X[v*3+2]; }
+      const sp=rulTag(num[r.at]+' : '+r.area.toFixed(2)+' מ״ר · מוחלק '+r.level+(r===smSel?' ◂':''),'#'+col.getHexString());
+      sp.userData.amTag={kind:'smooth',reg:r};
+      sp.position.set(cx/nv,cy/nv,cz/nv); smGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
+    }
+    rescaleFixed(); invalidate();
+  }
+  // the wheel: the level of the region chosen (its tag, or the last one marked), undone as one step
+  { const e=document.getElementById('smLevel');
+    if(e){
+      e.oninput=()=>{ const v=document.getElementById('smLevelV'); if(v) v.textContent=e.value;
+        if(!smSel) return;
+        if(!smWheelFrom) smWheelFrom={at:smSel.at,before:smSnap(smSel.at)};
+        clearTimeout(smWheelT);
+        smWheelT=setTimeout(()=>{ if(!smSel) return; smSel.level=smWheelLevel(); smCompute(smSel); smRebuild(); updateArea(); },60); };
+      e.onchange=()=>{ clearTimeout(smWheelT); const w=smWheelFrom; smWheelFrom=null;
+        if(!smSel||!w) return;
+        const after=w.before.map(q=>q.id===smSel.id?{id:q.id,level:smWheelLevel(),faces:q.faces}:q);
+        smCommitLayer(w.at,w.before,after); smSyncWheel(); };
+    } }
   function polyRebuild(){
     for(let i=polyGroup.children.length-1;i>=0;i--){
       const o=polyGroup.children[i]; forgetOnScreen(o); polyGroup.remove(o);
@@ -1683,6 +1884,7 @@ mat.onBeforeCompile=sh=>{
     };
     for(const P of polys) if(!amHidOf(types,P.at)) draw(P,false);
     if(curPoly&&curPoly.pts.length) draw(curPoly,true);
+    smRebuild();                    // 329: the smoothed copies follow the layers too
     rescaleFixed(); invalidate();
   }
   function polyAt(e){
@@ -1929,6 +2131,8 @@ mat.onBeforeCompile=sh=>{
           m.ring.pts[m.i]=m.from.slice(); polyRecompute(m.ring); polyRebuild();}}
       // 2: a deleted layer comes back whole, in its place; redo takes it again
       else if(d[0]==='D'){inv.push(['D-',d[1]]);amLayerIn(d[1]);}
+      // 329: a smoothed region's stroke, erasure or level — the layer's regions before and after
+      else if(d[0]==='SMR'){inv.push(['SMR',{at:d[1].at,before:d[1].after,after:d[1].before}]);smSetLayer(d[1].at,d[1].before);}
       // 324: a stroke's balls, or a grow, leave with its undo and come back with its redo
       else if(d[0]==='OP'){inv.push(['OP-',d[1],d[2]]);amOpOut(d[1],d[2]);}
       else if(d[0]==='OP-'){inv.push(['OP',d[1],d[2]]);amOpIn(d[1],d[2]);}
@@ -2054,6 +2258,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY,type:e.pointerType});
     last=[e.clientX,e.clientY]; dragId=e.pointerId; amNavArm(e);
     if(touchList().length>=2&&!hasPen()){
+      if(dragging==='smpaint')smStrokeEnd();
       if(dragging==='paint'&&paintManual){amStrokeEnd();commitH();}
       if(dragging==='line')endLine();
       startPinch();dragging='pinch';return;}
@@ -2070,6 +2275,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     else if(mode==='rem'&&amTagErase(e)){dragging=null;}
     else if(!amOnSurface(e)){ if(activeKind==='rul') rulEnd(); dragging='rot'; }
     else if(mode==='grow'){growAt(e);dragging=null;}
+    // 329: the smoothed surface — a tag chooses the region the wheel acts on; else the brush
+    else if(activeKind==='area'&&areaTool===AM_SMOOTH&&mode==='add'&&amTagAt(e,'smooth')){
+      smSel=amTagAt(e,'smooth').reg; smSyncWheel(); smRebuild(); dragging=null;}
+    else if(activeKind==='area'&&areaTool===AM_SMOOTH){dragging='smpaint';smStroke=new Set();smPaintAt(e);}
     else if(activeKind==='area'&&areaTool===AM_POLY&&mode==='add'){
       polyAt(e);dragging=null;}
     else if(activeKind==='area'&&areaTool===AM_POLY&&mode==='rem'){
@@ -2098,6 +2307,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     else if(dragging==='lerase'){lineEraseAt(e);}
     else if(dragging==='xerase'){eraseXAt(e);}
     else if(dragging==='grab'){amGrabMove(e);}
+    else if(dragging==='smpaint'){smPaintAt(e);}
     else if(dragging==='paint'){paintAt(e);}
   });
   function endDrag(e){
@@ -2105,6 +2315,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(e){ptrs.delete(e.pointerId);if(e.pointerId===dragId)dragId=null;}
     if(dragging==='pinch'){if(touchList().length>=2)startPinch();else{pinch=null;dragging=null;}return;}
     if(dragging==='grab')amGrabEnd();
+    if(dragging==='smpaint')smStrokeEnd();
     if(dragging==='paint'&&paintManual){amStrokeEnd();commitH();}
     if(dragging==='line')endLine();
     dragging=null;dragId=null;
@@ -2632,7 +2843,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         t:T.id,n:g.n,len:Math.round(g.len*1000)/1000,
         c:[Math.round(g.c.x*1000)/1000,Math.round(g.c.y*1000)/1000,
            Math.round(g.c.z*1000)/1000]})))),
-      minReader:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1)),
+      minReader:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1))),   // 329
+      smooths:SMR.map(r=>({id:r.id,at:r.at,level:r.level,faces:r.faces.slice(),
+        area:Math.round(r.area*10000)/10000})),
       saved:new Date().toISOString(),
       jobId:AM.jobId,exportedBy:'A-morphometry iPad'};
     // 324: every layer with the parts of the sub-faces on its line — the report counts them
@@ -2685,13 +2898,14 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
 
   $('mGrow').onclick=()=>setMode('grow');
   function amSetAreaTool(k){
-    areaTool=(k===AM_POLY)?AM_POLY:AM_BRUSH;
+    areaTool=(k===AM_POLY||k===AM_SMOOTH)?k:AM_BRUSH;
     const T=types[activeT]; if(T&&T.am!==areaTool){T.am=areaTool; markUnexported(true);}
     if(mode!=='add'&&mode!=='rem') setMode('add'); else amSideWhat();
     applyBrush();
   }
   $('aBrush').onclick=()=>amSetAreaTool(AM_BRUSH);
   $('aPoly').onclick=()=>amSetAreaTool(AM_POLY);
+  if($('aSmooth')) $('aSmooth').onclick=()=>amSetAreaTool(AM_SMOOTH);   // an older cached page has no button
   // The keys stay — a keyboard may be attached, and the same page opens on a computer —
   // but the NOTE about them is gone (user decision 13/08): an iPad normally has no
   // keyboard, so a strip telling the user about Ctrl+Z described something that is not
@@ -2727,16 +2941,19 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   function amSideWhat(){
     const growing=(mode==='grow'&&activeKind==='area');
     const poly=(activeKind==='area'&&areaTool===AM_POLY&&!growing);
+    const smooth=(activeKind==='area'&&areaTool===AM_SMOOTH&&!growing);   // 329
     const w=$('brushWhat'); if(w) w.textContent=AM_BRUSH_WHAT[activeKind]||'גודל המברשת';
-    const t=$('sideTool'); if(t) t.textContent=growing?'נביטה':poly?'שטח פוליגון':(AM_TOOL_NAME[activeKind]||'סימון');
+    const t=$('sideTool'); if(t) t.textContent=growing?'נביטה':poly?'שטח פוליגון':smooth?'שטח מוחלק':(AM_TOOL_NAME[activeKind]||'סימון');
+    const smw=$('smWrap'); if(smw) smw.style.display=smooth?'':'none';
     const g=$('growWrap'); if(g) g.style.display=growing?'':'none';
     // 10: the tool pair belongs to an area layer; a polygon has no brush size
     const aw=$('areaToolWrap'); if(aw) aw.style.display=(activeKind==='area')?'':'none';
     const bw=$('brushWrap'); if(bw) bw.style.display=poly?'none':'';
     // 6: the shape belongs to the brush that paints faces
     const sw=$('shapeWrap'); if(sw) sw.style.display=(activeKind==='area'&&!poly&&!growing)?'':'none';
-    const ab=$('aBrush'), apl=$('aPoly');
-    if(ab) ab.classList.toggle('on',areaTool!==AM_POLY); if(apl) apl.classList.toggle('on',areaTool===AM_POLY);
+    const ab=$('aBrush'), apl=$('aPoly'), asm=$('aSmooth');
+    if(ab) ab.classList.toggle('on',areaTool===AM_BRUSH); if(apl) apl.classList.toggle('on',areaTool===AM_POLY);
+    if(asm) asm.classList.toggle('on',areaTool===AM_SMOOTH);
   }
   function applyBrush(){amSideWhat();const v=+$('brush').value;
     if(activeKind==='len'){lineW=0.002+(v-2)/38*0.028;$('brushV').textContent=(lineW*1000).toFixed(0)+' \u05de"\u05de';}
@@ -2808,7 +3025,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     $('repopV').textContent=e.target.value+'%';
     if(!T) return;
     T.op=v;
-    if(activeKind==='area'){recolorAll(); if(polys.length||curPoly) polyRebuild();}
+    if(activeKind==='area'){recolorAll(); if(polys.length||curPoly||SMR.length) polyRebuild();}
     else if(activeKind==='len') applyLenOp(T);
     else if(activeKind==='cnt'){for(const m of xmarks) if(m.t===T.id&&m.obj){
       m.obj.material.transparent=v<1; m.obj.material.opacity=v; m.obj.material.needsUpdate=true;}}
@@ -2833,7 +3050,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     syncKindUI();buildChips();
     if(mode!=='add'&&mode!=='rem')setMode('add');}
   function activateT(i){activeKind='area';activeT=i;const T=types[i];
-    areaTool=(T&&T.am===AM_POLY)?AM_POLY:AM_BRUSH;   // 10: the tool last used on this layer
+    areaTool=(T&&(T.am===AM_POLY||T.am===AM_SMOOTH))?T.am:AM_BRUSH;   // 10: the tool last used on this layer
     $('thr').value=Math.round(T.thr*1000);$('thrV').textContent=T.thr.toFixed(3);
     syncKindUI();buildChips();}
   function activateR(i){activeKind='rul';activeR=i;rulEnd();
@@ -2862,9 +3079,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // empty one behind.
   const AM_KIND_LIST={area:()=>types,len:()=>lenTypes,cnt:()=>cntTypes,rul:()=>rulTypes};
   function amLayerHeld(kind,T){
-    if(kind==='area'){const np=polys.filter(P=>P.at===T.id).length;
-      return {n:((T.area||0)>0?1:0)+np,
-              say:(T.area||0).toFixed(2)+' מ״ר'+(np?(' · '+np+' פוליגונים'):'')};}
+    if(kind==='area'){const np=polys.filter(P=>P.at===T.id).length, ns=SMR.filter(r=>r.at===T.id).length;
+      return {n:((T.area||0)>0?1:0)+np+ns,
+              say:(T.area||0).toFixed(2)+' מ״ר'+(np?(' · '+np+' פוליגונים'):'')+(ns?(' · '+ns+' אזורים מוחלקים'):'')};}
     if(kind==='len'){const n=lines.filter(L=>L.t===T.id).length; return {n:n,say:n+' קווים'};}
     if(kind==='cnt'){const n=xmarks.filter(m=>m.t===T.id).length; return {n:n,say:n+' סמנים'};}
     const n=rulPts.filter(q=>q.t===T.id).length; return {n:n,say:n+' נקודות'};
@@ -2875,6 +3092,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       if(curPoly&&curPoly.at===T.id) curPoly=null;
       snap.polys=polys.filter(P=>P.at===T.id);
       for(const P of snap.polys) polys.splice(polys.indexOf(P),1);
+      snap.smr=SMR.filter(r=>r.at===T.id);                     // 329
+      for(const r of snap.smr) SMR.splice(SMR.indexOf(r),1);
+      if(smSel&&smSel.at===T.id) smSel=null;
     } else if(snap.kind==='len'){snap.lines=lines.filter(L=>L.t===T.id); for(const L of snap.lines) delLine(L);}
     else if(snap.kind==='cnt'){snap.xs=xmarks.filter(m=>m.t===T.id); for(const m of snap.xs) delX(m);}
     else {
@@ -2893,7 +3113,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const list=AM_KIND_LIST[snap.kind]();
     if(snap.fill){const k=types.indexOf(snap.fill); if(k>=0) types.splice(k,1);}
     list.splice(snap.i,0,snap.T);
-    if(snap.kind==='area') for(const P of (snap.polys||[])) polys.push(P);
+    if(snap.kind==='area'){ for(const P of (snap.polys||[])) polys.push(P); for(const r of (snap.smr||[])) SMR.push(r); }
     else if(snap.kind==='len') for(const L of (snap.lines||[])) addLine(L);
     else if(snap.kind==='cnt') for(const m of (snap.xs||[])) addX(m);
     else {for(const q of (snap.pts||[])) rulPts.push(q);
@@ -3024,7 +3244,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
-  const AM_SHEET_READER = 3;   // 1 = marks only; 2 = membranes; 3 = the ruler (251)
+  const AM_SHEET_READER = 4;   // 1 = marks only; 2 = membranes; 3 = the ruler (251)
   const AM_SUB_SCHEME = 1;      // core.subdiv_weights, face-major child order
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -3113,7 +3333,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     for(const fo of (sh.roiPainted||sh.roiFaces||[])) if(fo<FO)
       for(let t=OFF[fo];t<OFF[fo+1];t++){ if(!roi[t]){roi[t]=1;roiCount++;} }
     const loadT=(T,src)=>{
-      T.am=(src.am===AM_POLY)?AM_POLY:AM_BRUSH;   // an older sheet is a brush layer
+      T.am=(src.am===AM_POLY||src.am===AM_SMOOTH)?src.am:AM_BRUSH;   // an older sheet is a brush layer
       if(src.name!==undefined)T.name=src.name;
       if(src.color){T.hex=src.color;T.color=hex2rgb(src.color);}
       if(typeof src.thr==='number')T.thr=src.thr;
@@ -3144,7 +3364,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
                 manual:sh.manual,faceThr:sh.faceThr,hasProb:sh.hasProb,prob:sh.prob});
     }
     rulTypes.length=0; activeR=-1; rulPts.length=0; rulSegs.length=0; rulLast=null;
-    polys.length=0; curPoly=null; pSeq=0; polyRebuild();
+    polys.length=0; curPoly=null; pSeq=0; SMR.length=0; smSel=null; polyRebuild();
     rulRebuild();
     for(const src of (sh.rulTypes||[])){const T=mkRulType(src.name||'',src.color||'#b8934a');
       if(src.id)T.id=src.id; if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true); T.repHid=(src.repHid===true);
@@ -3154,6 +3374,15 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       rulPts.push({id:src.id,t:src.t,x:q[0],y:q[1],z:q[2]});
       if(src.id>rpSeq) rpSeq=src.id;}
     for(const src of (sh.rulerSegs||[])) rulSegs.push({t:src.t,a:src.a,b:src.b});
+    // 329: the smoothed regions, through the same map the marks take, recomputed
+    for(const src of (sh.smooths||[])){
+      const fs=new Set(); for(const f of (src.faces||[])) amEach(MAP,f,t=>fs.add(t));
+      if(!fs.size||!src.at) continue;
+      const r={id:String(src.id||('s'+(smSeq+1))),at:src.at,
+               level:Math.max(0,Math.min(SM_MAXLEVEL,Math.round(+src.level||0))),faces:[...fs].sort((a,b)=>a-b)};
+      const k=parseInt(r.id.slice(1),10); if(k>smSeq) smSeq=k; else if(!src.id) smSeq++;
+      smCompute(r); SMR.push(r); }
+    smRebuild();
     for(const src of (sh.polygons||[])){
       const P={id:src.id||(++pSeq),at:src.at,pts:(src.pts||[]).map(q=>q.slice()),area:0};
       if(src.id&&src.id>pSeq) pSeq=src.id;
