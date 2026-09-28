@@ -31,31 +31,38 @@ function b64u8(u8){
   return btoa(s);
 }
 
-/* ================= op-log (decision 19): every manual-mark mutation lands in
-   IndexedDB immediately; a crash loses at most the last stroke ================= */
+/* ================= the recovery copy (327; decision 19's promise, kept) =================
+   The op-log this replaced wrote nothing: it expected one shape of entry and was handed
+   another, and the error was swallowed. Even mended it held area strokes and tape lines only —
+   no counters, rulers, polygons, deletions, layers, design or opacity — and it was never
+   emptied by an export. Instead the WHOLE SHEET is kept, the one the export writes and the
+   import reads: a second and a half after the last change, in IndexedDB, per work. A crash
+   loses at most that second and a half; an export deletes the copy; opening a work whose
+   copy differs from what loaded asks whether to restore it (Eli, 26/09: approved). */
 let db=null;
 const dbReady=new Promise(res=>{
-  const r=indexedDB.open('am-ipad',1);
-  r.onupgradeneeded=()=>r.result.createObjectStore('ops',{autoIncrement:true});
+  const r=indexedDB.open('am-ipad',2);
+  r.onupgradeneeded=()=>{const d=r.result;
+    if(!d.objectStoreNames.contains('snap')) d.createObjectStore('snap');
+    if(d.objectStoreNames.contains('ops')) d.deleteObjectStore('ops');};   // the old log goes
   r.onsuccess=()=>{db=r.result;res();};
   r.onerror=()=>res();
 });
 let AM=null;
 const jobKey=()=>AM?(AM.jobId+':'+AM.Fo+':'+AM.Nsub):'';
-function logOps(pairs){
-  if(!db||!AM||!pairs.length)return;
-  try{
-    const st=db.transaction('ops','readwrite').objectStore('ops');
-    for(const [s,v] of pairs) st.put({j:jobKey(),s:s,v:v});
-  }catch(_){}
+function snapPut(sheet){
+  if(!db||!AM)return;
+  try{db.transaction('snap','readwrite').objectStore('snap').put({t:Date.now(),sheet:sheet},jobKey());}catch(_){}
 }
-function readOps(){
+function snapDrop(){
+  if(!db||!AM)return;
+  try{db.transaction('snap','readwrite').objectStore('snap').delete(jobKey());}catch(_){}
+}
+function snapRead(){
   return new Promise(res=>{
-    if(!db||!AM)return res([]);
-    const out=[],c=db.transaction('ops').objectStore('ops').openCursor();
-    c.onsuccess=()=>{const cur=c.result;
-      if(cur){if(cur.value.j===jobKey())out.push(cur.value);cur.continue();}else res(out);};
-    c.onerror=()=>res([]);
+    if(!db||!AM)return res(null);
+    try{const q=db.transaction('snap').objectStore('snap').get(jobKey());
+      q.onsuccess=()=>res(q.result||null); q.onerror=()=>res(null);}catch(_){res(null);}
   });
 }
 
@@ -1882,15 +1889,9 @@ mat.onBeforeCompile=sh=>{
   // null-safe: a paint outside an open stroke still mutates, just without history
   const recH=(ti,f)=>{const k=ti*N+f;
     if(curT&&!curT.has(k)){curT.add(k);curDiff.push([ti,f,types[ti].manual[f]]);}};
-  // op-log entries carry the type's colour+name, so a restore can rebuild the palette
-  // only area strokes are sub-face values; every other entry ('X+', 'M', 'D', lines)
-  // carries an object, and reading it as a stroke threw halfway through an undo (24/09)
-  const typedOps=diff=>diff.filter(d=>typeof d[0]==='number')
-    .map(([ti,f])=>({s:f,v:types[ti].manual[f],c:types[ti].hex,n:types[ti].name}));
   function commitH(){
     if(curDiff&&curDiff.length){
       undoStack.push(curDiff);redoStack.length=0;
-      logOps(typedOps(curDiff));                      // final values of this stroke
       markUnexported(true);
     }
     curDiff=null;curT=null;updateHB();
@@ -1900,6 +1901,15 @@ mat.onBeforeCompile=sh=>{
   function markUnexported(on){
     $('mExport').textContent=on?'⚠ ייצוא גיליון':'ייצוא גיליון';
     $('mExport').style.outline=on?'2px solid #ef4444':'';
+    if(on) amSnapSoon(); else { clearTimeout(amSnapT); snapDrop(); }   // 327
+  }
+  // 327: the recovery copy — the whole sheet, a second and a half after the last change.
+  // Armed once the visit's own restore question is answered, so loading is not a change
+  var amSnapOn=false, amSnapT=0;     // a var: the history may be drawn before this line runs
+  function amSnapSoon(){
+    if(!amSnapOn) return;
+    clearTimeout(amSnapT);
+    amSnapT=setTimeout(()=>{ try{ snapPut(getSheet()); }catch(_){} },1500);
   }
   function applyDiff(diff){
     const inv=[];
@@ -1930,12 +1940,12 @@ mat.onBeforeCompile=sh=>{
       else if(d[0]==='D-'){inv.push(['D',d[1]]);amLayerOut(d[1]);}
       else {const [ti,f,o]=d;inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;amSUpd(ti,f);recolorFace(f);}}
     inv.reverse();
-    logOps(typedOps(diff));
     colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();return inv;
   }
   const undo=()=>{if(undoStack.length){redoStack.push(applyDiff(undoStack.pop()));updateHB();}};
   const redo=()=>{if(redoStack.length){undoStack.push(applyDiff(redoStack.pop()));updateHB();}};
-  function updateHB(){$('undo').disabled=!undoStack.length;$('redo').disabled=!redoStack.length;}
+  function updateHB(){$('undo').disabled=!undoStack.length;$('redo').disabled=!redoStack.length;
+    amSnapSoon();}                     // 327: every step of the history is a change of the work
   function findOrMkType(hex,name){
     let T=types.find(t=>t.hex===hex); if(!T){T=mkType(name||'',hex||'#4dff4d');buildChips();}
     return types.indexOf(T);}
@@ -2498,9 +2508,6 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       addLine(curLine);
       undoStack.push([['L+',curLine]]);redoStack.length=0;updateHB();updateArea();
       const lt=lenTypes.find(x=>x.id===curLine.t);
-      logOps([]);                                          // faces untouched
-      try{if(db&&AM)db.transaction('ops','readwrite').objectStore('ops')
-        .put({j:jobKey(),ln:{c:lt?lt.hex:'#eab308',n:lt?lt.name:'',pts:curLine.pts.slice()}});}catch(_){}
       markUnexported(true);}
     else if(curLine.obj)scene.remove(curLine.obj);
     curLine=null;
@@ -2577,7 +2584,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       if(T.manual[f]!==0)m.push([f,T.manual[f]]);
       if(T.faceThr&&!isNaN(T.faceThr[f]))ov.push([f,Math.round(T.faceThr[f]*1000)/1000]);
     }
-    return {id:T.id,name:T.name,color:T.hex,thr:T.thr,op:T.op,hid:!!T.hid,am:(T.am||AM_BRUSH),manual:m,faceThr:ov,
+    return {id:T.id,name:T.name,color:T.hex,thr:T.thr,op:T.op,hid:!!T.hid,repHid:!!T.repHid,am:(T.am||AM_BRUSH),manual:m,faceThr:ov,
       ops:amOpsOut(T),     // 324: the strokes' balls and the grows, in their order
       hasProb:T.hasProb,
       prob:T.hasProb?(()=>{const p=new Array(FO);
@@ -2598,8 +2605,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       subScheme:AM_SUB_SCHEME,
       hasProb:t0.hasProb,prob:t0.prob,
       types:types.map(typeState),
-      lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,op:(typeof T.op==='number')?T.op:1})),
-      cntTypes:cntTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,
+      lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid,op:(typeof T.op==='number')?T.op:1})),
+      cntTypes:cntTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid,
         size:Math.round((T.size||cntDefSize())*1000)/1000,
         op:(typeof T.op==='number')?T.op:1})),
       counters:cntTypes.map(T=>({t:T.id,
@@ -2613,7 +2620,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         pts:P.pts.map(q=>[Math.round(q[0]*1000)/1000,
                           Math.round(q[1]*1000)/1000,
                           Math.round(q[2]*1000)/1000])})),
-      rulTypes:rulTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,
+      rulTypes:rulTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid,
         op:(typeof T.op==='number')?T.op:1,
         // 25/09: the dash and the width travel, as on the desktop
         design:Math.round(((typeof T.design==='number')?T.design:0)*100)/100,
@@ -3111,7 +3118,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       if(src.color){T.hex=src.color;T.color=hex2rgb(src.color);}
       if(typeof src.thr==='number')T.thr=src.thr;
       if(typeof src.op==='number')T.op=src.op;
-      T.hid=(src.hid===true);
+      T.hid=(src.hid===true); T.repHid=(src.repHid===true);    // 328: the report's own eye, kept
       for(const pr of (src.manual||[])) amEach(MAP,pr[0],t=>{T.manual[t]=pr[1];});
       // 324: the strokes and the grows come back in their order; a sheet from before them has
       // its marks as one face-level act, so a new eraser stroke cuts into them smoothly too
@@ -3140,7 +3147,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     polys.length=0; curPoly=null; pSeq=0; polyRebuild();
     rulRebuild();
     for(const src of (sh.rulTypes||[])){const T=mkRulType(src.name||'',src.color||'#b8934a');
-      if(src.id)T.id=src.id; if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true);
+      if(src.id)T.id=src.id; if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true); T.repHid=(src.repHid===true);
       if(typeof src.design==='number')T.design=src.design;
       if(typeof src.w==='number')T.w=amRulWOf({w:src.w});}
     for(const src of (sh.rulerPts||[])){const q=src.p||[];
@@ -3154,7 +3161,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(polys.length) polyRebuild();
     if(rulTypes.length){activeR=0; rulRebuild();}
     for(const src of (sh.lenTypes||[])){const T=mkLenType(src.name||'',src.color||'#eab308');if(src.id)T.id=src.id;
-      if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true);}
+      if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true); T.repHid=(src.repHid===true);}
     for(const src of (sh.lengths||[])){
       const L={t:src.t,pts:src.pts.slice(),fit:src.fit||null,
         len:(src.fit&&typeof src.fit.length_m==='number')?src.fit.length_m:lineLen(src.pts),
@@ -3162,7 +3169,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       addLine(L);}
     for(const src of (sh.cntTypes||[])){const T=mkCntType(src.name||'',src.color||'#ef4444');if(src.id)T.id=src.id;
       if(typeof src.size==='number')T.size=src.size;
-      if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true);}
+      if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true); T.repHid=(src.repHid===true);}
     for(const src of (sh.counters||[])){const pts=src.pts||[];
       for(let i=0;i+2<pts.length;i+=3) addX({t:src.t,p:[pts[i],pts[i+1],pts[i+2]],obj:null});}
     if(cntTypes.length)activeC=0;
@@ -3179,29 +3186,21 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     catch(ex){amTell('הגיליון שבקובץ העבודה לא נטען:\n'+ex.message+'\nהמודל נפתח בלי סימונים.');}
   }
 
-  /* ---- restore unexported marks of THIS work from the op-log ----
-     entries carry the type's colour+name, so the palette is rebuilt on the way in;
-     legacy entries (no colour) land on the default type. Lines restore whole. */
-  dbReady.then(readOps).then(async ops=>{
-    if(!ops.length)return;
-    const lastV={}; const lns=[];
-    ops.forEach(o=>{
-      if(o.ln){lns.push(o.ln);return;}
-      const key=(o.c||'#4dff4d')+'\n'+(o.n||'')+'\n'+o.s;
-      lastV[key]=o;});
-    const marks=Object.values(lastV).filter(o=>o.v!==0);
-    if(!marks.length&&!lns.length)return;
-    if(await amAsk('נמצאו '+(marks.length+lns.length)+' סימונים שלא יוצאו מהביקור הקודם בעבודה הזאת.',
-                   [{t:'לשחזר את הסימונים',v:true,primary:true},{t:'לא לשחזר',v:false}],false)){
-      for(const o of marks){const ti=findOrMkType(o.c||'#4dff4d',o.n||'');
-        types[ti].manual[o.s]=o.v;recolorFace(o.s);}
-      for(const ln of lns){
-        let lt=lenTypes.find(x=>x.hex===ln.c); if(!lt)lt=mkLenType(ln.n||'',ln.c||'#eab308');
-        addLine({t:lt.id,pts:ln.pts.slice(),len:lineLen(ln.pts),obj:null});}
-      if(lenTypes.length&&activeL<0)activeL=0;
-      buildChips();
-      colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();markUnexported(true);
-    }
+  /* ---- 327: the recovery copy of THIS work, offered back when it differs ----
+     compared without the moment it was written: a copy of exactly what loaded is not news */
+  dbReady.then(snapRead).then(async sn=>{
+    try{
+      if(!sn||!sn.sheet) return;
+      const bare=o=>{ const c=Object.assign({},o); delete c.saved; return JSON.stringify(c); };
+      let same=false; try{ same=bare(sn.sheet)===bare(getSheet()); }catch(_){}
+      if(same) return;
+      const when=new Date(sn.t).toLocaleString('he-IL');
+      if(await amAsk('נמצא עותק של העבודה הזאת מהביקור הקודם, עם שינויים שלא יוצאו לגיליון (נשמר '+when+').',
+                     [{t:'לשחזר',v:true,primary:true},{t:'לא לשחזר',v:false}],false)){
+        try{ applySheet(sn.sheet); markUnexported(true); }
+        catch(ex){ amTell('השחזור נכשל:\n'+((ex&&ex.message)||ex)+'\nהעבודה נשארה כפי שנטענה.'); }
+      } else snapDrop();
+    } finally { amSnapOn=true; }
   });
 
   /* exposed for the sheet-import path and the smoke harness — not a public API */
