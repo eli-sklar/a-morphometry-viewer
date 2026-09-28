@@ -41,9 +41,10 @@ function b64u8(u8){
    copy differs from what loaded asks whether to restore it (Eli, 26/09: approved). */
 let db=null;
 const dbReady=new Promise(res=>{
-  const r=indexedDB.open('am-ipad',2);
+  const r=indexedDB.open('am-ipad',3);
   r.onupgradeneeded=()=>{const d=r.result;
     if(!d.objectStoreNames.contains('snap')) d.createObjectStore('snap');
+    if(!d.objectStoreNames.contains('img')) d.createObjectStore('img');   // 332: the tags' photos
     if(d.objectStoreNames.contains('ops')) d.deleteObjectStore('ops');};   // the old log goes
   r.onsuccess=()=>{db=r.result;res();};
   r.onerror=()=>res();
@@ -58,6 +59,19 @@ function snapDrop(){
   if(!db||!AM)return;
   try{db.transaction('snap','readwrite').objectStore('snap').delete(jobKey());}catch(_){}
 }
+// 332: a tag's photo, by its name — kept apart from the recovery copy, which is the whole
+// sheet rewritten a second and a half after every change
+function imgPut(name,data){
+  if(!db)return;
+  try{db.transaction('img','readwrite').objectStore('img').put(data,name);}catch(_){}
+}
+function imgGet(name){
+  return new Promise(res=>{
+    if(!db)return res(null);
+    try{const q=db.transaction('img').objectStore('img').get(name);
+      q.onsuccess=()=>res(q.result||null); q.onerror=()=>res(null);}catch(_){res(null);}
+  });
+}
 function snapRead(){
   return new Promise(res=>{
     if(!db||!AM)return res(null);
@@ -68,6 +82,141 @@ function snapRead(){
 
 /* ================= boot: renderer first, engine wires up per loaded file ====== */
 const $=id=>document.getElementById(id);
+/*AM_TAGCORE_START*/
+/* 332 — tags: a title, a text and a photo on a point of the model (Eli, 28/09). The SAME
+   text in the measurement screen, the iPad and the viewer (a gate compares the three), so
+   the tag looks and asks the same wherever it is placed, edited or read.
+   The label is the ruler's tag — dark, ringed in the layer's colour — with the TITLE and,
+   when there is a photo, a camera drawn beside it. No number (Eli: "לא מופיע מספר").
+   The card is the program's own dialog window (amAsk): the same frame, colours and buttons. */
+const AM_TAG_SIDE=2048, AM_TAG_Q=0.85, AM_TAG_TITLE_MAX=20;
+function amTagId(){ return 'g'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+function amTagShort(t){ t=String(t||'').trim();
+  return t.length>AM_TAG_TITLE_MAX ? t.slice(0,AM_TAG_TITLE_MAX-1)+'…' : t; }
+function amTagCanvas(title,hex,cam,gold){
+  const c=document.createElement('canvas'), H=108, pad=24, camW=cam?72:0;
+  const txt='‏'+(amTagShort(title)||'…');
+  const t0=c.getContext('2d'); t0.direction='rtl'; t0.font='bold 54px system-ui, Arial, sans-serif';
+  const tw=Math.ceil(t0.measureText(txt).width), w=tw+pad*2+camW;
+  c.width=w; c.height=H;
+  const x=c.getContext('2d'); x.direction='rtl';
+  x.fillStyle=gold?'#3a2f16':'rgba(20,18,16,0.92)'; x.strokeStyle=gold?'#ffc72c':(hex||'#b8934a'); x.lineWidth=6;
+  const rr=18; x.beginPath(); x.moveTo(rr,3);
+  x.arcTo(w-3,3,w-3,H-3,rr); x.arcTo(w-3,H-3,3,H-3,rr); x.arcTo(3,H-3,3,3,rr); x.arcTo(3,3,w-3,3,rr);
+  x.closePath(); x.fill(); x.stroke();
+  const ink=gold?'#ffc72c':'#f0e6d2';
+  x.font='bold 54px system-ui, Arial, sans-serif'; x.fillStyle=ink;
+  x.textAlign='center'; x.textBaseline='middle'; x.fillText(txt,camW+pad+tw/2,58);
+  if(cam){                      // the camera sits at the END of a Hebrew line: the left
+    const cx=pad+24, cy=56; x.strokeStyle=ink; x.lineWidth=5; x.lineJoin='round';
+    x.beginPath(); x.moveTo(cx-24,cy-14); x.lineTo(cx-10,cy-14); x.lineTo(cx-5,cy-22); x.lineTo(cx+5,cy-22);
+    x.lineTo(cx+10,cy-14); x.lineTo(cx+24,cy-14); x.lineTo(cx+24,cy+20); x.lineTo(cx-24,cy+20); x.closePath(); x.stroke();
+    x.beginPath(); x.arc(cx,cy+3,10,0,Math.PI*2); x.stroke();
+  }
+  return {c:c,w:w,h:H};
+}
+function amTagTexture(title,hex,cam,gold){
+  const k=amTagCanvas(title,hex,cam,gold); const t=new THREE.CanvasTexture(k.c); t.anisotropy=4;
+  return {tex:t,aspect:k.w/k.h};
+}
+function amTagSprite(title,hex,cam){
+  const a=amTagTexture(title,hex,cam,false);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:a.tex,transparent:true,depthTest:false,depthWrite:false}));
+  sp.userData.aspect=a.aspect; sp.userData.plain=a.tex;
+  sp.center.set(0.5,-0.25);               // the label stands ABOVE its point, never on it
+  sp.renderOrder=1001; return sp;
+}
+// A photo is shrunk where it is taken, before it goes anywhere: a phone's 5 MB becomes a
+// JPEG of 2048 pixels on its long side, a few hundred KB. The browser turns it upright.
+function amTagShrink(file){
+  return new Promise((res,rej)=>{
+    const u=URL.createObjectURL(file), im=new Image();
+    im.onload=()=>{ try{
+      const s=Math.min(1,AM_TAG_SIDE/Math.max(im.naturalWidth,im.naturalHeight));
+      const c=document.createElement('canvas'); c.width=Math.max(1,Math.round(im.naturalWidth*s));
+      c.height=Math.max(1,Math.round(im.naturalHeight*s));
+      const x=c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,c.width,c.height);
+      x.drawImage(im,0,0,c.width,c.height); URL.revokeObjectURL(u);
+      res(c.toDataURL('image/jpeg',AM_TAG_Q)); }catch(e){ URL.revokeObjectURL(u); rej(e); } };
+    im.onerror=()=>{ URL.revokeObjectURL(u); rej(new Error('הקובץ אינו תמונה שאפשר לקרוא.')); };
+    im.src=u;
+  });
+}
+/* The card. o = {title, text, img (a src or null), view (read only), place (a new tag)}.
+   Resolves null on cancel, else {title, text, img}: img undefined = unchanged, null = removed,
+   a data URL = a new photo. A title is required — it is what the model shows. */
+function amTagCard(o){
+  o=o||{};
+  return new Promise(res=>{
+    const S='background:#232019;color:#d8cdb8;border:1px solid #6b5a33;border-radius:2px;';
+    const wrap=document.createElement('div');
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2147483000;'
+      +'display:flex;align-items:center;justify-content:center;direction:rtl';
+    const box=document.createElement('div');
+    box.style.cssText='background:#141210;border:2px solid #6b5a33;border-radius:2px;'
+      +'padding:20px 24px;color:#d8cdb8;font:15px system-ui,Arial,sans-serif;width:min(460px,92vw);'
+      +'max-height:90vh;display:flex;flex-direction:column;gap:10px;box-sizing:border-box;overflow-y:auto;'
+      +'box-shadow:inset 0 0 0 3px #141210, inset 0 0 0 4px rgba(184,147,74,.45)';
+    const lab=t=>{const l=document.createElement('div'); l.textContent=t; l.style.cssText='font-size:13px;color:#b8934a'; return l;};
+    let img=o.img||null, changed;
+    const pic=document.createElement('img');
+    pic.style.cssText='max-width:100%;max-height:38vh;object-fit:contain;align-self:center;border:1px solid #6b5a33;border-radius:2px';
+    const showPic=()=>{ pic.style.display=img?'':'none'; if(img) pic.src=img; };
+    // Keys, the dialog window's rule: Escape closes wherever the focus is, and no key
+    // reaches the screen underneath — also when the focus stayed on the model after the
+    // click that opened the card (found in the run: Escape did nothing, and a Tab there
+    // would have switched the tool under the open card). Typing into the card's own fields
+    // still reaches them; it stops at the card on its way up.
+    const key=e=>{
+      if((e.key||'')==='Escape'){e.preventDefault();e.stopImmediatePropagation();done(null);return;}
+      if(!wrap.contains(e.target)){e.preventDefault();e.stopImmediatePropagation();}
+    };
+    const done=v=>{window.removeEventListener('keydown',key,true);wrap.remove();res(v);};
+    window.addEventListener('keydown',key,true);
+    wrap.addEventListener('keydown',e=>e.stopPropagation());
+    wrap.onclick=e=>{if(e.target===wrap)done(null);};
+    const row=document.createElement('div'); row.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
+    const btn=(t,primary,fn)=>{const b=document.createElement('button'); b.textContent=t;
+      b.style.cssText='background:'+(primary?'#b8934a':'#232019')+';color:'+(primary?'#161310':'#d8cdb8')
+        +';border:1px solid #6b5a33;border-radius:2px;padding:8px 14px;font-size:14px;cursor:pointer';
+      b.onclick=fn; return b;};
+    if(o.view){
+      const h=document.createElement('div'); h.textContent=o.title||''; h.style.cssText='font-size:18px;font-weight:700;color:#f0e6d2';
+      box.appendChild(h);
+      if(o.text){const t=document.createElement('div'); t.textContent=o.text; t.style.cssText='line-height:1.6;white-space:pre-wrap'; box.appendChild(t);}
+      box.appendChild(pic); showPic();
+      const close=btn('סגירה',true,()=>done(null)); row.appendChild(close); box.appendChild(row);
+      wrap.appendChild(box); document.body.appendChild(wrap); setTimeout(()=>close.focus(),0); return;
+    }
+    const ti=document.createElement('input'); ti.value=o.title||''; ti.maxLength=80; ti.placeholder='מה יופיע על המודל';
+    ti.style.cssText=S+'padding:7px 9px;font:15px system-ui,Arial,sans-serif';
+    const tx=document.createElement('textarea'); tx.value=o.text||''; tx.rows=4;
+    tx.style.cssText=S+'padding:7px 9px;font:14px system-ui,Arial,sans-serif;resize:vertical';
+    const file=document.createElement('input'); file.type='file'; file.accept='image/*'; file.style.display='none';
+    const imgRow=document.createElement('div'); imgRow.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
+    const add=btn('',false,()=>file.click()), del=btn('הסרת התמונה',false,()=>{img=null;changed=null;sync();});
+    const warn=document.createElement('div'); warn.style.cssText='font-size:13px;color:#f87171;display:none';
+    const save=btn('שמירה',true,()=>{ const t=ti.value.trim(); if(!t){ti.focus();return;}
+      done({title:t,text:tx.value.trim(),img:changed}); });
+    const sync=()=>{ add.textContent=img?'החלפת התמונה':'הוספת תמונה'; del.style.display=img?'':'none';
+      save.disabled=!ti.value.trim(); save.style.opacity=save.disabled?'.5':'1'; showPic(); };
+    file.onchange=async()=>{ const f=file.files&&file.files[0]; file.value=''; if(!f) return;
+      warn.style.display='none';
+      try{ img=await amTagShrink(f); changed=img; }catch(e){ warn.textContent=e.message; warn.style.display=''; }
+      sync(); };
+    ti.oninput=sync;
+    ti.onkeydown=e=>{ if(e.key==='Enter'){e.preventDefault(); save.click();} };
+    box.appendChild(lab('כותרת')); box.appendChild(ti);
+    box.appendChild(lab('טקסט')); box.appendChild(tx);
+    imgRow.appendChild(add); imgRow.appendChild(del); box.appendChild(imgRow); box.appendChild(file);
+    box.appendChild(pic); box.appendChild(warn);
+    row.appendChild(save); row.appendChild(btn('ביטול',false,()=>done(null))); box.appendChild(row);
+    wrap.appendChild(box); document.body.appendChild(wrap); sync();
+    setTimeout(()=>ti.focus(),0);
+  });
+}
+/*AM_TAGCORE_END*/
+
 /* ---- THE PROGRAM'S OWN QUESTION (24/09) --------------------------------------------
    Two reasons, both Eli's. "Why not write 'close them all' and 'close only the largest' ON
    the buttons, instead of OK/Cancel and a key in the text?" — the browser's own dialog cannot
@@ -1464,7 +1613,7 @@ mat.onBeforeCompile=sh=>{
     const r=el.getBoundingClientRect();
     _amTagRay.setFromCamera(new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1),camera);
     const tags=[];
-    for(const g of [rulGroup,polyGroup,smGroup]) for(const o of g.children)
+    for(const g of [rulGroup,polyGroup,smGroup,tagGroup]) for(const o of g.children)
       if(o.isSprite&&o.visible&&o.userData.amTag&&o.userData.amTag.kind===kind) tags.push(o);
     const hit=_amTagRay.intersectObjects(tags,false);
     return hit.length?hit[0].object.userData.amTag:null;
@@ -1478,6 +1627,8 @@ mat.onBeforeCompile=sh=>{
       amPolyOut(i); return true; }
     if(activeKind==='area'&&areaTool===AM_SMOOTH){ const t=amTagAt(e,'smooth');   // 329: a whole region
       if(!t) return false; smRemoveRegion(t.reg); return true; }
+    if(activeKind==='tag'){ const t=amTagAt(e,'tag');                             // 332: the tag, whole
+      if(!t||(activeG>=0&&t.g.t!==tagTypes[activeG].id)) return false; tagDel(t.g); return true; }
     return false;
   }
   function amPolyOut(i){
@@ -2061,6 +2212,75 @@ mat.onBeforeCompile=sh=>{
       }
     }
     if(diff.length){undoStack.push(diff);redoStack.length=0;markUnexported(true);updateHB();updateArea();}}
+
+  // ---- 332: tag layers — a title, a text and a photo on a point of the model ----
+  // As in the measurement screen, with one difference: the iPad has no link to the
+  // computer, so a photo lives HERE — in its own store on the device (never in the
+  // recovery copy, which is rewritten on every change) — and rides out inside the sheet
+  // on export (`tagImgs`). The sheet itself only names it.
+  const tagTypes=[]; let activeG=-1, gSeq=0;
+  const tags=[];
+  const TAG_IMG=new Map();                        // name -> data URL, for the tags of this work
+  const tagGroup=new THREE.Group(); scene.add(tagGroup);
+  const _tagPinGeo=new THREE.SphereGeometry(1,12,8);
+  function mkTagType(name,hex){let id; do{ id='tg'+(gSeq++); }while(tagTypes.some(x=>x.id===id));
+    const T={id:id,name:name,hex:hex};tagTypes.push(T);return T;}
+  async function tagSrc(g){ if(!g||!g.img) return null;
+    if(!TAG_IMG.has(g.img)){ const v=await imgGet(g.img); if(v) TAG_IMG.set(g.img,v); }
+    return TAG_IMG.get(g.img)||null; }
+  function tagRebuild(){
+    for(const o of [...tagGroup.children]){ forgetOnScreen(o); tagGroup.remove(o);
+      if(o.material){ if(o.material.map) o.material.map.dispose(); o.material.dispose(); } }
+    for(const g of tags){
+      const T=tagTypes.find(x=>x.id===g.t); if(!T) continue;
+      const shown=!T.hid;
+      const pin=new THREE.Mesh(_tagPinGeo,new THREE.MeshBasicMaterial({color:T.hex,depthTest:false}));
+      pin.position.set(g.p[0],g.p[1],g.p[2]); pin.renderOrder=1000; pin.visible=shown;
+      tagGroup.add(keepOnScreen(pin,RUL_PT_K));
+      const sp=amTagSprite(g.title,T.hex,!!g.img);
+      sp.position.copy(pin.position); sp.visible=shown;
+      sp.userData.amTag={kind:'tag',g:g};
+      tagGroup.add(keepOnScreen(sp,RUL_LAB_K));
+    }
+    rescaleFixed();
+  }
+  function tagHist(d){ undoStack.push(d); redoStack.length=0; markUnexported(true); updateHB(); buildChips(); }
+  function tagApply(g,v){
+    g.title=v.title; g.text=v.text;
+    if(v.img===null) g.img=null;
+    else if(typeof v.img==='string'){ const nm=amTagId()+'.jpg'; TAG_IMG.set(nm,v.img); imgPut(nm,v.img); g.img=nm; }
+  }
+  async function tagAt(e){
+    if(activeG<0) return;
+    const hs=castAt(e); if(!hs.length) return; const h=hs[0];
+    const T=tagTypes[activeG];
+    const n=(h.face?h.face.normal.clone():new THREE.Vector3(0,0,1)).transformDirection(mesh.matrixWorld);
+    if(n.dot(camera.position.clone().sub(h.point))<0) n.negate();
+    const r3=v=>Math.round(v*1000)/1000;
+    const g={id:amTagId(),t:T.id,p:[r3(h.point.x),r3(h.point.y),r3(h.point.z)],
+             nrm:[r3(n.x),r3(n.y),r3(n.z)],title:'',text:'',img:null};
+    const ghost=new THREE.Mesh(_tagPinGeo,new THREE.MeshBasicMaterial({color:T.hex,depthTest:false}));
+    ghost.position.set(g.p[0],g.p[1],g.p[2]); ghost.renderOrder=1000;
+    tagGroup.add(keepOnScreen(ghost,RUL_PT_K)); rescaleFixed();
+    const v=await amTagCard({});
+    forgetOnScreen(ghost); tagGroup.remove(ghost); ghost.material.dispose();
+    if(!v) return;
+    tagApply(g,v); tags.push(g); tagRebuild(); tagHist([['G+',g]]);
+  }
+  async function tagEdit(g){
+    const v=await amTagCard({title:g.title,text:g.text,img:await tagSrc(g)});
+    if(!v) return;
+    const before={title:g.title,text:g.text,img:g.img};
+    tagApply(g,v);
+    const after={title:g.title,text:g.text,img:g.img};
+    if(JSON.stringify(before)===JSON.stringify(after)) return;
+    tagRebuild(); tagHist([['GE',{g:g,from:before,to:after}]]);
+  }
+  function tagDel(g){ const i=tags.indexOf(g); if(i<0) return;
+    tags.splice(i,1); tagRebuild(); tagHist([['G-',{g:g,i:i}]]); }
+  function activateG(i){activeKind='tag';activeG=i;syncKindUI();buildChips();
+    if(mode!=='add'&&mode!=='rem')setMode('add');}
+
   function eraseLineAt(p){
     const r2=Math.max(0.02,lineW*2)**2;
     for(const L of [...lines]){
@@ -2142,6 +2362,11 @@ mat.onBeforeCompile=sh=>{
       else if(d[0]==='PD'){inv.push(['PA',d[1]]);polys.splice(Math.min(d[1].i,polys.length),0,d[1].ring);polyRebuild();}
       else if(d[0]==='PA'){inv.push(['PD',d[1]]);const k=polys.indexOf(d[1].ring);if(k>=0)polys.splice(k,1);polyRebuild();}
       else if(d[0]==='D-'){inv.push(['D',d[1]]);amLayerOut(d[1]);}
+      // 332: a tag placed, deleted, edited
+      else if(d[0]==='G+'){const k=tags.indexOf(d[1]); inv.push(['G-',{g:d[1],i:k}]); if(k>=0) tags.splice(k,1); tagRebuild(); buildChips();}
+      else if(d[0]==='G-'){inv.push(['G+',d[1].g]); tags.splice(Math.min(d[1].i,tags.length),0,d[1].g); tagRebuild(); buildChips();}
+      else if(d[0]==='GE'){const g=d[1].g; inv.push(['GE',{g:g,from:d[1].to,to:d[1].from}]);
+        g.title=d[1].from.title; g.text=d[1].from.text; g.img=d[1].from.img; tagRebuild(); buildChips();}
       else {const [ti,f,o]=d;inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;amSUpd(ti,f);recolorFace(f);}}
     inv.reverse();
     colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();return inv;
@@ -2273,6 +2498,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     // 321: the eraser takes a run or a ring by its tag — tried before the model, since
     // a tag often floats over empty space
     else if(mode==='rem'&&amTagErase(e)){dragging=null;}
+    // 332: a touch of the pencil on a tag of this layer opens its card
+    else if(activeKind==='tag'&&mode==='add'&&amTagAt(e,'tag')&&activeG>=0&&amTagAt(e,'tag').g.t===tagTypes[activeG].id){
+      tagEdit(amTagAt(e,'tag').g);dragging=null;}
+    else if(activeKind==='tag'&&mode==='rem'){dragging=amOnSurface(e)?null:'rot';}
     else if(!amOnSurface(e)){ if(activeKind==='rul') rulEnd(); dragging='rot'; }
     else if(mode==='grow'){growAt(e);dragging=null;}
     // 329: the smoothed surface — a tag chooses the region the wheel acts on; else the brush
@@ -2288,6 +2517,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     else if(activeKind==='len'&&mode==='add'){dragging='line';curLine=null;lineAt(e);}
     else if(activeKind==='len'&&mode==='rem'){dragging='lerase';lineEraseAt(e);}
     else if(activeKind==='cnt'&&mode==='add'){placeXAt(e);dragging=null;}
+    else if(activeKind==='tag'){if(mode==='add')tagAt(e);dragging=null;}
     else if(activeKind==='cnt'&&mode==='rem'){dragging='xerase';eraseXAt(e);}
     else {dragging='paint';paintManual=true;beginH();amStrokeBegin();paintAt(e);}
   });
@@ -2843,7 +3073,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         t:T.id,n:g.n,len:Math.round(g.len*1000)/1000,
         c:[Math.round(g.c.x*1000)/1000,Math.round(g.c.y*1000)/1000,
            Math.round(g.c.z*1000)/1000]})))),
-      minReader:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1))),   // 329
+      minReader:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1)))),   // 329 · 332
+      tagTypes:tagTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid})),
+      tags:tags.map(g=>({id:g.id,t:g.t,p:g.p.slice(),nrm:g.nrm?g.nrm.slice():null,
+                         title:g.title,text:g.text,img:g.img||null})),
       smooths:SMR.map(r=>({id:r.id,at:r.at,level:r.level,faces:r.faces.slice(),
         area:Math.round(r.area*10000)/10000})),
       saved:new Date().toISOString(),
@@ -2870,6 +3103,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   }
   $('mExport').onclick=async()=>{
     const sheet=getSheet();
+    // 332: the photos go out INSIDE the sheet — the computer has no other way to receive them
+    const imgs={};
+    for(const g of tags) if(g.img&&!imgs[g.img]){ const v=await tagSrc(g); if(v) imgs[g.img]=v; }
+    if(Object.keys(imgs).length) sheet.tagImgs=imgs;
     const fname=(AM.name||'work')+'_gilayon.json';
     const data=JSON.stringify(sheet);
     const file=new File([data],fname,{type:'application/json'});
@@ -2935,7 +3172,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
      since 256 and never said which. */
   const AM_BRUSH_WHAT={area:'רדיוס המברשת', len:'רוחב הקו', cnt:'קוטר הסמן',
                        rul:'רוחב הקו', vol:'רדיוס המברשת'};
-  const AM_TOOL_NAME={area:'סימון שטח', len:'סרט מדידה', cnt:'מונה', rul:'סרגל', vol:'נפח אזור'};
+  const AM_TOOL_NAME={area:'סימון שטח', len:'סרט מדידה', cnt:'מונה', rul:'סרגל', vol:'נפח אזור', tag:'תגית'};
   // The tolerance belongs to growing alone (Eli, 24/09) — hidden, not dimmed, in every
   // other mode; while growing the side bar's title says so.
   function amSideWhat(){
@@ -2948,7 +3185,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const g=$('growWrap'); if(g) g.style.display=growing?'':'none';
     // 10: the tool pair belongs to an area layer; a polygon has no brush size
     const aw=$('areaToolWrap'); if(aw) aw.style.display=(activeKind==='area')?'':'none';
-    const bw=$('brushWrap'); if(bw) bw.style.display=poly?'none':'';
+    const bw=$('brushWrap'); if(bw) bw.style.display=(poly||activeKind==='tag')?'none':'';
     // 6: the shape belongs to the brush that paints faces
     const sw=$('shapeWrap'); if(sw) sw.style.display=(activeKind==='area'&&!poly&&!growing)?'':'none';
     const ab=$('aBrush'), apl=$('aPoly'), asm=$('aSmooth');
@@ -3033,6 +3270,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     markUnexported(true);
   };
   function syncKindUI(){amSyncDesign();amSyncOp();const other=activeKind!=='area';
+    if($('repop')) $('repop').disabled=(activeKind==='tag');   // 332: a tag has no opacity
     $('auto').disabled=other; $('thr').disabled=other;
     // grow floods FACES by similarity — meaningless for lines and counters (12/08)
     $('mGrow').disabled=other; $('grtol').disabled=other;
@@ -3077,13 +3315,14 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // question when marks go with it, and Ctrl+Z brings it back whole IN ITS PLACE (an area
   // stroke in the history names its layer by position). The last area layer leaves an
   // empty one behind.
-  const AM_KIND_LIST={area:()=>types,len:()=>lenTypes,cnt:()=>cntTypes,rul:()=>rulTypes};
+  const AM_KIND_LIST={area:()=>types,len:()=>lenTypes,cnt:()=>cntTypes,rul:()=>rulTypes,tag:()=>tagTypes};
   function amLayerHeld(kind,T){
     if(kind==='area'){const np=polys.filter(P=>P.at===T.id).length, ns=SMR.filter(r=>r.at===T.id).length;
       return {n:((T.area||0)>0?1:0)+np+ns,
               say:(T.area||0).toFixed(2)+' מ״ר'+(np?(' · '+np+' פוליגונים'):'')+(ns?(' · '+ns+' אזורים מוחלקים'):'')};}
     if(kind==='len'){const n=lines.filter(L=>L.t===T.id).length; return {n:n,say:n+' קווים'};}
     if(kind==='cnt'){const n=xmarks.filter(m=>m.t===T.id).length; return {n:n,say:n+' סמנים'};}
+    if(kind==='tag'){const n=tags.filter(g=>g.t===T.id).length; return {n:n,say:n+' תגיות'};}
     const n=rulPts.filter(q=>q.t===T.id).length; return {n:n,say:n+' נקודות'};
   }
   function amLayerOut(snap){
@@ -3097,6 +3336,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       if(smSel&&smSel.at===T.id) smSel=null;
     } else if(snap.kind==='len'){snap.lines=lines.filter(L=>L.t===T.id); for(const L of snap.lines) delLine(L);}
     else if(snap.kind==='cnt'){snap.xs=xmarks.filter(m=>m.t===T.id); for(const m of snap.xs) delX(m);}
+    else if(snap.kind==='tag'){snap.gs=tags.filter(g=>g.t===T.id); for(const g of snap.gs) tags.splice(tags.indexOf(g),1);}
     else {
       if(rulLast!==null&&(rulPtById(rulLast)||{}).t===T.id) rulLast=null;
       snap.pts=rulPts.filter(q=>q.t===T.id); snap.segs=rulSegs.filter(g=>g.t===T.id);
@@ -3116,6 +3356,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(snap.kind==='area'){ for(const P of (snap.polys||[])) polys.push(P); for(const r of (snap.smr||[])) SMR.push(r); }
     else if(snap.kind==='len') for(const L of (snap.lines||[])) addLine(L);
     else if(snap.kind==='cnt') for(const m of (snap.xs||[])) addX(m);
+    else if(snap.kind==='tag') for(const g of (snap.gs||[])) tags.push(g);
     else {for(const q of (snap.pts||[])) rulPts.push(q);
           for(const g of (snap.segs||[])) rulSegs.push(g);}
     amLayerAfter();
@@ -3123,10 +3364,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   function amLayerAfter(){
     const clamp=(i,list)=>Math.max(-1,Math.min(i,list.length-1));
     activeT=Math.max(0,clamp(activeT,types)); activeL=clamp(activeL,lenTypes);
-    activeC=clamp(activeC,cntTypes); activeR=clamp(activeR,rulTypes);
+    activeC=clamp(activeC,cntTypes); activeR=clamp(activeR,rulTypes); activeG=clamp(activeG,tagTypes);
     if((activeKind==='len'&&activeL<0)||(activeKind==='cnt'&&activeC<0)
-       ||(activeKind==='rul'&&activeR<0)) activeKind='area';
-    recolorAll(); polyRebuild(); rulRebuild(); syncKindUI(); buildChips(); updateArea();
+       ||(activeKind==='rul'&&activeR<0)||(activeKind==='tag'&&activeG<0)) activeKind='area';
+    recolorAll(); polyRebuild(); rulRebuild(); tagRebuild(); syncKindUI(); buildChips(); updateArea();
     markUnexported(true);
   }
   async function amLayerDelete(kind,i){
@@ -3212,6 +3453,26 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         c.onclick=()=>activateR(i);
         R.appendChild(c);});
     }
+    const G=$('chipsG');
+    if(G){
+      G.innerHTML='';
+      tagTypes.forEach((T,i)=>{
+        const c=document.createElement('span');
+        c.className='chip'+(activeKind==='tag'&&i===activeG?' on':'');
+        c.style.setProperty('--c',T.hex);
+        const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);
+        const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם השכבה';
+        inp.onchange=()=>{T.name=inp.value;markUnexported(true);};
+        inp.onclick=e=>e.stopPropagation();
+        c.appendChild(inp);
+        const b=document.createElement('b');b.textContent=String(tags.filter(g=>g.t===T.id).length);c.appendChild(b);
+        const u=document.createElement('span');u.className='u';u.textContent='תגיות';c.appendChild(u);
+        if(T.hid) c.style.opacity='0.45';
+        c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;tagRebuild();buildChips();markUnexported(true);}));
+        c.appendChild(amDelX('tag',i));
+        c.onclick=()=>activateG(i);
+        G.appendChild(c);});
+    }
     updateArea();}
   $('addType').onclick=()=>$('typeColor').click();
   $('typeColor').onchange=e=>{const hex=e.target.value;
@@ -3223,6 +3484,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(reservedColor(hex)){amTell('כתום שמור לאזור הכללי.\nנא לבחור צבע אחר.');return;}
     mkCntType('',hex);activateC(cntTypes.length-1);markUnexported(true);
     const inp=document.querySelector('#chipsC .chip.on input');if(inp)inp.focus();};
+  $('addTag').onclick=()=>$('tagColor').click();
+  $('tagColor').onchange=e=>{const hex=e.target.value;
+    mkTagType('',hex);activateG(tagTypes.length-1);markUnexported(true);
+    const inp=document.querySelector('#chipsG .chip.on input');if(inp)inp.focus();};
   $('addRul').onclick=()=>$('rulColor').click();
   $('rulColor').onchange=e=>{const hex=e.target.value;
     if(reservedColor(hex)){amTell("אדום שמור למברשת המחיקה, וכתום לאזור הכללי. נא לבחור צבע אחר.");return;}
@@ -3244,7 +3509,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
-  const AM_SHEET_READER = 4;   // 1 = marks only; 2 = membranes; 3 = the ruler (251)
+  const AM_SHEET_READER = 5;   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332)
   const AM_SUB_SCHEME = 1;      // core.subdiv_weights, face-major child order
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -3402,6 +3667,19 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     for(const src of (sh.counters||[])){const pts=src.pts||[];
       for(let i=0;i+2<pts.length;i+=3) addX({t:src.t,p:[pts[i],pts[i+1],pts[i+2]],obj:null});}
     if(cntTypes.length)activeC=0;
+    // 332: the tags, and the photos a sheet brought along (from the computer's package, or
+    // an exported sheet loaded back) — into the device's own store
+    tagTypes.length=0; tags.length=0; activeG=-1; gSeq=0; if(activeKind==='tag') activeKind='area';
+    if(sh.tagImgs&&typeof sh.tagImgs==='object')
+      for(const [n,v] of Object.entries(sh.tagImgs)) if(typeof v==='string'&&/^[A-Za-z0-9_-]{1,64}[.]jpg$/.test(n)){ TAG_IMG.set(n,v); imgPut(n,v); }
+    for(const src of (Array.isArray(sh.tagTypes)?sh.tagTypes:[])){const T=mkTagType(src.name||'',src.color||'#7dd3fc');
+      if(src.id)T.id=src.id; T.hid=(src.hid===true); T.repHid=(src.repHid===true);}
+    for(const src of (Array.isArray(sh.tags)?sh.tags:[])){
+      if(!src||!Array.isArray(src.p)||src.p.length!==3||!tagTypes.some(T=>T.id===src.t)) continue;
+      tags.push({id:src.id||amTagId(),t:src.t,p:src.p.map(Number),nrm:Array.isArray(src.nrm)?src.nrm.map(Number):null,
+                 title:String(src.title||''),text:String(src.text||''),img:(typeof src.img==='string'?src.img:null)});}
+    if(tagTypes.length)activeG=0;
+    tagRebuild();
     areaTool=(types[activeT]&&types[activeT].am===AM_POLY)?AM_POLY:AM_BRUSH;   // 10
     if(lenTypes.length)activeL=0;
     $('thr').value=Math.round(types[0].thr*1000);
