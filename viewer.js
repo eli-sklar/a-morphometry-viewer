@@ -2833,7 +2833,12 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   let amBVH=null;
   setTimeout(()=>{                       // built once, off the critical path (spike 1: <1s)
     try{ if(typeof MeshBVHLib!=='undefined'){
-      amBVH=new MeshBVHLib.MeshBVH(geo);
+      // 333: the tree keeps the triangles in the model's own order (indirect). Built by default it
+      // REORDERS them, and hit.faceIndex then counts in the new order, while every caller reads it
+      // as the model's face: measured 28/09, 198 of 200 rays named a face up to 1.97 m from the
+      // hit. Kept apart, the order is the model's, the geometry stays unindexed (4.5 MB less on
+      // Kziv), and the closest point and the normals the tape fit asks are the same to the bit.
+      amBVH=new MeshBVHLib.MeshBVH(geo,{indirect:true});
       // the same tree accelerates EVERY raycast in the editor (paint, grow, tape)
       geo.boundsTree=amBVH;
       THREE.Mesh.prototype.raycast=MeshBVHLib.acceleratedRaycast;
