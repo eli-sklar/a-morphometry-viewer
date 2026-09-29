@@ -2696,7 +2696,7 @@ mat.onBeforeCompile=sh=>{
   const touchList=()=>[...ptrs.values()].filter(p=>p.type==='touch');
   const hasPen=()=>{for(const p of ptrs.values())if(p.type==='pen')return true;return false;};
   function startPinch(){const t=touchList();if(t.length<2)return;amPinchH=undefined;
-    pinch={d:pdist(t[0],t[1]),mx:(t[0].x+t[1].x)/2,my:(t[0].y+t[1].y)/2};}
+    pinch={d:pdist(t[0],t[1]),mx:(t[0].x+t[1].x)/2,my:(t[0].y+t[1].y)/2,a:Math.atan2(t[1].y-t[0].y,t[1].x-t[0].x),tw:0,on:false};}
   /* ---- 1 (24/09): NAVIGATION AROUND WHAT IS UNDER THE HAND --------------------------
      Eli, on long models and after a crop: close to a wall, a drag moves the view by almost
      nothing, and turning swings around a centre far away. The camera turned around the
@@ -2769,7 +2769,36 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(amPinchH===undefined) amPinchH=amNavHit({clientX:mx,clientY:my});
     amZoomAbout(amPinchH,s);
     amPanBy(dmx,dmy,amWorldPerPx(amPinchH?amDepthOf(amPinchH):dist));
+  }  const AM_YAW_SIGN=1;
+  /*AM_NAV361_START*/
+  // 361 (Eli, 29/09): two more ways to move, in the navigation mode. Shift+wheel turns the
+  // view IN PLACE — the camera stands and the gaze swings about the upright axis through it
+  // ("כמו סיבוב המבט כשאתה עומד במקום"); Ctrl+wheel WALKS forward or back along the ray under
+  // the cursor, the zoom unchanged, and through walls — the zoom stops short of the surface,
+  // the walk does not. Written against the camera, not the orbit's formula, so the same text
+  // holds in every screen (a gate compares them); AM_YAW_SIGN is each screen's own, so the
+  // wheel turns the gaze the same way everywhere.
+  const AM_YAW_STEP=5*Math.PI/180, AM_WALK_STEP=0.08;
+  function amYawInPlace(dAz){
+    const c=camera.position.clone(); az+=dAz*AM_YAW_SIGN; amApply();
+    target.add(c.sub(camera.position)); amApply(); amWheel=null;
   }
+  function amWalk(e,f){
+    camera.updateMatrixWorld();
+    const r=el.getBoundingClientRect();
+    _amNavRay.setFromCamera(new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,
+                                              -((e.clientY-r.top)/r.height)*2+1),camera);
+    target.addScaledVector(_amNavRay.ray.direction,f*dist); amApply(); amWheel=null;
+  }
+  // Chrome turns Shift+wheel into a sideways scroll, so the step is read from either axis
+  function amWheelMove(e){
+    const d=e.deltaY||e.deltaX; if(!d) return false;
+    if(e.shiftKey){ amYawInPlace(Math.sign(d)*AM_YAW_STEP); return true; }
+    if(e.ctrlKey||e.metaKey){ amWalk(e,-Math.sign(d)*AM_WALK_STEP); return true; }
+    return false;
+  }
+  /*AM_NAV361_END*/
+
   // Is the press ON the model, or in empty space?
   function amOnSurface(e){
     const r=el.getBoundingClientRect();
@@ -2831,7 +2860,13 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(dragging==='pinch'){const t=touchList();if(t.length<2||!pinch)return;
       const nd=pdist(t[0],t[1]),nmx=(t[0].x+t[1].x)/2,nmy=(t[0].y+t[1].y)/2;
       if(nd>0){amPinch(pinch.d/nd,nmx,nmy,nmx-pinch.mx,nmy-pinch.my);}
-      pinch={d:nd,mx:nmx,my:nmy};return;}
+      // 361: two fingers turning on the glass turn the gaze in place — the iPad's Shift+wheel.
+      // Only past 8° of twist, so a pinch that wobbles is still a pinch
+      const na=Math.atan2(t[1].y-t[0].y,t[1].x-t[0].x);
+      let da=na-pinch.a; if(da>Math.PI) da-=2*Math.PI; if(da<-Math.PI) da+=2*Math.PI;
+      const tw=pinch.tw+da, on=pinch.on||Math.abs(tw)>0.14;
+      if(on) amYawInPlace(pinch.on?da:tw);
+      pinch={d:nd,mx:nmx,my:nmy,a:na,tw:on?0:tw,on:on};return;}
     if(dragId!==null&&e.pointerId!==dragId) return;       // palm guard
     // a finger that travels is navigating, not holding — the grab must not fire behind it
     if(amHold&&Math.hypot(e.clientX-amHold.x,e.clientY-amHold.y)>AM_HOLD_SLOP) amHoldClear();
@@ -3849,6 +3884,16 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const inp=document.querySelector('#chipsL .chip.on input');if(inp)inp.focus();};
 
   fit(); amParkIdle(); buildChips(); syncKindUI(); recolorAll(); updateHB();
+  if($('fit')) $('fit').onclick=()=>fit();      // 361: מרכוז, as in the report screen
+  // 361 (Eli: "א"): the iPad has no wheel, and five fingers belong to the system — so the
+  // walk is two buttons. Held, each walks toward (or away from) the middle of the screen, a
+  // quarter of the wheel's step every 50 ms; the zoom stays, and walls are passed through.
+  for(const [id,f] of [['walkF',1],['walkB',-1]]){ const b=$(id); if(!b) continue;
+    let tm=0; const stop=()=>{ clearInterval(tm); tm=0; };
+    b.addEventListener('pointerdown',e=>{ e.preventDefault(); stop();
+      const r=el.getBoundingClientRect(), mid={clientX:r.left+r.width/2,clientY:r.top+r.height/2};
+      amWalk(mid,f*AM_WALK_STEP/4); tm=setInterval(()=>amWalk(mid,f*AM_WALK_STEP/4),50); });
+    for(const ev of ['pointerup','pointercancel','pointerleave']) b.addEventListener(ev,stop); }
 
   /* ---- sheet application (decision 42): one function, two callers — the sheet
      embedded in the file at boot, and a sheet the user loads from Files (slice 2).
