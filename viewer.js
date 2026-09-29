@@ -1965,7 +1965,7 @@ mat.onBeforeCompile=sh=>{
       mm.renderOrder=997; smGroup.add(mm);
       let cx=0,cy=0,cz=0; const nv=r.X.length/3;
       for(let v=0;v<nv;v++){ cx+=r.X[v*3]; cy+=r.X[v*3+1]; cz+=r.X[v*3+2]; }
-      const sp=rulTag(num[r.at]+' : '+r.area.toFixed(2)+' מ״ר · מוחלק '+r.level+(r===smSel?' ◂':''),'#'+col.getHexString());
+      const sp=rulTag(amMeasText(r.at,'s',num[r.at]-1)+(r===smSel?' ◂':''),'#'+col.getHexString());
       sp.userData.amTag={kind:'smooth',reg:r};
       sp.position.set(cx/nv,cy/nv,cz/nv); smGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
     }
@@ -1984,6 +1984,23 @@ mat.onBeforeCompile=sh=>{
         const after=w.before.map(q=>q.id===smSel.id?{id:q.id,level:smWheelLevel(),faces:q.faces}:q);
         smCommitLayer(w.at,w.before,after); smSyncWheel(); };
     } }
+  /* 336 (Eli, 29/09): ONE running number per layer, whatever the method — "the numbering of
+     the measurements in one layer has to be continuous, also when they are by different
+     methods". The polygons first, in marking order (a ring still being drawn takes the next
+     number, so its identity does not change when it closes); then the smoothed regions, in
+     marking order; then — in the report only — the brush's patches, whose count the report's
+     tiny-area threshold decides and which this screen therefore cannot know. The number is
+     computed, never stored. */
+  function amMeasNo(at,kind,i){
+    if(kind!=='s') return i+1;
+    return polys.filter(q=>q.at===at).length+((curPoly&&curPoly.at===at&&curPoly.pts.length)?1:0)+i+1;
+  }
+  function amMeasText(at,kind,i){
+    if(kind==='s'){ const r=SMR.filter(q=>q.at===at)[i];
+      return amMeasNo(at,'s',i)+' : '+(r?r.area:0).toFixed(2)+' מ״ר · מוחלק '+(r?r.level:0); }
+    const L=polys.filter(q=>q.at===at), P=(i<L.length)?L[i]:curPoly;
+    return amMeasNo(at,'p',i)+' : '+(P?P.area:0).toFixed(2)+' מ״ר';
+  }
   function polyRebuild(){
     for(let i=polyGroup.children.length-1;i>=0;i--){
       const o=polyGroup.children[i]; forgetOnScreen(o); polyGroup.remove(o);
@@ -2041,8 +2058,7 @@ mat.onBeforeCompile=sh=>{
       // rule, and the order the report lists the layer's rings in. A ring still being
       // drawn takes the next number, so its identity does not change when it closes.
       const _pi=polys.filter(q=>q.at===P.at).indexOf(P);
-      const _pn=(_pi>=0)?_pi+1:polys.filter(q=>q.at===P.at).length+1;
-      const sp=rulTag(_pn+' : '+P.area.toFixed(2)+' מ\u05f4ר', '#'+col.getHexString());
+      const sp=rulTag(amMeasText(P.at,'p',(_pi>=0)?_pi:polys.filter(q=>q.at===P.at).length), '#'+col.getHexString());
       if(!open) sp.userData.amTag={kind:'poly', ring:P};     // 321: the eraser takes the ring by its tag
       sp.position.set(cx/n,cy/n,cz/n);
       polyGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
