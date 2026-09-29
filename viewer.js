@@ -674,7 +674,7 @@ mat.onBeforeCompile=sh=>{
      baked probability field stays dormant until a training or a loaded sheet arms it
      (hasProb) — same as the single-type version always behaved. */
   const types=[]; let activeT=0, tSeq=0;
-  let activeKind='area';               // area layers XOR length layers (user round 11/08)
+  let activeKind='area';               // area layers XOR length layers (user round 11/08); 'none' (357): no layer open
   const hex2rgb=h=>[parseInt(h.slice(1,3),16)/255,parseInt(h.slice(3,5),16)/255,parseInt(h.slice(5,7),16)/255];
   // 10 (24/09): an area layer holds brush marks AND polygons; the side bar picks the tool,
   // as in the measurement screen. `T.am` stays as the tool last used on the layer.
@@ -684,7 +684,21 @@ mat.onBeforeCompile=sh=>{
     manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,area:0,
     am:AM_BRUSH};
     types.push(T);return T;}
-  const T0=mkType('תיקון','#4dff4d'); T0.prob=prob;
+  const T0=mkType('שטח 1','#4dff4d'); T0.prob=prob;
+  // 357: opens with no layer open, as the measurement screen does; the first area layer
+  // is PARKED while it holds nothing — off the bar and off the sheet's report part, and the
+  // first "＋ מדידת שטח" takes it. Layers are named "שטח N" (360).
+  function amAreaFilled(ti){const T=types[ti];
+    if(polys.some(P=>P.at===T.id)||(typeof SMR!=='undefined'&&SMR.some(r=>r.at===T.id))) return true;
+    for(let f=0;f<N;f++) if(T.manual[f]!==0||isType(ti,f)) return true;
+    return false;}
+  function amParkIdle(){ for(const T of types) T.park=false;
+    if(types.length&&!amAreaFilled(0)) types[0].park=true;
+    activeKind='none'; }
+  function amKindLeft(){ return types.some(T=>!T.park)?'area':'none'; }
+  function amAreaName(){ let n=0;
+    for(const T of types){const m=/^שטח (\d+)$/.exec(T.name||''); if(m&&!T.park) n=Math.max(n,+m[1]);}
+    return 'שטח '+(n+1);}
   function reservedColor(hex){const [r,g,b]=hex2rgb(hex);const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
     if(mx-mn<0.18)return false;
     let h=0; if(mx===r)h=60*(((g-b)/(mx-mn))%6); else if(mx===g)h=60*((b-r)/(mx-mn)+2); else h=60*((r-g)/(mx-mn)+4);
@@ -2498,6 +2512,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     // 321: the eraser takes a run or a ring by its tag — tried before the model, since
     // a tag often floats over empty space
     else if(mode==='rem'&&amTagErase(e)){dragging=null;}
+    else if(activeKind==='none'&&(mode==='add'||mode==='rem'||mode==='grow')){dragging='rot';}   // 357
     // 332: a touch of the pencil on a tag of this layer opens its card
     else if(activeKind==='tag'&&mode==='add'&&amTagAt(e,'tag')&&activeG>=0&&amTagAt(e,'tag').g.t===tagTypes[activeG].id){
       tagEdit(amTagAt(e,'tag').g);dragging=null;}
@@ -3093,12 +3108,12 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     per.forEach(d=>{ const fr=new Map(d.frac); for(const f of d.faces){ const v=fr.has(f)?fr.get(f):1; if(!(unF.get(f)>=v)) unF.set(f,v); } });
     const rep=[...unF.keys()].sort((x,y)=>x-y); let un=0; for(const [f,v] of unF) un+=v*area[f];
     let ar=0;
-    o.typeAreas=types.map((T,ti)=>{const a=per[ti].a, fs=per[ti].faces;
+    o.typeAreas=types.map((T,ti)=>{if(T.park) return null; const a=per[ti].a, fs=per[ti].faces;
       ar+=a;
       return {id:T.id,name:T.name,color:T.hex,areaM2:Math.round(a*1000)/1000,
               op:(typeof T.op==='number')?Math.round(T.op*100)/100:0.75,
               design:Math.round(((typeof T.design==='number')?T.design:0.6)*100)/100,faces:fs,
-              frac:per[ti].frac, pieces:per[ti].pieces};});
+              frac:per[ti].frac, pieces:per[ti].pieces};}).filter(Boolean);   // 357: not a parked layer
     o.lenTotals=lenTypes.map(T=>{let s2=0;for(const L of lines)if(L.t===T.id)s2+=L.len;
       return {id:T.id,name:T.name,color:T.hex,lenM:Math.round(s2*1000)/1000};});
     o.cntTotals=cntTypes.map(T=>{let n2=0;for(const m of xmarks)if(m.t===T.id)n2++;
@@ -3185,7 +3200,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const poly=(activeKind==='area'&&areaTool===AM_POLY&&!growing);
     const smooth=(activeKind==='area'&&areaTool===AM_SMOOTH&&!growing);   // 329
     const w=$('brushWhat'); if(w) w.textContent=AM_BRUSH_WHAT[activeKind]||'גודל המברשת';
-    const t=$('sideTool'); if(t) t.textContent=growing?'נביטה':poly?'שטח פוליגון':smooth?'שטח מוחלק':(AM_TOOL_NAME[activeKind]||'סימון');
+    const t=$('sideTool'); if(t) t.textContent=activeKind==='none'?'אין שכבה פתוחה':growing?'נביטה':poly?'שטח פוליגון':smooth?'שטח מוחלק':(AM_TOOL_NAME[activeKind]||'סימון');
     const smw=$('smWrap'); if(smw) smw.style.display=smooth?'':'none';
     const g=$('growWrap'); if(g) g.style.display=growing?'':'none';
     // 10: the tool pair belongs to an area layer; a polygon has no brush size
@@ -3349,8 +3364,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       for(const g of snap.segs) rulSegs.splice(rulSegs.indexOf(g),1);
     }
     list.splice(snap.i,1);
-    if(snap.kind==='area'&&!types.length){
+    if(snap.kind==='area'&&!types.length){            // never without an area layer — a parked one (357)
       if(!snap.fill) snap.fill=mkType('','#4dff4d'); else types.push(snap.fill);
+      snap.fill.park=true;
     }
     amLayerAfter();
   }
@@ -3371,7 +3387,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     activeT=Math.max(0,clamp(activeT,types)); activeL=clamp(activeL,lenTypes);
     activeC=clamp(activeC,cntTypes); activeR=clamp(activeR,rulTypes); activeG=clamp(activeG,tagTypes);
     if((activeKind==='len'&&activeL<0)||(activeKind==='cnt'&&activeC<0)
-       ||(activeKind==='rul'&&activeR<0)||(activeKind==='tag'&&activeG<0)) activeKind='area';
+       ||(activeKind==='rul'&&activeR<0)||(activeKind==='tag'&&activeG<0)) activeKind=amKindLeft();
+    if(activeKind==='area'&&(!types[activeT]||types[activeT].park)){           // 357: never onto a parked layer
+      const k=types.findIndex(T=>!T.park); if(k>=0) activeT=k; else activeKind='none';}
     recolorAll(); polyRebuild(); rulRebuild(); tagRebuild(); syncKindUI(); buildChips(); updateArea();
     markUnexported(true);
   }
@@ -3394,6 +3412,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   function buildChips(){
     const A=$('chipsA');if(!A)return;A.innerHTML='';
     types.forEach((T,i)=>{
+      if(T.park) return;                  // 357: held for the first new layer, not shown
       const c=document.createElement('span');c.className='chip'+(activeKind==='area'&&i===activeT?' on':'');c.style.setProperty('--c',T.hex);
       const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);
       const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם הסוג';
@@ -3482,7 +3501,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   $('addType').onclick=()=>$('typeColor').click();
   $('typeColor').onchange=e=>{const hex=e.target.value;
     if(reservedColor(hex)){amTell('אדום שמור למברשת המחיקה, וכתום לאזור הכללי.\nנא לבחור צבע אחר.');return;}
-    mkType('',hex);activateT(types.length-1);setMode('add');markUnexported(true);
+    const name=amAreaName(), k=types.findIndex(T=>T.park);
+    if(k>=0){const T=types[k]; T.park=false; T.name=name; T.hex=hex; T.color=hex2rgb(hex); recolorAll(); activateT(k);}
+    else {mkType(name,hex);activateT(types.length-1);}
+    setMode('add');markUnexported(true);
     const inp=document.querySelector('#chipsA .chip.on input');if(inp)inp.focus();};
   $('addCnt').onclick=()=>$('cntColor').click();
   $('cntColor').onchange=e=>{const hex=e.target.value;
@@ -3504,7 +3526,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     mkLenType('',hex);activateL(lenTypes.length-1);markUnexported(true);
     const inp=document.querySelector('#chipsL .chip.on input');if(inp)inp.focus();};
 
-  fit(); buildChips(); syncKindUI(); recolorAll(); updateHB();
+  fit(); amParkIdle(); buildChips(); syncKindUI(); recolorAll(); updateHB();
 
   /* ---- sheet application (decision 42): one function, two callers — the sheet
      embedded in the file at boot, and a sheet the user loads from Files (slice 2).
@@ -3598,7 +3620,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     cntTypes.length=0; activeC=-1;
     types.length=1; activeT=0;
     const T0=types[0]; T0.manual.fill(0); T0.faceThr=null; T0.prob=prob; T0.hasProb=false;
-    T0.name='תיקון'; T0.hex='#4dff4d'; T0.color=hex2rgb(T0.hex); T0.hid=false;
+    T0.name='שטח 1'; T0.hex='#4dff4d'; T0.color=hex2rgb(T0.hex); T0.hid=false;
     roi.fill(0);roiCount=0;
     for(const fo of (sh.roiPainted||sh.roiFaces||[])) if(fo<FO)
       for(let t=OFF[fo];t<OFF[fo+1];t++){ if(!roi[t]){roi[t]=1;roiCount++;} }
@@ -3630,7 +3652,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       for(let i=1;i<sh.types.length;i++){const T=mkType('','#3b82f6');loadT(T,sh.types[i]);
         if(sh.types[i].id)T.id=sh.types[i].id;}
     } else {                                               // legacy sheet: single type
-      loadT(T0,{name:'תיקון',thr:(typeof sh.globalThreshold==='number')?sh.globalThreshold:T0.thr,
+      loadT(T0,{name:'שטח 1',thr:(typeof sh.globalThreshold==='number')?sh.globalThreshold:T0.thr,
                 manual:sh.manual,faceThr:sh.faceThr,hasProb:sh.hasProb,prob:sh.prob});
     }
     rulTypes.length=0; activeR=-1; rulPts.length=0; rulSegs.length=0; rulLast=null;
@@ -3674,7 +3696,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(cntTypes.length)activeC=0;
     // 332: the tags, and the photos a sheet brought along (from the computer's package, or
     // an exported sheet loaded back) — into the device's own store
-    tagTypes.length=0; tags.length=0; activeG=-1; gSeq=0; if(activeKind==='tag') activeKind='area';
+    tagTypes.length=0; tags.length=0; activeG=-1; gSeq=0;
     if(sh.tagImgs&&typeof sh.tagImgs==='object')
       for(const [n,v] of Object.entries(sh.tagImgs)) if(typeof v==='string'&&/^[A-Za-z0-9_-]{1,64}[.]jpg$/.test(n)){ TAG_IMG.set(n,v); imgPut(n,v); }
     for(const src of (Array.isArray(sh.tagTypes)?sh.tagTypes:[])){const T=mkTagType(src.name||'',src.color||'#7dd3fc');
@@ -3690,6 +3712,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     $('thr').value=Math.round(types[0].thr*1000);
     $('thrV').textContent=types[0].thr.toFixed(3);
     undoStack.length=0;redoStack.length=0;updateHB();  // loaded state is the new baseline
+    amParkIdle(); syncKindUI();
     buildChips();
     recolorAll();
   }
