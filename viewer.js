@@ -473,7 +473,12 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     const AM_SHADER_FN = `
 float amB2(vec2 a){a=floor(a);return fract(a.x*0.5+a.y*a.y*0.75);}
 float amBayer(vec2 px){return amB2(px*0.5)*0.25+amB2(px);}
+// 335ב (Eli, 29/09 — option ג of the comparison): the mark colour is a CHOSEN hex, and the
+// texture is decoded to linear before this runs; the colour went in undecoded, and came out
+// paler than chosen. Decoded as the texture is, the law is unchanged and the tone is exact.
+vec3 amLin(vec3 c){ return mix(c/12.92, pow((c+0.055)/1.055, vec3(2.4)), step(vec3(0.04045), c)); }
 vec3 amStipple(vec3 wall, vec3 col, float a, float lvl){
+  col=amLin(col);
   vec3 flatC=wall*mix(vec3(1.0),col,min(a*1.25,1.0));
   float f=clamp((a-0.7)/0.3,0.0,1.0);
   flatC=mix(flatC,col,f*f*0.5);
@@ -1307,7 +1312,8 @@ mat.onBeforeCompile=sh=>{
     for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;dess[f*3+c]=d;}
   }
   function amMarkLayers(){ return (typeof smLiveT!=='undefined'&&smLiveT)?types.concat([smLiveT]):types; }   // 325: no volume brush · 335: the smooth brush's line while it is down
-  function recolorAll(){for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();
+  function recolorAll(){if(typeof smRecolor==='function') smRecolor();   // 335ב: the copies take the layer's colour too
+  for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();
     amMarkDraw(); amMarkSoon(); }   // 324: the line follows whatever changed
   // Design-only repaint (decision 93) — same words as the editor: the wheel touches
   // only aDes, and a full recolour per drag tick killed the GL context on a 168k-face
@@ -1323,7 +1329,7 @@ mat.onBeforeCompile=sh=>{
       const d=(typeof T.design==='number')?T.design:0.6;
       dess[f*3]=d;dess[f*3+1]=d;dess[f*3+2]=d;
     }
-    desAttr.needsUpdate=true; amMarkDraw();
+    desAttr.needsUpdate=true; amMarkDraw(); if(typeof smRecolor==='function') smRecolor();
   }
   function amDessSoon(){ if(_desReq) return; _desReq=true; requestAnimationFrame(amDessOnly); }
   function updateArea(){
@@ -2025,29 +2031,55 @@ mat.onBeforeCompile=sh=>{
     smSel=SMR.find(r=>r.at===t.at&&r.faces.includes(f0))||SMR.filter(r=>r.at===t.at).slice(-1)[0]||null;
     smSyncWheel(); smRebuild(); invalidate();
   }
+  // 335ב (Eli, 29/09 — option ג): the copy is drawn as the wall's marking is — the model's own
+  // texture on it and the same law (amStipple, the colour decoded), not a coloured sheet laid over
+  // the model: the three tools of an area layer read in one tone. The texture comes with the
+  // copy's corners in the order smMesh lays its triangles (sorted sub-faces; a cut one by its
+  // parts), each corner's uv taken from its sub-face as its position is.
+  function smUV(r){
+    const fs=Array.from(r.faces).sort((a,b)=>a-b), U=[], pf=[];
+    for(const f of fs){ const o=(f*3)*2, bb=r.pc&&r.pc.get(f), pp=(f>=PATCH0)?1:0;
+      if(!bb){ for(let c=0;c<3;c++){ U.push(uv[o+c*2],uv[o+c*2+1]); pf.push(pp); } continue; }
+      for(let i=0;i+1<bb.length;i+=2){ const b1=bb[i], b2=bb[i+1];
+        U.push(uv[o]+b1*(uv[o+2]-uv[o])+b2*(uv[o+4]-uv[o]), uv[o+1]+b1*(uv[o+3]-uv[o+1])+b2*(uv[o+5]-uv[o+1])); pf.push(pp); } }
+    return {U:U, pf:pf};
+  }
+  var smMatC=null;
+  function smMat(){
+    if(!smMatC){ smMatC=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide,polygonOffset:true,
+        polygonOffsetFactor:-2,polygonOffsetUnits:-6}); smMatC.onBeforeCompile=mat.onBeforeCompile; }
+    smMatC.transparent=mat.transparent; smMatC.opacity=mat.opacity; smMatC.depthWrite=mat.depthWrite;
+    return smMatC;
+  }
+  // the layer's colour, opacity and design on its copies, in place (the design wheel, 93)
+  function smRecolor(){
+    for(const o of smGroup.children){ const at=o.userData&&o.userData.smAt; if(!at) continue;
+      const T=types.find(t=>t.id===at); if(!T) continue;
+      const A=o.geometry.attributes, c=T.color||[0.3,1,0.3], op=(typeof T.op==='number')?T.op:0.75, d=(typeof T.design==='number')?T.design:0.6;
+      for(let k=0;k<A.aFlat.count;k++){ A.aCol.array[k*3]=c[0]; A.aCol.array[k*3+1]=c[1]; A.aCol.array[k*3+2]=c[2]; A.aFlat.array[k]=op; A.aDes.array[k]=d; }
+      A.aCol.needsUpdate=true; A.aFlat.needsUpdate=true; A.aDes.needsUpdate=true; }
+    smMat(); invalidate();
+  }
   // each region's copy: the layer's colour, its opacity and design, over the model, and its tag
   function smRebuild(){
     for(let i=smGroup.children.length-1;i>=0;i--){ const o=smGroup.children[i]; forgetOnScreen(o); smGroup.remove(o);
-      if(o.geometry) o.geometry.dispose(); if(o.material){ if(o.material.map) o.material.map.dispose(); o.material.dispose(); } }
+      if(o.geometry) o.geometry.dispose(); if(o.material&&!(o.userData&&o.userData.amShared)){ if(o.material.map) o.material.map.dispose(); o.material.dispose(); } }
     const num={};
     for(const r of SMR){
       const T=types.find(t=>t.id===r.at); if(!T) continue;
       num[r.at]=(num[r.at]||0)+1;
       if(amHidOf(types,r.at)||!r.T||!r.T.length) continue;
       const col=new THREE.Color(T.hex||'#4dff4d');
+      const nt=r.T.length, G=smUV(r), XP=new Float32Array(nt*3);
+      for(let k=0;k<nt;k++){ const v=r.T[k]*3; XP[k*3]=r.X[v]; XP[k*3+1]=r.X[v+1]; XP[k*3+2]=r.X[v+2]; }
       const g=new THREE.BufferGeometry();
-      g.setAttribute('position',new THREE.BufferAttribute(Float32Array.from(r.X),3));
-      g.setIndex(Array.from(r.T));
-      const mm=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:col,transparent:true,
-        opacity:(typeof T.op==='number')?T.op:0.75,side:THREE.DoubleSide,depthWrite:false,
-        polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-6}));
-      const _du=T.designU||(T.designU={value:(typeof T.design==='number')?T.design:0.6});
-      mm.material.onBeforeCompile=sh=>{
-        sh.uniforms.amDesign=_du;
-        sh.fragmentShader=sh.fragmentShader
-          .replace('#include <common>','#include <common>\nuniform float amDesign;'+AM_SHADER_FN)
-          .replace('#include <opaque_fragment>','diffuseColor.a=amStippleA(diffuseColor.a,amDesign);\n#include <opaque_fragment>');
-      };
+      g.setAttribute('position',new THREE.BufferAttribute(XP,3));
+      g.setAttribute('uv',new THREE.BufferAttribute(Float32Array.from(G.U),2));
+      g.setAttribute('aCol',new THREE.BufferAttribute(new Float32Array(nt*3),3));
+      g.setAttribute('aFlat',new THREE.BufferAttribute(new Float32Array(nt),1));
+      g.setAttribute('aDes',new THREE.BufferAttribute(new Float32Array(nt),1));
+      g.setAttribute('aPatch',new THREE.BufferAttribute(Float32Array.from(G.pf),1));
+      const mm=new THREE.Mesh(g,smMat()); mm.userData.smAt=r.at; mm.userData.amShared=true;
       mm.renderOrder=997; smGroup.add(mm);
       let cx=0,cy=0,cz=0; const nv=r.X.length/3;
       for(let v=0;v<nv;v++){ cx+=r.X[v*3]; cy+=r.X[v*3+1]; cz+=r.X[v*3+2]; }
@@ -2055,7 +2087,7 @@ mat.onBeforeCompile=sh=>{
       sp.userData.amTag={kind:'smooth',reg:r};
       sp.position.set(cx/nv,cy/nv,cz/nv); smGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
     }
-    rescaleFixed(); invalidate();
+    smRecolor(); rescaleFixed(); invalidate();
   }
   // the wheel: the level of the region chosen (its tag, or the last one marked), undone as one step
   { const e=document.getElementById('smLevel');
@@ -2070,6 +2102,174 @@ mat.onBeforeCompile=sh=>{
         const after=Object.assign({},w.before,{regs:w.before.regs.map(q=>q.id===smSel.id?Object.assign({},q,{level:smWheelLevel()}):q)});
         smCommitLayer(w.at,w.before,after,true); smSyncWheel(); };
     } }
+  /* ---- 335ב: THE POLYGON ON THE MODEL -------------------------------------------------------
+     Eli, 29/09 (option ג, approved): the three tools of an area layer read in ONE tone — the wall
+     law, the colour decoded. A polygon is a plane with no texture of its own, and imitating the
+     law over what is already drawn missed by up to 21 of 255 (measured), so its fill is painted
+     ON THE MODEL: every sub-face within the polygon's band, seen along the polygon's normal, is
+     cut along the outline and painted as a marking is. Where no model lies under it (Eli: "I do
+     want the areas with no model under them painted too"), the fill lies on the plane itself, in
+     the same law, the wall being the mean of the texture under the rest of the polygon (a neutral
+     grey when there is none). Where there is no model is read on a grid of half a model edge; the
+     outline stays exact. The area is still measured from the points. The same text runs in the
+     measurement screen, the iPad and the report's viewer. */
+  const PG_BAND_MIN=0.05, PG_GRID_MAX=120000;
+  function pgPlane(pts){
+    const n=[0,0,0], c=[0,0,0], m=pts.length;
+    for(let i=0;i<m;i++){ const a=pts[i], b=pts[(i+1)%m];
+      n[0]+=(a[1]-b[1])*(a[2]+b[2]); n[1]+=(a[2]-b[2])*(a[0]+b[0]); n[2]+=(a[0]-b[0])*(a[1]+b[1]);
+      c[0]+=a[0]/m; c[1]+=a[1]/m; c[2]+=a[2]/m; }
+    const L=Math.hypot(n[0],n[1],n[2])||1; for(let k=0;k<3;k++) n[k]/=L;
+    const t=Math.abs(n[0])<0.9?[1,0,0]:[0,1,0];
+    const e1=[n[1]*t[2]-n[2]*t[1], n[2]*t[0]-n[0]*t[2], n[0]*t[1]-n[1]*t[0]], l1=Math.hypot(e1[0],e1[1],e1[2])||1;
+    for(let k=0;k<3;k++) e1[k]/=l1;
+    const e2=[n[1]*e1[2]-n[2]*e1[1], n[2]*e1[0]-n[0]*e1[2], n[0]*e1[1]-n[1]*e1[0]];
+    return {n:n, c:c, e1:e1, e2:e2};
+  }
+  function pgTo(pl,x,y,z){ const dx=x-pl.c[0], dy=y-pl.c[1], dz=z-pl.c[2];
+    return [dx*pl.e1[0]+dy*pl.e1[1]+dz*pl.e1[2], dx*pl.e2[0]+dy*pl.e2[1]+dz*pl.e2[2], dx*pl.n[0]+dy*pl.n[1]+dz*pl.n[2]]; }
+  function pgCross(A,B,C){ return (B[0]-A[0])*(C[1]-A[1])-(B[1]-A[1])*(C[0]-A[0]); }
+  function pgInTri(p,A,B,C){ return pgCross(A,B,p)>=0&&pgCross(B,C,p)>=0&&pgCross(C,A,p)>=0; }
+  // the outline in the plane, as counter-clockwise triangles (ear clipping)
+  function pgEars(Q){
+    let s=0; for(let i=0;i<Q.length;i++){ const a=Q[i], b=Q[(i+1)%Q.length]; s+=a[0]*b[1]-b[0]*a[1]; }
+    const idx=Q.map((_,i)=>i); if(s<0) idx.reverse();
+    const out=[]; let guard=0;
+    while(idx.length>3&&guard++<4*Q.length+16){ let cut=false;
+      for(let k=0;k<idx.length;k++){ const i0=idx[(k+idx.length-1)%idx.length], i1=idx[k], i2=idx[(k+1)%idx.length];
+        const A=Q[i0], B=Q[i1], C=Q[i2]; if(pgCross(A,B,C)<=1e-14) continue;
+        let hit=false; for(const j of idx){ if(j===i0||j===i1||j===i2) continue; if(pgInTri(Q[j],A,B,C)){ hit=true; break; } }
+        if(hit) continue;
+        out.push([A,B,C]); idx.splice(k,1); cut=true; break; }
+      if(!cut) break; }
+    if(idx.length===3){ const A=Q[idx[0]], B=Q[idx[1]], C=Q[idx[2]]; if(pgCross(A,B,C)>0) out.push([A,B,C]); }
+    return out;
+  }
+  // a polygon (points [x,y, ...carried values]) clipped by a counter-clockwise triangle
+  function pgClip(poly,T){
+    let P=poly;
+    for(let e=0;e<3&&P.length;e++){ const A=T[e], B=T[(e+1)%3], out=[];
+      for(let i=0;i<P.length;i++){ const p=P[i], q=P[(i+1)%P.length], dp=pgCross(A,B,p), dq=pgCross(A,B,q);
+        if(dp>=0) out.push(p);
+        if((dp>=0)!==(dq>=0)){ const t=dp/(dp-dq); out.push(p.map((v,k)=>v+t*(q[k]-v))); } }
+      P=out; }
+    return P;
+  }
+  // the wall the fill takes where no model is: the texture under the cut parts, averaged by area
+  // (linear rgb), or null while the texture has not arrived
+  function pgWallOf(surf,POS,UV,texAt){
+    const s=[0,0,0]; let n=0;
+    for(const q of surf){ const f=q.f, o=f*6, p=f*9, BB=q.bb; let u=0, v=0;
+      for(let k=0;k<BB.length;k+=2){ const b1=BB[k], b2=BB[k+1];
+        u+=UV[o]+b1*(UV[o+2]-UV[o])+b2*(UV[o+4]-UV[o]); v+=UV[o+1]+b1*(UV[o+3]-UV[o+1])+b2*(UV[o+5]-UV[o+1]); }
+      const w=texAt?texAt(u/(BB.length/2),v/(BB.length/2)):null; if(!w) return null;
+      const ax=POS[p+3]-POS[p], ay=POS[p+4]-POS[p+1], az=POS[p+5]-POS[p+2], bx=POS[p+6]-POS[p], by=POS[p+7]-POS[p+1], bz=POS[p+8]-POS[p+2];
+      const A=0.5*Math.hypot(ay*bz-az*by,az*bx-ax*bz,ax*by-ay*bx);
+      for(let k=0;k<3;k++) s[k]+=w[k]*A; n+=A; }
+    return n>0?s.map(x=>x/n):null;
+  }
+  // the fill of one polygon: the cut parts of the model's sub-faces under it ({f, bb} — b1,b2 per
+  // corner), the triangles on its plane where no model is, and the wall those take (linear rgb)
+  function pgFill(pts,POS,UV,NF,texAt){
+    const out={surf:[], air:[], wall:null};
+    if(!pts||pts.length<3) return out;
+    const pl=pgPlane(pts), Q=pts.map(p=>pgTo(pl,p[0],p[1],p[2]));
+    const ears=pgEars(Q); if(!ears.length) return out;
+    let dmax=0, lo=[Infinity,Infinity], hi=[-Infinity,-Infinity];
+    for(const q of Q){ dmax=Math.max(dmax,Math.abs(q[2])); lo[0]=Math.min(lo[0],q[0]); lo[1]=Math.min(lo[1],q[1]); hi[0]=Math.max(hi[0],q[0]); hi[1]=Math.max(hi[1],q[1]); }
+    const band=Math.max(PG_BAND_MIN,3*dmax);
+    const bb3=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
+    for(const p of pts) for(let k=0;k<3;k++){ bb3[k]=Math.min(bb3[k],p[k]); bb3[3+k]=Math.max(bb3[3+k],p[k]); }
+    const R=band+1e-9, faces=[], F2=[], edges=[];
+    for(let f=0;f<NF;f++){ const o=f*9;
+      const cx=(POS[o]+POS[o+3]+POS[o+6])/3, cy=(POS[o+1]+POS[o+4]+POS[o+7])/3, cz=(POS[o+2]+POS[o+5]+POS[o+8])/3;
+      if(cx<bb3[0]-R||cx>bb3[3]+R||cy<bb3[1]-R||cy>bb3[4]+R||cz<bb3[2]-R||cz>bb3[5]+R) continue;
+      const a=pgTo(pl,POS[o],POS[o+1],POS[o+2]), b=pgTo(pl,POS[o+3],POS[o+4],POS[o+5]), c=pgTo(pl,POS[o+6],POS[o+7],POS[o+8]);
+      if(Math.abs(a[2])>band||Math.abs(b[2])>band||Math.abs(c[2])>band) continue;
+      if(Math.max(a[0],b[0],c[0])<lo[0]||Math.min(a[0],b[0],c[0])>hi[0]||Math.max(a[1],b[1],c[1])<lo[1]||Math.min(a[1],b[1],c[1])>hi[1]) continue;
+      faces.push(f); F2.push([a,b,c]);
+      if(edges.length<4096) edges.push(Math.hypot(b[0]-a[0],b[1]-a[1]),Math.hypot(c[0]-b[0],c[1]-b[1])); }
+    // the model's sub-faces, cut along the outline
+    for(let i=0;i<faces.length;i++){ const [a,b,c]=F2[i], sub=[[a[0],a[1],0,0],[b[0],b[1],1,0],[c[0],c[1],0,1]];
+      const bbx=[Math.min(a[0],b[0],c[0]),Math.min(a[1],b[1],c[1]),Math.max(a[0],b[0],c[0]),Math.max(a[1],b[1],c[1])], BB=[];
+      for(const T of ears){
+        if(Math.max(T[0][0],T[1][0],T[2][0])<bbx[0]||Math.min(T[0][0],T[1][0],T[2][0])>bbx[2]||
+           Math.max(T[0][1],T[1][1],T[2][1])<bbx[1]||Math.min(T[0][1],T[1][1],T[2][1])>bbx[3]) continue;
+        const P=pgClip(sub,T); if(P.length<3) continue;
+        for(let k=1;k+1<P.length;k++){ const q=[P[0],P[k],P[k+1]];
+          if(Math.abs(pgCross(q[0],q[1],q[2]))<1e-16) continue;
+          for(const v of q) BB.push(v[2],v[3]); } }
+      if(!BB.length) continue;
+      out.surf.push({f:faces[i], bb:BB}); }
+    out.wall=pgWallOf(out.surf,POS,UV,texAt);
+    // where there is no model: a grid of half a model edge over the plane, what no sub-face covers
+    edges.sort((x,y)=>x-y);
+    const med=edges.length?edges[edges.length>>1]:0, W=hi[0]-lo[0], H=hi[1]-lo[1];
+    let h=med>0?med/2:Math.sqrt(W*H/2000); h=Math.max(h,Math.sqrt(W*H/PG_GRID_MAX),1e-6);
+    const nx=Math.max(1,Math.ceil(W/h)), ny=Math.max(1,Math.ceil(H/h)), cov=new Uint8Array(nx*ny);
+    for(const [a,b,c] of F2){ const s=pgCross(a,b,c)<0?[a,c,b]:[a,b,c];
+      const i0=Math.max(0,Math.floor((Math.min(a[0],b[0],c[0])-lo[0])/h)), i1=Math.min(nx-1,Math.floor((Math.max(a[0],b[0],c[0])-lo[0])/h));
+      const j0=Math.max(0,Math.floor((Math.min(a[1],b[1],c[1])-lo[1])/h)), j1=Math.min(ny-1,Math.floor((Math.max(a[1],b[1],c[1])-lo[1])/h));
+      for(let j=j0;j<=j1;j++) for(let i=i0;i<=i1;i++){ const p=[lo[0]+(i+0.5)*h, lo[1]+(j+0.5)*h];
+        if(pgInTri(p,s[0],s[1],s[2])) cov[j*nx+i]=1; } }
+    const P3=(x,y)=>[pl.c[0]+x*pl.e1[0]+y*pl.e2[0], pl.c[1]+x*pl.e1[1]+y*pl.e2[1], pl.c[2]+x*pl.e1[2]+y*pl.e2[2]];
+    for(let j=0;j<ny;j++) for(let i=0;i<nx;i++){ if(cov[j*nx+i]) continue;
+      const x0=lo[0]+i*h, y0=lo[1]+j*h, sq=[[x0,y0],[x0+h,y0],[x0+h,y0+h],[x0,y0+h]];
+      for(const T of ears){
+        if(Math.max(T[0][0],T[1][0],T[2][0])<x0||Math.min(T[0][0],T[1][0],T[2][0])>x0+h||
+           Math.max(T[0][1],T[1][1],T[2][1])<y0||Math.min(T[0][1],T[1][1],T[2][1])>y0+h) continue;
+        const P=pgClip(sq,T); if(P.length<3) continue;
+        for(let k=1;k+1<P.length;k++) for(const v of [P[0],P[k],P[k+1]]) out.air.push(...P3(v[0],v[1])); } }
+    return out;
+  }
+  /* ---- end 335ב polygon core ---------------------------------------------------------------- */
+  // 335ב: the texture's colour under a point (linear rgb) — read once from a small copy of the image
+  let pgPix=null;
+  function pgTexAt(u,v){
+    if(!pgPix){ const im=tex&&tex.image; if(!im||!im.width) return null;
+      try{ const S=256, cv=document.createElement('canvas'); cv.width=S; cv.height=S; const cx=cv.getContext('2d');
+        cx.drawImage(im,0,0,S,S); pgPix={S:S, d:cx.getImageData(0,0,S,S).data}; }catch(e){ return null; } }
+    const S=pgPix.S, x=Math.min(S-1,Math.max(0,Math.floor(u*S))), y=Math.min(S-1,Math.max(0,Math.floor((1-v)*S))), o=(y*S+x)*4, d=pgPix.d;
+    const dc=c=>{ c/=255; return c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4); };
+    return [dc(d[o]),dc(d[o+1]),dc(d[o+2])];
+  }
+  function pgEnc(l){ l=Math.max(0,Math.min(1,l)); return l<=0.0031308?l*12.92:1.055*Math.pow(l,1/2.4)-0.055; }
+  var pgMatC=null;
+  function pgMat(){
+    if(!pgMatC){ pgMatC=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide,polygonOffset:true,
+        polygonOffsetFactor:-1,polygonOffsetUnits:-4}); pgMatC.onBeforeCompile=mat.onBeforeCompile; }
+    pgMatC.transparent=mat.transparent; pgMatC.opacity=mat.opacity; pgMatC.depthWrite=mat.depthWrite;
+    return pgMatC;
+  }
+  // a polygon's fill as meshes in the wall's law: its cut parts on the model (the model's texture,
+  // a shared material), and its triangles on the plane where no model is (a 1x1 texture of the wall)
+  function pgMeshes(F,T){
+    const col=T.color||[0.3,1,0.3], op=(typeof T.op==='number')?T.op:0.75, de=(typeof T.design==='number')?T.design:0.6, out=[];
+    const attrs=(g,n,pf)=>{ const C=new Float32Array(n*3);
+      for(let k=0;k<n;k++){ C[k*3]=col[0]; C[k*3+1]=col[1]; C[k*3+2]=col[2]; }
+      g.setAttribute('aCol',new THREE.BufferAttribute(C,3)); g.setAttribute('aFlat',new THREE.BufferAttribute(new Float32Array(n).fill(op),1));
+      g.setAttribute('aDes',new THREE.BufferAttribute(new Float32Array(n).fill(de),1)); g.setAttribute('aPatch',new THREE.BufferAttribute(pf,1)); };
+    let nv=0; for(const s of F.surf) nv+=s.bb.length/2;
+    if(nv){ const X=new Float32Array(nv*3), U=new Float32Array(nv*2), PF=new Float32Array(nv); let o=0;
+      for(const s of F.surf){ const f=s.f, q=f*9, w=f*6, pp=(f>=PATCH0)?1:0;
+        for(let k=0;k<s.bb.length;k+=2){ const b1=s.bb[k], b2=s.bb[k+1];
+          for(let c=0;c<3;c++) X[o*3+c]=pos[q+c]+b1*(pos[q+3+c]-pos[q+c])+b2*(pos[q+6+c]-pos[q+c]);
+          for(let c=0;c<2;c++) U[o*2+c]=uv[w+c]+b1*(uv[w+2+c]-uv[w+c])+b2*(uv[w+4+c]-uv[w+c]);
+          PF[o]=pp; o++; } }
+      const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(X,3));
+      g.setAttribute('uv',new THREE.BufferAttribute(U,2)); attrs(g,nv,PF);
+      const m=new THREE.Mesh(g,pgMat()); m.userData.amShared=true; m.userData.amWL=true; m.renderOrder=1; out.push(m); }
+    const na=F.air.length/3;
+    if(na){ const w=F.wall||[0.2140,0.2140,0.2140];       // no wall known: a neutral grey (sRGB 0.5)
+      const t=new THREE.DataTexture(new Uint8Array([Math.round(pgEnc(w[0])*255),Math.round(pgEnc(w[1])*255),Math.round(pgEnc(w[2])*255),255]),1,1);
+      if('SRGBColorSpace' in THREE) t.colorSpace=THREE.SRGBColorSpace; t.needsUpdate=true;
+      const mt=new THREE.MeshBasicMaterial({map:t,side:THREE.DoubleSide}); mt.onBeforeCompile=mat.onBeforeCompile;
+      mt.transparent=mat.transparent; mt.opacity=mat.opacity; mt.depthWrite=mat.depthWrite;
+      const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(Float32Array.from(F.air),3));
+      g.setAttribute('uv',new THREE.BufferAttribute(new Float32Array(na*2).fill(0.5),2)); attrs(g,na,new Float32Array(na));
+      const m=new THREE.Mesh(g,mt); m.userData.amWL=true; m.renderOrder=1; out.push(m); }
+    return out;
+  }
   /* 336 (Eli, 29/09): ONE running number per layer, whatever the method — "the numbering of
      the measurements in one layer has to be continuous, also when they are by different
      methods". The polygons first, in marking order (a ring still being drawn takes the next
@@ -2087,11 +2287,13 @@ mat.onBeforeCompile=sh=>{
     const L=polys.filter(q=>q.at===at), P=(i<L.length)?L[i]:curPoly;
     return amMeasNo(at,'p',i)+' : '+(P?P.area:0).toFixed(2)+' מ״ר';
   }
+  let pgWait=setInterval(()=>{ if(!pgTexAt(0.5,0.5)) return; clearInterval(pgWait);
+    if(polys.some(P=>P._fill&&!P._fill.wall&&P._fill.surf.length)) polyRebuild(); },500);
   function polyRebuild(){
     for(let i=polyGroup.children.length-1;i>=0;i--){
       const o=polyGroup.children[i]; forgetOnScreen(o); polyGroup.remove(o);
       if(o.geometry)o.geometry.dispose();
-      if(o.material){if(o.material.map)o.material.map.dispose();o.material.dispose();}
+      if(o.material&&!(o.userData&&o.userData.amShared)){if(o.material.map)o.material.map.dispose();o.material.dispose();}
     }
     const draw=(P,open)=>{
       const T=types.find(t=>t.id===P.at)||types[0];
@@ -2117,28 +2319,12 @@ mat.onBeforeCompile=sh=>{
         ln.renderOrder=999; polyGroup.add(ln);
       }
       if(open) return;
-      // the filled face, from the very triangles the area was measured on — so what is
-      // shaded and what is reported cannot be two different shapes
-      const tris=polyTriangles(P.pts), pos=[];
-      for(const [a,b,c] of tris)
-        for(const k of [a,b,c]) pos.push(P.pts[k][0],P.pts[k][1],P.pts[k][2]);
-      if(pos.length){
-        const gm=new THREE.BufferGeometry();
-        gm.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
-        // 256/257: the polygon takes the design wheel, through COVERAGE — an overlay
-        // has no wall of its own in the pixel, so only alpha reaches the model behind it
-        const mm=new THREE.Mesh(gm,new THREE.MeshBasicMaterial({color:col,transparent:true,
-          opacity:(typeof T.op==='number')?T.op:0.75,side:THREE.DoubleSide,depthWrite:false}));
-        const _du=T.designU||(T.designU={value:(typeof T.design==='number')?T.design:0.6});
-        mm.material.onBeforeCompile=sh=>{
-          sh.uniforms.amDesign=_du;
-          sh.fragmentShader=sh.fragmentShader
-            .replace('#include <common>','#include <common>\nuniform float amDesign;'+AM_SHADER_FN)
-            .replace('#include <opaque_fragment>',
-                     'diffuseColor.a=amStippleA(diffuseColor.a,amDesign);\n#include <opaque_fragment>');
-        };
-        mm.renderOrder=998; polyGroup.add(mm);
-      }
+      // 335ב: the fill on the model, in the wall's law — and on the plane where no model is. Kept on
+      // the polygon for its points (a walk over the model's sub-faces is not a thing to do per frame)
+      { const key=JSON.stringify(P.pts);
+        if(P._fk!==key){ P._fill=pgFill(P.pts,pos,uv,N,pgTexAt); P._fk=key; }
+        if(!P._fill.wall&&P._fill.surf.length) P._fill.wall=pgWallOf(P._fill.surf,pos,uv,pgTexAt);   // the texture came since
+        for(const m of pgMeshes(P._fill,T)) polyGroup.add(m); }
       let cx=0,cy=0,cz=0; for(const q of P.pts){cx+=q[0];cy+=q[1];cz+=q[2];}
       // 265: the ring is numbered 1..n WITHIN ITS LAYER, in marking order — the ruler's
       // rule, and the order the report lists the layer's rings in. A ring still being
