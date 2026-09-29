@@ -1277,7 +1277,7 @@ mat.onBeforeCompile=sh=>{
   function recolorFace(f){
     let r=null, a=0, d=0; _vis.length=0;
     // 329: the smoothed-surface brush, while it is down — the sub-faces it has taken
-    if(typeof smLive!=='undefined'&&smLive&&smLive[f]){
+    if(typeof smLive!=='undefined'&&smLive&&smLive[f]&&!(typeof smLiveT!=='undefined'&&smLiveT&&smLiveT.band.has(f))){
       const T=types[activeT], c=(mode==='rem')?[1,0.3,0.3]:((T&&T.color)||[0.3,1,0.3]), o0=f*9;
       for(let k=0;k<3;k++){colors[o0+k*3]=c[0];colors[o0+k*3+1]=c[1];colors[o0+k*3+2]=c[2];flats[f*3+k]=0.8;dess[f*3+k]=0;}
       return;
@@ -1288,7 +1288,7 @@ mat.onBeforeCompile=sh=>{
     const o=f*9;
     for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;dess[f*3+c]=d;}
   }
-  function amMarkLayers(){ return types; }       // 325: the iPad has no volume brush
+  function amMarkLayers(){ return (typeof smLiveT!=='undefined'&&smLiveT)?types.concat([smLiveT]):types; }   // 325: no volume brush · 335: the smooth brush's line while it is down
   function recolorAll(){for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();
     amMarkDraw(); amMarkSoon(); }   // 324: the line follows whatever changed
   // Design-only repaint (decision 93) — same words as the editor: the wheel touches
@@ -1800,22 +1800,41 @@ mat.onBeforeCompile=sh=>{
      area of its faces, measured as every area here is, times what the smoothing did to the
      copy: at level 0 it IS the painted area. The same text runs in the iPad, and the report
      builder computes it again in Python on the same quantized positions (smooth_surface.py),
-     which a gate holds to the digit. */
+     which a gate holds to the digit. 335: a sub-face on the brush's line comes in by its cut
+     part (Eli, 29/09: "the same brush as the others"). */
   const SM_LAMBDA=0.5, SM_MU=-0.5, SM_PASSES=10, SM_WELD=1e-5, SM_CELL=1e-4, SM_MAXLEVEL=10;
-  // the copy as a mesh: its corners welded where they coincide (the first one met is kept)
-  function smMesh(P,faces){
-    const n=faces.length, X=[], T=new Int32Array(n*3), grid=new Map(), w2=SM_WELD*SM_WELD;
-    for(let a=0;a<n;a++){ const f=faces[a];
-      for(let c=0;c<3;c++){ const o=f*9+c*3, x=P[o], y=P[o+1], z=P[o+2];
-        const i=Math.floor(x/SM_CELL), j=Math.floor(y/SM_CELL), k=Math.floor(z/SM_CELL); let id=-1;
-        for(let di=-1;di<=1&&id<0;di++) for(let dj=-1;dj<=1&&id<0;dj++) for(let dk=-1;dk<=1&&id<0;dk++){
-          const L=grid.get((i+di)+','+(j+dj)+','+(k+dk)); if(!L) continue;
-          for(const v of L){ const dx=X[v*3]-x, dy=X[v*3+1]-y, dz=X[v*3+2]-z;
-            if(dx*dx+dy*dy+dz*dz<=w2){ id=v; break; } } }
-        if(id<0){ id=X.length/3; X.push(x,y,z); const kk=i+','+j+','+k;
-          let L=grid.get(kk); if(!L){ L=[]; grid.set(kk,L); } L.push(id); }
-        T[a*3+c]=id; } }
-    return {X:Float64Array.from(X), T:T};
+  // 335: a sub-face on the line comes in by its cut part — triangles given in the sub-face's own
+  // barycentrics (b1,b2 per corner, rounded as the sheet carries them); the rest come in whole
+  function smCorners(P,f,pc){
+    const o=f*9, bb=pc&&pc.get(f);
+    if(!bb) return [P[o],P[o+1],P[o+2], P[o+3],P[o+4],P[o+5], P[o+6],P[o+7],P[o+8]];
+    const out=[];
+    for(let i=0;i+1<bb.length;i+=2){ const b1=bb[i], b2=bb[i+1];
+      for(let k=0;k<3;k++) out.push(P[o+k]+b1*(P[o+3+k]-P[o+k])+b2*(P[o+6+k]-P[o+k])); }
+    return out;
+  }
+  // the part of a sub-face its cut triangles cover: their area in barycentric space (whole = 1)
+  function smFrac(bb){
+    let s=0; for(let i=0;i+5<bb.length;i+=6)
+      s+=Math.abs((bb[i+2]-bb[i])*(bb[i+5]-bb[i+1])-(bb[i+3]-bb[i+1])*(bb[i+4]-bb[i]));
+    return s;
+  }
+  // the copy as a mesh: its corners welded where they coincide (the first one met is kept);
+  // tf: which of the faces each triangle came from
+  function smMesh(P,faces,pc){
+    const X=[], T=[], tf=[], grid=new Map(), w2=SM_WELD*SM_WELD;
+    for(let a=0;a<faces.length;a++){ const C=smCorners(P,faces[a],pc);
+      for(let q=0;q+8<C.length;q+=9){ tf.push(a);
+        for(let c=0;c<3;c++){ const x=C[q+c*3], y=C[q+c*3+1], z=C[q+c*3+2];
+          const i=Math.floor(x/SM_CELL), j=Math.floor(y/SM_CELL), k=Math.floor(z/SM_CELL); let id=-1;
+          for(let di=-1;di<=1&&id<0;di++) for(let dj=-1;dj<=1&&id<0;dj++) for(let dk=-1;dk<=1&&id<0;dk++){
+            const L=grid.get((i+di)+','+(j+dj)+','+(k+dk)); if(!L) continue;
+            for(const v of L){ const dx=X[v*3]-x, dy=X[v*3+1]-y, dz=X[v*3+2]-z;
+              if(dx*dx+dy*dy+dz*dz<=w2){ id=v; break; } } }
+          if(id<0){ id=X.length/3; X.push(x,y,z); const kk=i+','+j+','+k;
+            let L=grid.get(kk); if(!L){ L=[]; grid.set(kk,L); } L.push(id); }
+          T.push(id); } } }
+    return {X:Float64Array.from(X), T:Int32Array.from(T), tf:tf};
   }
   // Taubin, uniform weights: a vertex inside moves toward all its neighbours, a vertex on the
   // rim toward its two neighbours ALONG the rim (a pinch — any other count — stays put)
@@ -1843,25 +1862,27 @@ mat.onBeforeCompile=sh=>{
       s+=0.5*Math.sqrt((uy*vz-uz*vy)**2+(uz*vx-ux*vz)**2+(ux*vy-uy*vx)**2); }
     return s;
   }
-  // one region: its copy smoothed to its level, and its area
-  function smRegion(P,AREA,faces,level){
+  // one region: its copy smoothed to its level, and its area — the painted area of its sub-faces
+  // (a cut one by its part, 335) times what the smoothing did to the copy
+  function smRegion(P,AREA,faces,level,pc){
     const fs=Array.from(faces).sort((a,b)=>a-b), lv=Math.max(0,Math.min(SM_MAXLEVEL,Math.round(level||0)));
-    let painted=0; for(const f of fs) painted+=AREA[f];
-    const M=smMesh(P,fs);
+    let painted=0; for(const f of fs){ const bb=pc&&pc.get(f); painted+=bb?AREA[f]*Math.min(1,smFrac(bb)):AREA[f]; }
+    const M=smMesh(P,fs,pc);
     if(!lv||!fs.length) return {X:M.X, T:M.T, area:painted, painted:painted, level:lv};
     const a0=smArea(M.X,M.T), Xs=smTaubin(M.X,M.T,SM_PASSES*lv), a1=smArea(Xs,M.T);
     return {X:Xs, T:M.T, area:painted*(a0>0?a1/a0:1), painted:painted, level:lv};
   }
   // the connected pieces of a set of sub-faces, by shared corner position (a stroke that
   // touches a region joins it; an erasure that cuts one through splits it)
-  function smPieces(P,faces){
+  function smPieces(P,faces,pc){
     const fs=Array.from(faces).sort((a,b)=>a-b); if(!fs.length) return [];
-    const M=smMesh(P,fs), n=fs.length, par=new Int32Array(n); for(let i=0;i<n;i++) par[i]=i;
+    const M=smMesh(P,fs,pc), n=fs.length, par=new Int32Array(n); for(let i=0;i<n;i++) par[i]=i;
     const find=x=>{ while(par[x]!==x){ par[x]=par[par[x]]; x=par[x]; } return x; };
     const owner=new Map();
-    for(let a=0;a<n;a++) for(let c=0;c<3;c++){ const v=M.T[a*3+c];
-      if(owner.has(v)){ const r1=find(a), r2=find(owner.get(v)); if(r1!==r2) par[Math.max(r1,r2)]=Math.min(r1,r2); }
-      else owner.set(v,a); }
+    for(let t=0;t<M.tf.length;t++){ const a=M.tf[t];
+      for(let c=0;c<3;c++){ const v=M.T[t*3+c];
+        if(owner.has(v)){ const r1=find(a), r2=find(owner.get(v)); if(r1!==r2) par[Math.max(r1,r2)]=Math.min(r1,r2); }
+        else owner.set(v,a); } }
     const by=new Map(); for(let a=0;a<n;a++){ const r=find(a); if(!by.has(r)) by.set(r,[]); by.get(r).push(fs[a]); }
     return [...by.values()];
   }
@@ -1870,74 +1891,121 @@ mat.onBeforeCompile=sh=>{
   const AM_SMOOTH='smooth';
   const smGroup=new THREE.Group(); scene.add(smGroup);
   var SMR=[], smSeq=0, smSel=null, smStroke=null, smLive=new Uint8Array(N), smWheelFrom=null, smWheelT=0;
-  function smCompute(r){ const g=smRegion(pos,area,r.faces,r.level); r.X=g.X; r.T=g.T; r.area=g.area; r.level=g.level; }
-  function smSnap(at){ return SMR.filter(r=>r.at===at).map(r=>({id:r.id,level:r.level,faces:r.faces.slice()})); }
-  function smSetLayer(at,list){
+  /* 335 (Eli, 29/09: the smoothed-surface brush "was not built with the brushes' fixes — it
+     paints whole faces and not by the brush's shape"): it draws the SMOOTH LINE, as every brush
+     does since 317-325. Each layer keeps, for this tool, the whole sub-faces its strokes took
+     (S), the strokes' balls (ops) and what the line crosses, cut (band, pieces) — the 324 engine
+     on a state of its own, as the volume brush has one (325). A region is a connected piece of
+     what that marks; a sub-face on the line joins it by its cut part, in barycentrics rounded
+     as the sheet carries them, so the screen and the report build the copy from the same
+     numbers. What a region's deletion took away while the line still cuts there (X) is held
+     out until a stroke paints there again. */
+  const smTs=new Map();
+  var smLiveT=null, smOp=null, smBefore=null, smMarkAt=0;
+  const smQ=v=>Math.round(v*1e4)/1e4;
+  function smT(at){ let t=smTs.get(at); if(t) return t;
+    const L=()=>types.find(q=>q.id===at)||{};
+    t={at:at, S:new Uint8Array(N), X:new Uint8Array(N), ops:[], band:new Set(), pieces:new Map(), hid:false,
+       get color(){ return L().color||[0.3,1,0.3]; }, get op(){ const o=L().op; return (typeof o==='number')?o:0.75; },
+       get design(){ return L().design; }};
+    smTs.set(at,t); return t; }
+  // what the layer's smooth marking holds: whole sub-faces, and the cut ones by their part
+  function smMarked(t){ const fs=[], pc=new Map();
+    for(let f=0;f<N;f++){ if(t.X[f]) continue;
+      if(t.band.has(f)){ const q=t.pieces.get(f); if(q&&q.fr>1e-6){ fs.push(f); pc.set(f,q.bb.map(smQ)); } }
+      else if(t.S[f]) fs.push(f); }
+    return {faces:fs, pc:pc}; }
+  function smCompute(r){ const g=smRegion(pos,area,r.faces,r.level,r.pc); r.X=g.X; r.T=g.T; r.area=g.area; r.level=g.level; }
+  function smSnap(at){ const t=smT(at), S=[], X=[];
+    for(let f=0;f<N;f++){ if(t.S[f]) S.push(f); if(t.X[f]) X.push(f); }
+    return {S:S, X:X, ops:t.ops.slice(),
+            regs:SMR.filter(r=>r.at===at).map(r=>({id:r.id,level:r.level,faces:r.faces.slice(),pc:r.pc||null}))}; }
+  // the layer back to a snapshot — its marking (the line asked again unless it already is) and
+  // its regions
+  function smSetLayer(at,snap,fresh){ const t=smT(at);
+    if(!fresh){ t.S.fill(0); for(const f of snap.S) t.S[f]=1; t.X.fill(0); for(const f of snap.X) t.X[f]=1;
+      t.ops=snap.ops.slice(); amMarkFull(t); }
     for(let i=SMR.length-1;i>=0;i--) if(SMR[i].at===at) SMR.splice(i,1);
-    for(const q of list){ const r={id:q.id,at:at,level:q.level,faces:q.faces.slice()}; smCompute(r); SMR.push(r); }
+    for(const q of snap.regs){ const r={id:q.id,at:at,level:q.level,faces:q.faces.slice(),pc:q.pc||null}; smCompute(r); SMR.push(r); }
     if(smSel) smSel=SMR.find(r=>r.id===smSel.id)||null;
-    smSyncWheel(); smRebuild(); updateArea(); markUnexported(true);
+    smSyncWheel(); smRebuild(); updateArea(); markDirty();
   }
   function smWheelLevel(){ const e=document.getElementById('smLevel'); return e?Math.max(0,Math.min(SM_MAXLEVEL,Math.round(+e.value||0))):3; }
   function smSyncWheel(){ const e=document.getElementById('smLevel'), v=document.getElementById('smLevelV');
     if(!e) return; if(smSel) e.value=smSel.level; if(v) v.textContent=e.value; }
-  function smCommitLayer(at,before,after){
-    const key=L=>JSON.stringify(L.map(q=>[q.id,q.level,q.faces]));
-    if(key(before)===key(after)) return false;
+  const smKey=L=>JSON.stringify(L.map(q=>[q.id,q.level,q.faces,q.pc?[...q.pc]:0]));
+  function smCommitLayer(at,before,after,fresh){
+    if(smKey(before.regs)===smKey(after.regs)) return false;
     undoStack.push([['SMR',{at:at,before:before,after:after}]]); redoStack.length=0; updateHB();
-    smSetLayer(at,after); return true;
+    smSetLayer(at,after,fresh); return true;
   }
-  // a stroke marked (or erased) these sub-faces of the layer: the regions are its connected
-  // pieces again — a piece keeps the id and level of the region most of it came from, a piece
-  // that is all new takes the wheel's level
-  function smApply(at,faces,add){
-    const before=smSnap(at); let after=[];
-    if(add){
-      const all=new Set(faces), owner=new Map();
-      for(const q of before) for(const f of q.faces){ all.add(f); owner.set(f,q); }
-      const used=new Set();
-      for(const piece of smPieces(pos,all)){
-        const cnt=new Map(); for(const f of piece){ const q=owner.get(f); if(q) cnt.set(q,(cnt.get(q)||0)+1); }
-        let best=null, bn=0; for(const [q,n] of cnt) if(n>bn&&!used.has(q)){ best=q; bn=n; }
-        if(best){ used.add(best); after.push({id:best.id,level:best.level,faces:piece}); }
-        else after.push({id:'s'+(++smSeq),level:smWheelLevel(),faces:piece});
-      }
-    } else {
-      const gone=new Set(faces);
-      for(const q of before){ const left=q.faces.filter(f=>!gone.has(f)); if(!left.length) continue;
-        const ps=smPieces(pos,left).sort((a,b)=>b.length-a.length);
-        ps.forEach((p,k)=>after.push({id:k?('s'+(++smSeq)):q.id,level:q.level,faces:p})); }
-    }
-    if(!smCommitLayer(at,before,after)) return;
-    const f0=faces[faces.length-1];
-    smSel=SMR.find(r=>r.at===at&&r.faces.includes(f0))||SMR.filter(r=>r.at===at).slice(-1)[0]||null;
-    smSyncWheel(); smRebuild();
+  // the regions of what the layer marks now: its connected pieces, in the order the regions had —
+  // a piece keeps the id and level of the region most of it came from (the largest piece of a
+  // region that was cut through keeps it), a piece that is all new takes the wheel's level
+  function smDerive(at,before){
+    const M=smMarked(smT(at)), owner=new Map();
+    for(const q of before.regs) for(const f of q.faces) owner.set(f,q);
+    const used=new Map(), fresh=[];
+    for(const piece of smPieces(pos,M.faces,M.pc).sort((a,b)=>b.length-a.length)){
+      const cnt=new Map(); for(const f of piece){ const q=owner.get(f); if(q) cnt.set(q,(cnt.get(q)||0)+1); }
+      let best=null, bn=0; for(const [q,n] of cnt) if(n>bn&&!used.has(q)){ best=q; bn=n; }
+      const pc=new Map(); for(const f of piece) if(M.pc.has(f)) pc.set(f,M.pc.get(f));
+      const r={id:best?best.id:null, level:best?best.level:smWheelLevel(), faces:piece, pc:pc.size?pc:null};
+      if(best) used.set(best,r); else fresh.push(r); }
+    const regs=[]; for(const q of before.regs) if(used.has(q)) regs.push(used.get(q));
+    for(const r of fresh){ r.id='s'+(++smSeq); regs.push(r); }
+    return regs;
   }
-  function smRemoveRegion(r){ const before=smSnap(r.at);
-    smCommitLayer(r.at,before,before.filter(q=>q.id!==r.id)); if(smSel===r) smSel=null; smRebuild(); }
-  // the brush: the sub-faces under it, the same ball (or flat cut) every face brush uses
+  function smRemoveRegion(r){ const at=r.at, before=smSnap(at), t=smT(at);
+    for(const f of r.faces){ if(r.pc&&r.pc.has(f)) t.X[f]=1; else t.S[f]=0; }
+    const after=smSnap(at); after.regs=before.regs.filter(q=>q.id!==r.id);
+    if(!smCommitLayer(at,before,after,true)){ smSetLayer(at,before); return; }
+    if(smSel===r) smSel=null; smRebuild(); }
+  // the brush: the sub-faces under it, the same ball (or flat cut) every face brush uses, and
+  // the stroke's balls, whose line cuts the sub-faces it crosses
+  function smBegin(){ const T=types[activeT]; if(!T) return null;
+    const t=smT(T.id); smBefore=smSnap(T.id);
+    smOp={t:'balls', c:[], r:brushR, s:(mode==='rem')?-1:1}; t.ops.push(smOp); amSeen.set(smOp,0);
+    smLiveT=t; return t; }
   function smPaintAt(e){
     if(!smStroke) return;
-    const hit=castAt(e); if(!hit.length) return;
-    const p=hit[0].point, r2=brushR*brushR, seen=amSeenUnder(e,p);
-    const i0=Math.floor((p.x-brushR)/CELL), i1=Math.floor((p.x+brushR)/CELL);
-    const j0=Math.floor((p.y-brushR)/CELL), j1=Math.floor((p.y+brushR)/CELL);
-    const k0=Math.floor((p.z-brushR)/CELL), k1=Math.floor((p.z+brushR)/CELL);
+    const t=smLiveT||smBegin(); if(!t) return;
+    const rc=el.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2(((e.clientX-rc.left)/rc.width)*2-1,-((e.clientY-rc.top)/rc.height)*2+1),camera);
+    const hit=ray.intersectObject(mesh,false); if(!hit.length) return;
+    const p=hit[0].point, r2=brushR*brushR, seen=amSeenUnder(e,p), add=(mode!=='rem');
+    { const c=smOp.c, n=c.length; if(!n||Math.hypot(p.x-c[n-3],p.y-c[n-2],p.z-c[n-1])>0.2*smOp.r) c.push(p.x,p.y,p.z); }
+    const R=brushR+ccReach(), R2=R*R;
+    const i0=Math.floor((p.x-R)/CELL), i1=Math.floor((p.x+R)/CELL);
+    const j0=Math.floor((p.y-R)/CELL), j1=Math.floor((p.y+R)/CELL);
+    const k0=Math.floor((p.z-R)/CELL), k1=Math.floor((p.z+R)/CELL);
     let ch=false;
     for(let ix=i0;ix<=i1;ix++)for(let iy=j0;iy<=j1;iy++)for(let iz=k0;iz<=k1;iz++){
       const a=grid.get(ckey(ix,iy,iz)); if(!a)continue;
-      for(let n=0;n<a.length;n++){ const f=a[n], dx=cen[f*3]-p.x, dy=cen[f*3+1]-p.y, dz=cen[f*3+2]-p.z;
-        if(dx*dx+dy*dy+dz*dz<=r2 && (!seen||seen.has(f)) && !smStroke.has(f)){
-          smStroke.add(f); smLive[f]=1; recolorFace(f); ch=true; } } }
+      for(let n=0;n<a.length;n++){ const f=a[n], dx=cen[f*3]-p.x, dy=cen[f*3+1]-p.y, dz=cen[f*3+2]-p.z, d2=dx*dx+dy*dy+dz*dz;
+        if(d2>R2) continue;
+        if(add) t.X[f]=0;                                  // painted again: no longer held out
+        if(d2<=r2 && (!seen||seen.has(f)) && !smStroke.has(f)){
+          t.S[f]=add?1:0; smStroke.add(f); smLive[f]=1; recolorFace(f); ch=true; } } }
+    const now=performance.now();
+    if(now>=smMarkAt){ amMarkNear(t); amMarkDraw(); smMarkAt=performance.now()+16; ch=true; }
     if(ch){ colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true; invalidate(); }
   }
   function smStrokeEnd(){
-    const s=smStroke; smStroke=null; if(!s) return;
+    const s=smStroke, t=smLiveT, op=smOp, before=smBefore; smStroke=null; smOp=null; smBefore=null;
+    if(!s) return;
+    if(t) amMarkNear(t);
+    smLiveT=null;
     for(const f of s){ smLive[f]=0; recolorFace(f); }
-    colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true;
-    const T=types[activeT];
-    if(s.size&&T) smApply(T.id,[...s].sort((a,b)=>a-b),mode!=='rem');
-    invalidate();
+    colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true; amMarkDraw();
+    if(!t||!before){ invalidate(); return; }
+    if(!op.c.length){ const k=t.ops.lastIndexOf(op); if(k>=0) t.ops.splice(k,1); }
+    const after=smSnap(t.at); after.regs=smDerive(t.at,before);
+    // 319's rule: a stroke that changed no region is not a step — and leaves no trace
+    if(!smCommitLayer(t.at,before,after,true)){ smSetLayer(t.at,before); invalidate(); return; }
+    let f0=-1; for(const f of s) f0=f;
+    smSel=SMR.find(r=>r.at===t.at&&r.faces.includes(f0))||SMR.filter(r=>r.at===t.at).slice(-1)[0]||null;
+    smSyncWheel(); smRebuild(); invalidate();
   }
   // each region's copy: the layer's colour, its opacity and design, over the model, and its tag
   function smRebuild(){
@@ -1981,8 +2049,8 @@ mat.onBeforeCompile=sh=>{
         smWheelT=setTimeout(()=>{ if(!smSel) return; smSel.level=smWheelLevel(); smCompute(smSel); smRebuild(); updateArea(); },60); };
       e.onchange=()=>{ clearTimeout(smWheelT); const w=smWheelFrom; smWheelFrom=null;
         if(!smSel||!w) return;
-        const after=w.before.map(q=>q.id===smSel.id?{id:q.id,level:smWheelLevel(),faces:q.faces}:q);
-        smCommitLayer(w.at,w.before,after); smSyncWheel(); };
+        const after=Object.assign({},w.before,{regs:w.before.regs.map(q=>q.id===smSel.id?Object.assign({},q,{level:smWheelLevel()}):q)});
+        smCommitLayer(w.at,w.before,after,true); smSyncWheel(); };
     } }
   /* 336 (Eli, 29/09): ONE running number per layer, whatever the method — "the numbering of
      the measurements in one layer has to be continuous, also when they are by different
@@ -3109,12 +3177,18 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         t:T.id,n:g.n,len:Math.round(g.len*1000)/1000,
         c:[Math.round(g.c.x*1000)/1000,Math.round(g.c.y*1000)/1000,
            Math.round(g.c.z*1000)/1000]})))),
-      minReader:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1)))),   // 329 · 332
+      minReader:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1))))),   // 329 · 332 · 335: a smooth line needs reader 6
       tagTypes:tagTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid})),
       tags:tags.map(g=>({id:g.id,t:g.t,p:g.p.slice(),nrm:g.nrm?g.nrm.slice():null,
                          title:g.title,text:g.text,img:g.img||null})),
-      smooths:SMR.map(r=>({id:r.id,at:r.at,level:r.level,faces:r.faces.slice(),
-        area:Math.round(r.area*10000)/10000})),
+      smooths:SMR.map(r=>Object.assign({id:r.id,at:r.at,level:r.level,faces:r.faces.slice(),
+        area:Math.round(r.area*10000)/10000},
+        // 335: a sub-face on the line, by its cut part — the report builds the copy from these
+        r.pc?{pieces:[...r.pc].map(([f,b])=>[f].concat(b))}:{})),
+      // 335: each layer's smooth marking — the whole sub-faces, the held-out ones, the strokes' balls
+      smoothOps:[...smTs.values()].filter(t=>types.some(q=>q.id===t.at)&&(t.ops.length||SMR.some(r=>r.at===t.at)))
+        .map(t=>{ const S=[], X=[]; for(let f=0;f<N;f++){ if(t.S[f]) S.push(f); if(t.X[f]) X.push(f); }
+          return {at:t.at, S:S, X:X, ops:amOpsOut(t)}; }),
       saved:new Date().toISOString(),
       jobId:AM.jobId,exportedBy:'A-morphometry iPad'};
     // 324: every layer with the parts of the sub-faces on its line — the report counts them
@@ -3552,7 +3626,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
-  const AM_SHEET_READER = 5;   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332)
+  const AM_SHEET_READER = 6;   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335)
   const AM_SUB_SCHEME = 1;      // core.subdiv_weights, face-major child order
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -3672,7 +3746,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
                 manual:sh.manual,faceThr:sh.faceThr,hasProb:sh.hasProb,prob:sh.prob});
     }
     rulTypes.length=0; activeR=-1; rulPts.length=0; rulSegs.length=0; rulLast=null;
-    polys.length=0; curPoly=null; pSeq=0; SMR.length=0; smSel=null; polyRebuild();
+    polys.length=0; curPoly=null; pSeq=0; SMR.length=0; smSel=null; smTs.clear(); polyRebuild();
     rulRebuild();
     for(const src of (sh.rulTypes||[])){const T=mkRulType(src.name||'',src.color||'#b8934a');
       if(src.id)T.id=src.id; if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true); T.repHid=(src.repHid===true);
@@ -3682,14 +3756,27 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       rulPts.push({id:src.id,t:src.t,x:q[0],y:q[1],z:q[2]});
       if(src.id>rpSeq) rpSeq=src.id;}
     for(const src of (sh.rulerSegs||[])) rulSegs.push({t:src.t,a:src.a,b:src.b});
-    // 329: the smoothed regions, through the same map the marks take, recomputed
+    // 335: each layer's smooth marking — its whole and held-out sub-faces through the same map,
+    // its strokes' balls as they are, and the line asked again; then the regions the sheet names,
+    // found again in that marking (a sheet from before 335 marks whole sub-faces only)
+    smTs.clear();
+    const smHas=new Set();
+    for(const src of (sh.smoothOps||[])){ if(!src||!src.at) continue; const t=smT(src.at); smHas.add(src.at);
+      for(const f of (src.S||[])) amEach(MAP,f,q=>{ t.S[q]=1; });
+      for(const f of (src.X||[])) amEach(MAP,f,q=>{ t.X[q]=1; });
+      t.ops=(src.ops||[]).filter(o=>o&&o.t==='balls'&&Array.isArray(o.c)&&o.c.length)
+        .map(o=>({t:'balls', r:+o.r||0.1, s:(o.s<0)?-1:1, c:o.c.map(Number)})); }
+    const smLoad=new Map();
     for(const src of (sh.smooths||[])){
       const fs=new Set(); for(const f of (src.faces||[])) amEach(MAP,f,t=>fs.add(t));
       if(!fs.size||!src.at) continue;
-      const r={id:String(src.id||('s'+(smSeq+1))),at:src.at,
+      const q={id:String(src.id||('s'+(smSeq+1))),
                level:Math.max(0,Math.min(SM_MAXLEVEL,Math.round(+src.level||0))),faces:[...fs].sort((a,b)=>a-b)};
-      const k=parseInt(r.id.slice(1),10); if(k>smSeq) smSeq=k; else if(!src.id) smSeq++;
-      smCompute(r); SMR.push(r); }
+      const k=parseInt(q.id.slice(1),10); if(k>smSeq) smSeq=k; else if(!src.id) smSeq++;
+      if(!smHas.has(src.at)){ const t=smT(src.at); for(const f of q.faces) t.S[f]=1; }
+      if(!smLoad.has(src.at)) smLoad.set(src.at,[]); smLoad.get(src.at).push(q); }
+    for(const [at,regs] of smLoad){ amMarkFull(smT(at));
+      for(const q of smDerive(at,{regs:regs})){ const r={id:q.id,at:at,level:q.level,faces:q.faces,pc:q.pc}; smCompute(r); SMR.push(r); } }
     smRebuild();
     for(const src of (sh.polygons||[])){
       const P={id:src.id||(++pSeq),at:src.at,pts:(src.pts||[]).map(q=>q.slice()),area:0};
