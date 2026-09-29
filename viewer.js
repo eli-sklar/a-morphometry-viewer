@@ -2053,7 +2053,7 @@ mat.onBeforeCompile=sh=>{
   }
   // the layer's colour, opacity and design on its copies, in place (the design wheel, 93)
   function smRecolor(){
-    for(const o of smGroup.children){ const at=o.userData&&o.userData.smAt; if(!at) continue;
+    for(const o of smGroup.children.concat(polyGroup.children)){ const at=o.userData&&o.userData.smAt; if(!at) continue;   // and the polygons' fills
       const T=types.find(t=>t.id===at); if(!T) continue;
       const A=o.geometry.attributes, c=T.color||[0.3,1,0.3], op=(typeof T.op==='number')?T.op:0.75, d=(typeof T.design==='number')?T.design:0.6;
       for(let k=0;k<A.aFlat.count;k++){ A.aCol.array[k*3]=c[0]; A.aCol.array[k*3+1]=c[1]; A.aCol.array[k*3+2]=c[2]; A.aFlat.array[k]=op; A.aDes.array[k]=d; }
@@ -2324,7 +2324,7 @@ mat.onBeforeCompile=sh=>{
       { const key=JSON.stringify(P.pts);
         if(P._fk!==key){ P._fill=pgFill(P.pts,pos,uv,N,pgTexAt); P._fk=key; }
         if(!P._fill.wall&&P._fill.surf.length) P._fill.wall=pgWallOf(P._fill.surf,pos,uv,pgTexAt);   // the texture came since
-        for(const m of pgMeshes(P._fill,T)) polyGroup.add(m); }
+        for(const m of pgMeshes(P._fill,T)){ m.userData.smAt=P.at; polyGroup.add(m); } }
       let cx=0,cy=0,cz=0; for(const q of P.pts){cx+=q[0];cy+=q[1];cz+=q[2];}
       // 265: the ring is numbered 1..n WITHIN ITS LAYER, in marking order — the ruler's
       // rule, and the order the report lists the layer's rings in. A ring still being
