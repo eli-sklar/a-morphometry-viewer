@@ -2778,7 +2778,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // the walk does not. Written against the camera, not the orbit's formula, so the same text
   // holds in every screen (a gate compares them); AM_YAW_SIGN is each screen's own, so the
   // wheel turns the gaze the same way everywhere.
-  const AM_YAW_STEP=5*Math.PI/180, AM_WALK_STEP=0.08;
+  // 362 (Eli, on 361 in the field: "צריך להקטין את הצעדים"): the turn halved, the walk a tenth
+  const AM_YAW_STEP=2.5*Math.PI/180, AM_WALK_STEP=0.008;
   function amYawInPlace(dAz){
     const c=camera.position.clone(); az+=dAz*AM_YAW_SIGN; amApply();
     target.add(c.sub(camera.position)); amApply(); amWheel=null;
@@ -3888,11 +3889,14 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // 361 (Eli: "א"): the iPad has no wheel, and five fingers belong to the system — so the
   // walk is two buttons. Held, each walks toward (or away from) the middle of the screen, a
   // quarter of the wheel's step every 50 ms; the zoom stays, and walls are passed through.
+  // 362: the held walk keeps its own pace (2% every 50 ms, as 361 had it) — the wheel's step
+  // shrank to a tenth, and a button held that slowly would barely move
+  const AM_HOLD_STEP=0.02;
   for(const [id,f] of [['walkF',1],['walkB',-1]]){ const b=$(id); if(!b) continue;
     let tm=0; const stop=()=>{ clearInterval(tm); tm=0; };
     b.addEventListener('pointerdown',e=>{ e.preventDefault(); stop();
       const r=el.getBoundingClientRect(), mid={clientX:r.left+r.width/2,clientY:r.top+r.height/2};
-      amWalk(mid,f*AM_WALK_STEP/4); tm=setInterval(()=>amWalk(mid,f*AM_WALK_STEP/4),50); });
+      amWalk(mid,f*AM_HOLD_STEP); tm=setInterval(()=>amWalk(mid,f*AM_HOLD_STEP),50); });
     for(const ev of ['pointerup','pointercancel','pointerleave']) b.addEventListener(ev,stop); }
 
   /* ---- sheet application (decision 42): one function, two callers — the sheet
