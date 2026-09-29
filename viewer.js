@@ -160,18 +160,36 @@ function amTagCard(o){
     const lab=t=>{const l=document.createElement('div'); l.textContent=t; l.style.cssText='font-size:13px;color:#b8934a'; return l;};
     let img=o.img||null, changed;
     const pic=document.createElement('img');
-    pic.style.cssText='max-width:100%;max-height:38vh;object-fit:contain;align-self:center;border:1px solid #6b5a33;border-radius:2px';
-    const showPic=()=>{ pic.style.display=img?'':'none'; if(img) pic.src=img; };
+    pic.style.cssText='max-width:100%;max-height:38vh;object-fit:contain;display:block;border:1px solid #6b5a33;border-radius:2px';
+    // 356 (Eli: "כפתור קטן בפינה של התמונה שפותח אותה על מסך מלא"): the photo on the whole
+    // screen, fitted to it; a click on it or Escape returns to the card, which stays open
+    const picBox=document.createElement('div'); picBox.style.cssText='position:relative;align-self:center;max-width:100%';
+    const full=document.createElement('button'); full.textContent='⛶'; full.title='התמונה במסך מלא';
+    full.style.cssText='position:absolute;top:6px;left:6px;width:30px;height:30px;padding:0;font-size:17px;line-height:28px;'
+      +'background:rgba(20,18,16,0.85);color:#f0e6d2;border:1px solid #6b5a33;border-radius:2px;cursor:pointer';
+    picBox.appendChild(pic); picBox.appendChild(full);
+    let big=null;
+    const bigClose=()=>{ if(big){ big.remove(); big=null; } };
+    full.onclick=e=>{ e.stopPropagation(); if(!img) return;
+      big=document.createElement('div');
+      big.style.cssText='position:fixed;inset:0;z-index:2147483001;background:rgba(0,0,0,.92);display:flex;'
+        +'align-items:center;justify-content:center;cursor:zoom-out';
+      const bi=document.createElement('img'); bi.src=img;
+      bi.style.cssText='max-width:100vw;max-height:100vh;object-fit:contain';
+      big.appendChild(bi); big.onclick=ev=>{ ev.stopPropagation(); bigClose(); };
+      document.body.appendChild(big); };
+    const showPic=()=>{ picBox.style.display=img?'':'none'; if(img) pic.src=img; };
     // Keys, the dialog window's rule: Escape closes wherever the focus is, and no key
     // reaches the screen underneath — also when the focus stayed on the model after the
     // click that opened the card (found in the run: Escape did nothing, and a Tab there
     // would have switched the tool under the open card). Typing into the card's own fields
     // still reaches them; it stops at the card on its way up.
     const key=e=>{
+      if((e.key||'')==='Escape'&&big){e.preventDefault();e.stopImmediatePropagation();bigClose();return;}   // 356
       if((e.key||'')==='Escape'){e.preventDefault();e.stopImmediatePropagation();done(null);return;}
       if(!wrap.contains(e.target)){e.preventDefault();e.stopImmediatePropagation();}
     };
-    const done=v=>{window.removeEventListener('keydown',key,true);wrap.remove();res(v);};
+    const done=v=>{window.removeEventListener('keydown',key,true);bigClose();wrap.remove();res(v);};
     window.addEventListener('keydown',key,true);
     wrap.addEventListener('keydown',e=>e.stopPropagation());
     wrap.onclick=e=>{if(e.target===wrap)done(null);};
@@ -184,7 +202,7 @@ function amTagCard(o){
       const h=document.createElement('div'); h.textContent=o.title||''; h.style.cssText='font-size:18px;font-weight:700;color:#f0e6d2';
       box.appendChild(h);
       if(o.text){const t=document.createElement('div'); t.textContent=o.text; t.style.cssText='line-height:1.6;white-space:pre-wrap'; box.appendChild(t);}
-      box.appendChild(pic); showPic();
+      box.appendChild(picBox); showPic();
       const close=btn('סגירה',true,()=>done(null)); row.appendChild(close); box.appendChild(row);
       wrap.appendChild(box); document.body.appendChild(wrap); setTimeout(()=>close.focus(),0); return;
     }
@@ -209,7 +227,7 @@ function amTagCard(o){
     box.appendChild(lab('כותרת')); box.appendChild(ti);
     box.appendChild(lab('טקסט')); box.appendChild(tx);
     imgRow.appendChild(add); imgRow.appendChild(del); box.appendChild(imgRow); box.appendChild(file);
-    box.appendChild(pic); box.appendChild(warn);
+    box.appendChild(picBox); box.appendChild(warn);
     row.appendChild(save); row.appendChild(btn('ביטול',false,()=>done(null))); box.appendChild(row);
     wrap.appendChild(box); document.body.appendChild(wrap); sync();
     setTimeout(()=>ti.focus(),0);
@@ -1524,7 +1542,7 @@ mat.onBeforeCompile=sh=>{
       // one tag per run, at its centroid: "3 : 4.67 מ'" — the number and the sum, which is
       // what the report prints too, so the model and the table cannot disagree
       for(const run of rulRuns(T.id)){
-        const sp=rulTag(run.n+' : '+run.len.toFixed(2)+' מ\u05f3', T.hex);
+        const sp=rulTag(T.lab?(run.n+' : '+run.len.toFixed(2)+' מ\u05f3'):String(run.n), T.hex);
         sp.userData.amTag={kind:'rul', t:T.id, ids:run.pts.map(x=>x.id)};   // 321: the run, by its tag
         sp.position.set(run.c.x,run.c.y,run.c.z);
         rulGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
@@ -2033,7 +2051,7 @@ mat.onBeforeCompile=sh=>{
       mm.renderOrder=997; smGroup.add(mm);
       let cx=0,cy=0,cz=0; const nv=r.X.length/3;
       for(let v=0;v<nv;v++){ cx+=r.X[v*3]; cy+=r.X[v*3+1]; cz+=r.X[v*3+2]; }
-      const sp=rulTag(amMeasText(r.at,'s',num[r.at]-1)+(r===smSel?' ◂':''),'#'+col.getHexString());
+      const sp=rulTag((amLab(types,r.at)?amMeasText(r.at,'s',num[r.at]-1):String(amMeasNo(r.at,'s',num[r.at]-1)))+(r===smSel?' ◂':''),'#'+col.getHexString());   // 355: the label, or the number alone
       sp.userData.amTag={kind:'smooth',reg:r};
       sp.position.set(cx/nv,cy/nv,cz/nv); smGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
     }
@@ -2126,7 +2144,8 @@ mat.onBeforeCompile=sh=>{
       // rule, and the order the report lists the layer's rings in. A ring still being
       // drawn takes the next number, so its identity does not change when it closes.
       const _pi=polys.filter(q=>q.at===P.at).indexOf(P);
-      const sp=rulTag(amMeasText(P.at,'p',(_pi>=0)?_pi:polys.filter(q=>q.at===P.at).length), '#'+col.getHexString());
+      const _pk=(_pi>=0)?_pi:polys.filter(q=>q.at===P.at).length;
+      const sp=rulTag(amLab(types,P.at)?amMeasText(P.at,'p',_pk):String(amMeasNo(P.at,'p',_pk)), '#'+col.getHexString());   // 355
       if(!open) sp.userData.amTag={kind:'poly', ring:P};     // 321: the eraser takes the ring by its tag
       sp.position.set(cx/n,cy/n,cz/n);
       polyGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
@@ -3209,6 +3228,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     o.cntTotals=cntTypes.map(T=>{let n2=0;for(const m of xmarks)if(m.t===T.id)n2++;
       return {id:T.id,name:T.name,color:T.hex,n:n2};});
     o.repairFaces=rep;o.areaM2=ar;o.unionM2=un;
+    amLabOut(o);                       // 355
     return o;
   }
   $('mExport').onclick=async()=>{
@@ -3418,6 +3438,30 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     e.onclick=ev=>{ev.stopPropagation();toggle();};
     return e;
   }
+  /* 355 (Eli, 29/09): a label switch on each layer — "N : value" on every measurement of it,
+     or the number alone, which is the default. Here it reaches what has a number in this
+     screen: a ring, a smoothed region, a ruler run (a painted patch, a tape and a volume are
+     numbered only in the report, which honours the same switch). A new field, `lab`; an
+     older reader drops it and loses nothing but the look. */
+  function amLabBtn(T,redraw){
+    const e=document.createElement('i'); e.className='lab'+(T.lab?'':' off'); e.textContent='1:';
+    e.title=T.lab?'תוויות מוצגות — מספר וערך · לחיצה משאירה את המספר בלבד'
+                 :'מוצג המספר בלבד · לחיצה מציגה תוויות — מספר וערך (חל גם על הדוח)';
+    e.onclick=ev=>{ev.stopPropagation(); T.lab=!T.lab; redraw(); buildChips(); markUnexported(true);};
+    return e;
+  }
+  const amLab=(list,id)=>{const T=list.find(x=>x.id===id);return !!(T&&T.lab);};
+  function amLabOut(o){
+    const put=(arr,list)=>{ if(Array.isArray(arr)) arr.forEach((x,i)=>{
+      const T=(x&&x.id!==undefined)?list.find(t=>t.id===x.id):list[i]; if(T&&T.lab) x.lab=true; }); };
+    put(o.types,types); put(o.typeAreas,types); put(o.rulTypes,rulTypes); put(o.lenTypes,lenTypes);
+  }
+  function amLabIn(j){
+    const get=(arr,list)=>{ if(Array.isArray(arr)) arr.forEach((x,i)=>{
+      const T=(x&&x.id!==undefined)?list.find(t=>t.id===x.id):list[i]; if(T) T.lab=(x.lab===true); }); };
+    get(j.types,types); get(j.rulTypes,rulTypes); get(j.lenTypes,lenTypes);
+  }
+
   const amHidOf=(list,id)=>{const T=list.find(x=>x.id===id);return !!(T&&T.hid);};
   function amShowLines(){for(const L of lines) if(L.obj) L.obj.visible=!amHidOf(lenTypes,L.t);}
   function amShowCnts(){for(const m of xmarks) if(m.obj) m.obj.visible=!amHidOf(cntTypes,m.t);}
@@ -3514,6 +3558,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       // 10: no measurement-mode menu on the layer — the side bar picks the tool
       if(T.hid) c.style.opacity='0.45';
       c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;recolorAll();polyRebuild();buildChips();markUnexported(true);}));
+      c.appendChild(amLabBtn(T,()=>{polyRebuild();smRebuild();}));   // 355
       c.appendChild(amDelX('area',i));
       c.onclick=()=>{activateT(i);if(mode==='nav')setMode('add');};
       A.appendChild(c);});
@@ -3563,6 +3608,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         const u=document.createElement('span');u.className='u';u.textContent='מ׳';c.appendChild(u);
         if(T.hid) c.style.opacity='0.45';
         c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;rulRebuild();buildChips();markUnexported(true);}));
+        c.appendChild(amLabBtn(T,()=>rulRebuild()));   // 355
         c.appendChild(amDelX('rul',i));
         c.onclick=()=>activateR(i);
         R.appendChild(c);});
@@ -3814,6 +3860,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(lenTypes.length)activeL=0;
     $('thr').value=Math.round(types[0].thr*1000);
     $('thrV').textContent=types[0].thr.toFixed(3);
+    amLabIn(sh); polyRebuild(); smRebuild(); rulRebuild();   // 355: each layer's label switch
     undoStack.length=0;redoStack.length=0;updateHB();  // loaded state is the new baseline
     amParkIdle(); syncKindUI();
     buildChips();
