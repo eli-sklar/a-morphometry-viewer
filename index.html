@@ -33,8 +33,10 @@
   #layerRow{flex-wrap:nowrap!important;overflow-x:auto;padding-bottom:2px}
   #layerRow .grp{flex:0 0 auto}
   #side .sep{height:4px}
-  /* the side bar now holds the brush too: anchored low, below the bar, scrolling if it must */
-  #side{top:auto!important;bottom:12px;transform:none!important;max-height:calc(100% - 190px);overflow-y:auto}
+  /* the side bar now holds the brush too: below the bar, scrolling if it must — and (334)
+     in the middle of the room between the bar (190 px) and the bottom (12 px), as on the
+     other screens */
+  #side{top:calc(50% + 89px)!important;bottom:auto;transform:translateY(-50%)!important;max-height:calc(100% - 202px);overflow-y:auto}
   #bar input[type=range]{width:90px}
   #bar .val{min-width:36px}
   #bar button{line-height:18px}
