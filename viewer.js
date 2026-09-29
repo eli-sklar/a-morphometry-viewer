@@ -2779,7 +2779,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // holds in every screen (a gate compares them); AM_YAW_SIGN is each screen's own, so the
   // wheel turns the gaze the same way everywhere.
   // 362 (Eli, on 361 in the field: "צריך להקטין את הצעדים"): the turn halved, the walk a tenth
-  const AM_YAW_STEP=2.5*Math.PI/180, AM_WALK_STEP=0.008;
+  const AM_YAW_STEP=2.5*Math.PI/180, AM_WALK_STEP=0.016;   // 366: the walk doubled (Eli: "לחזק פי שניים")
   function amYawInPlace(dAz){
     const c=camera.position.clone(); az+=dAz*AM_YAW_SIGN; amApply();
     target.add(c.sub(camera.position)); amApply(); amWheel=null;
