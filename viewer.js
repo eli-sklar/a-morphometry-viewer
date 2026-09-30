@@ -1144,7 +1144,23 @@ mat.onBeforeCompile=sh=>{
       for(let a=-ring;a<=ring;a++) for(let b=-ring;b<=ring;b++) for(let c=-ring;c<=ring;c++){
         const L=grid.get(ckey(ix+a,iy+b,iz+c)); if(!L) continue;
         const inner=Math.abs(a)<=span&&Math.abs(b)<=span&&Math.abs(c)<=span;
-        for(const f of L){ if(inner) region.add(f); else outer.add(f); } } }
+        for(const f of L){ if(inner) region.add(f); else if(T.band.has(f)) outer.add(f); } } }   // 386: of the ring, only what is on the line (the seeds)
+    // 386 (Eli, 30/09: "improve it, safely"): the cells take in a cube around each dab — for a 5 cm
+    // brush a 75 cm one. A sub-face whose centre is farther than the reach from every new dab has
+    // all of itself farther than the radius (no edge is longer than the reach's edge; the longer
+    // ones are taken below by their box), so no new dab can change it: it is not asked, and stays
+    // one the line may be reached from, as the ring beyond is.
+    { const DG=new Map(), rc=reach, R2=reach*reach;
+      for(let i=0;i<pts.length;i+=3){ const k=ckey(Math.floor(pts[i]/rc),Math.floor(pts[i+1]/rc),Math.floor(pts[i+2]/rc));
+        let L=DG.get(k); if(!L){ L=[]; DG.set(k,L); } L.push(i); }
+      const far=[];
+      for(const f of region){ const x=cen[f*3], y=cen[f*3+1], z=cen[f*3+2];
+        const ix=Math.floor(x/rc), iy=Math.floor(y/rc), iz=Math.floor(z/rc); let near=false;
+        for(let a=-1;a<=1&&!near;a++) for(let b=-1;b<=1&&!near;b++) for(let c=-1;c<=1&&!near;c++){
+          const L=DG.get(ckey(ix+a,iy+b,iz+c)); if(!L) continue;
+          for(const i of L){ const dx=pts[i]-x, dy=pts[i+1]-y, dz=pts[i+2]-z; if(dx*dx+dy*dy+dz*dz<=R2){ near=true; break; } } }
+        if(!near) far.push(f); }
+      for(const f of far){ region.delete(f); if(T.band.has(f)) outer.add(f); } }
     const pl=[Infinity,Infinity,Infinity], ph=[-Infinity,-Infinity,-Infinity];
     for(let i=0;i<pts.length;i+=3) for(let k=0;k<3;k++){ pl[k]=Math.min(pl[k],pts[i+k]); ph[k]=Math.max(ph[k],pts[i+k]); }
     for(const q of ccLongFaces()){
