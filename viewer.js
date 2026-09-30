@@ -128,6 +128,15 @@ function amTagSprite(title,hex,cam){
 }
 // A photo is shrunk where it is taken, before it goes anywhere: a phone's 5 MB becomes a
 // JPEG of 2048 pixels on its long side, a few hundred KB. The browser turns it upright.
+// 378: HEIC by its name, its type, or — when a copy on the way lost both — by its own first
+// bytes: an ISO box "ftyp" with one of the HEIF brands
+function amTagIsHeic(f){
+  if(/[.](heic|heif)$/i.test(f.name||'')||/hei[cf]/i.test(f.type||'')) return Promise.resolve(true);
+  if(!f.slice) return Promise.resolve(false);
+  return f.slice(0,12).arrayBuffer().then(b=>{ const s=String.fromCharCode.apply(null,new Uint8Array(b));
+    return s.slice(4,8)==='ftyp'&&/^(heic|heix|hevc|hevx|heim|heis|hevm|hevs|mif1|msf1)$/.test(s.slice(8,12)); })
+    .catch(()=>false);
+}
 function amTagShrink(file){
   return new Promise((res,rej)=>{
     const u=URL.createObjectURL(file), im=new Image();
@@ -142,10 +151,10 @@ function amTagShrink(file){
       // 376: an iPhone's HEIC, which the browser on the computer cannot read — the screen's
       // server turns it JPEG (by Windows' own decoder) and it is shrunk as any other photo.
       // The iPad's browser reads HEIC itself and never comes here.
-      if(/[.](heic|heif)$/i.test(file.name||'')||/hei[cf]/i.test(file.type||'')){
+      amTagIsHeic(file).then(h=>{
+        if(!h){ rej(new Error('הקובץ אינו תמונה שאפשר לקרוא.')); return; }
         if(typeof amHeicJpeg==='function'){ amHeicJpeg(file).then(j=>amTagShrink(j)).then(res,rej); return; }
-        rej(new Error('זו תמונת HEIC, והמסך הזה אינו קורא אותה. אפשר לשמור אותה כ-JPEG או PNG.')); return; }
-      rej(new Error('הקובץ אינו תמונה שאפשר לקרוא.')); };
+        rej(new Error('זו תמונת HEIC, והמסך הזה אינו קורא אותה. אפשר לשמור אותה כ-JPEG או PNG.')); }); };
     im.src=u;
   });
 }
