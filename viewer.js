@@ -138,7 +138,14 @@ function amTagShrink(file){
       const x=c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,c.width,c.height);
       x.drawImage(im,0,0,c.width,c.height); URL.revokeObjectURL(u);
       res(c.toDataURL('image/jpeg',AM_TAG_Q)); }catch(e){ URL.revokeObjectURL(u); rej(e); } };
-    im.onerror=()=>{ URL.revokeObjectURL(u); rej(new Error('הקובץ אינו תמונה שאפשר לקרוא.')); };
+    im.onerror=()=>{ URL.revokeObjectURL(u);
+      // 376: an iPhone's HEIC, which the browser on the computer cannot read — the screen's
+      // server turns it JPEG (by Windows' own decoder) and it is shrunk as any other photo.
+      // The iPad's browser reads HEIC itself and never comes here.
+      if(/[.](heic|heif)$/i.test(file.name||'')||/hei[cf]/i.test(file.type||'')){
+        if(typeof amHeicJpeg==='function'){ amHeicJpeg(file).then(j=>amTagShrink(j)).then(res,rej); return; }
+        rej(new Error('זו תמונת HEIC, והמסך הזה אינו קורא אותה. אפשר לשמור אותה כ-JPEG או PNG.')); return; }
+      rej(new Error('הקובץ אינו תמונה שאפשר לקרוא.')); };
     im.src=u;
   });
 }
@@ -210,7 +217,7 @@ function amTagCard(o){
     ti.style.cssText=S+'padding:7px 9px;font:15px system-ui,Arial,sans-serif';
     const tx=document.createElement('textarea'); tx.value=o.text||''; tx.rows=4;
     tx.style.cssText=S+'padding:7px 9px;font:14px system-ui,Arial,sans-serif;resize:vertical';
-    const file=document.createElement('input'); file.type='file'; file.accept='image/*'; file.style.display='none';
+    const file=document.createElement('input'); file.type='file'; file.accept='image/*,.heic,.heif'; file.style.display='none';
     const imgRow=document.createElement('div'); imgRow.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
     const add=btn('',false,()=>file.click()), del=btn('הסרת התמונה',false,()=>{img=null;changed=null;sync();});
     const warn=document.createElement('div'); warn.style.cssText='font-size:13px;color:#f87171;display:none';
