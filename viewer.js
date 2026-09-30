@@ -1316,7 +1316,7 @@ mat.onBeforeCompile=sh=>{
   function recolorFace(f){
     let r=null, a=0, d=0; _vis.length=0;
     // 329: the smoothed-surface brush, while it is down — the sub-faces it has taken
-    if(typeof smLive!=='undefined'&&smLive&&smLive[f]&&!(typeof smLiveT!=='undefined'&&smLiveT&&smLiveT.band.has(f))){
+    if(typeof smLive!=='undefined'&&smLive&&smLive[f]&&mode!=='rem'&&!(typeof smLiveT!=='undefined'&&smLiveT&&smLiveT.band.has(f))){   // 389: an erasure is drawn by its own red (smRed), not face by face
       const T=types[activeT], c=(mode==='rem')?[1,0.3,0.3]:((T&&T.color)||[0.3,1,0.3]), o0=f*9;
       for(let k=0;k<3;k++){colors[o0+k*3]=c[0];colors[o0+k*3+1]=c[1];colors[o0+k*3+2]=c[2];flats[f*3+k]=0.8;dess[f*3+k]=0;}
       return;
@@ -2142,7 +2142,42 @@ mat.onBeforeCompile=sh=>{
   function smBegin(){ const T=types[activeT]; if(!T) return null;
     const t=smT(T.id); smBefore=smSnap(T.id);
     smOp={t:'balls', c:[], r:brushR, s:(mode==='rem')?-1:1}; t.ops.push(smOp); amSeen.set(smOp,0);
+    if(mode==='rem'){ smEraseReg=new Map(); for(const q of smBefore.regs) for(const f of q.faces) smEraseReg.set(f,(q.pc&&q.pc.get(f))||null); }
     smLiveT=t; return t; }
+  /* 389 (Eli, 30/09: "the red has to show only where it overlaps a smoothed surface and not
+     outside its edge, and on the smooth line and not in whole faces"): while the eraser is down,
+     the red is where the stroke's balls meet the regions as they were when it began — a sub-face
+     of a region by the part of it inside the balls, a cut one (335) by the part of its own part;
+     nothing outside a region. Asked again only near the hand, drawn over the model, and gone when
+     the hand lifts. */
+  var smEraseReg=null, smRed=new Map(), smRedMesh=null;
+  function smRedAt(f,op){
+    const bb=smEraseReg.get(f), E={faces:null, ops:[{t:'balls',c:op.c,r:op.r,s:1}], inv:true, cur:f};
+    E._ix=ccIndex(E.ops);
+    let tris;
+    if(!bb) tris=ccCutFace(f,[0],[E]);
+    else { tris=[]; const P0=ccCorner(f,0), P1=ccCorner(f,1), P2=ccCorner(f,2);
+      for(let i=0;i+5<bb.length;i+=6){ const P=[], B=[];
+        for(let c=0;c<3;c++){ const b1=bb[i+c*2], b2=bb[i+c*2+1];
+          P.push([0,1,2].map(k=>P0[k]+b1*(P1[k]-P0[k])+b2*(P2[k]-P0[k]))); B.push([1-b1-b2,b1,b2]); }
+        E.cur=f; for(const t of ccClipTri(P,B,E)) tris.push(t); } }
+    const X=[]; for(const [p] of tris) for(let c=0;c<3;c++) X.push(p[c][0],p[c][1],p[c][2]);
+    return X;
+  }
+  function smRedDraw(){
+    if(!THREE.Mesh) return;
+    let n=0; for(const X of smRed.values()) n+=X.length;
+    if(smRedMesh&&(!n||smRedMesh.userData.cap<n)){ scene.remove(smRedMesh); smRedMesh.geometry.dispose(); smRedMesh.material.dispose(); smRedMesh=null; }
+    if(!n){ invalidate(); return; }
+    if(!smRedMesh){ let cap=9*1024; while(cap<n) cap*=2;
+      const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(cap),3));
+      smRedMesh=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:0xff4d4d,transparent:true,opacity:0.8,depthTest:false,side:THREE.DoubleSide}));
+      smRedMesh.userData.cap=cap; smRedMesh.frustumCulled=false; smRedMesh.renderOrder=998; scene.add(smRedMesh); }
+    const A=smRedMesh.geometry.attributes.position; let o=0;
+    for(const X of smRed.values()){ A.array.set(X,o); o+=X.length; }
+    A.clearUpdateRanges(); A.addUpdateRange(0,o); A.needsUpdate=true; smRedMesh.geometry.setDrawRange(0,o/3); invalidate();
+  }
+  function smRedClear(){ smRed.clear(); smEraseReg=null; smRedDraw(); }
   function smPaintAt(e){
     if(!smStroke) return;
     const t=smLiveT||smBegin(); if(!t) return;
@@ -2155,17 +2190,19 @@ mat.onBeforeCompile=sh=>{
     const i0=Math.floor((p.x-R)/CELL), i1=Math.floor((p.x+R)/CELL);
     const j0=Math.floor((p.y-R)/CELL), j1=Math.floor((p.y+R)/CELL);
     const k0=Math.floor((p.z-R)/CELL), k1=Math.floor((p.z+R)/CELL);
-    let ch=false;
+    let ch=false, red=false;
     for(let ix=i0;ix<=i1;ix++)for(let iy=j0;iy<=j1;iy++)for(let iz=k0;iz<=k1;iz++){
       const a=grid.get(ckey(ix,iy,iz)); if(!a)continue;
       for(let n=0;n<a.length;n++){ const f=a[n], dx=cen[f*3]-p.x, dy=cen[f*3+1]-p.y, dz=cen[f*3+2]-p.z, d2=dx*dx+dy*dy+dz*dz;
         if(d2>R2) continue;
+        if(!add&&smEraseReg&&smEraseReg.has(f)){ const X=smRedAt(f,smOp); if(X.length) smRed.set(f,X); else smRed.delete(f); red=true; }   // 389
         if(add) t.X[f]=0;                                  // painted again: no longer held out
         if(d2<=r2 && (!seen||seen.has(f)) && !smStroke.has(f)){
           t.S[f]=add?1:0; smStroke.add(f); smLive[f]=1; recolorFace(f); ch=true; } } }
     const now=performance.now();
     if(now>=smMarkAt){ amMarkNear(t); amMarkDraw(); smMarkAt=performance.now()+16; ch=true; }
     if(!add&&smLiveHide(t.at,p,brushR)) ch=true;   // 373 (א)
+    if(red) smRedDraw();
     if(ch){ colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true; invalidate(); }
   }
   // 373 (א): an erasure shows while the hand moves. The copy was rebuilt only when the hand lifted
@@ -2195,7 +2232,7 @@ mat.onBeforeCompile=sh=>{
     const s=smStroke, t=smLiveT, op=smOp, before=smBefore; smStroke=null; smOp=null; smBefore=null;
     if(!s) return;
     if(t) amMarkNear(t);
-    smLiveT=null;
+    smLiveT=null; smRedClear();
     for(const f of s){ smLive[f]=0; recolorFace(f); }
     colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true; amMarkDraw();
     if(!t||!before){ invalidate(); return; }
