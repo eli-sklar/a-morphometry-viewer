@@ -897,10 +897,6 @@ mat.onBeforeCompile=sh=>{
   function amAreaName(){ let n=0;
     for(const T of types){const m=/^שטח (\d+)$/.exec(T.name||''); if(m&&!T.park) n=Math.max(n,+m[1]);}
     return 'שטח '+(n+1);}
-  function reservedColor(hex){const [r,g,b]=hex2rgb(hex);const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
-    if(mx-mn<0.18)return false;
-    let h=0; if(mx===r)h=60*(((g-b)/(mx-mn))%6); else if(mx===g)h=60*((b-r)/(mx-mn)+2); else h=60*((r-g)/(mx-mn)+4);
-    if(h<0)h+=360; return (h>=18&&h<48);}         // only ORANGE is reserved
   const effThr=(ti,f)=>{const T=types[ti];const t=T.faceThr?T.faceThr[f]:NaN;return isNaN(t)?T.thr:t;};
   function isType(ti,f){const T=types[ti],m=T.manual[f]; if(m===1)return true; if(m===-1)return false;
     if(!T.hasProb||!T.prob)return false;
@@ -4175,7 +4171,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     types.forEach((T,i)=>{
       if(T.park) return;                  // 357: held for the first new layer, not shown
       const c=document.createElement('span');c.className='chip'+(activeKind==='area'&&i===activeT?' on':'');c.style.setProperty('--c',T.hex);
-      const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);
+      const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);amPalSw(sw,'area',T);
       const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם הסוג';
       inp.onchange=()=>{T.name=inp.value;markUnexported(true);};inp.onclick=e=>e.stopPropagation();
       c.appendChild(inp);
@@ -4191,7 +4187,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const C=$('chipsC');if(C){C.innerHTML='';
     cntTypes.forEach((T,i)=>{
       const c=document.createElement('span');c.className='chip'+(activeKind==='cnt'&&i===activeC?' on':'');c.style.setProperty('--c',T.hex);
-      const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);
+      const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);amPalSw(sw,'cnt',T);
       const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם המונה';
       inp.onchange=()=>{T.name=inp.value;markUnexported(true);};inp.onclick=e=>e.stopPropagation();
       c.appendChild(inp);
@@ -4205,7 +4201,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const L=$('chipsL');if(!L)return;L.innerHTML='';
     lenTypes.forEach((T,i)=>{
       const c=document.createElement('span');c.className='chip'+(activeKind==='len'&&i===activeL?' on':'');c.style.setProperty('--c',T.hex);
-      const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);
+      const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);amPalSw(sw,'len',T);
       const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם הקו';
       inp.onchange=()=>{T.name=inp.value;markUnexported(true);};inp.onclick=e=>e.stopPropagation();
       c.appendChild(inp);
@@ -4223,7 +4219,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         const c=document.createElement('span');
         c.className='chip'+(activeKind==='rul'&&i===activeR?' on':'');
         c.style.setProperty('--c',T.hex);
-        const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);
+        const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);amPalSw(sw,'rul',T);
         const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם הסרגל';
         inp.onchange=()=>{T.name=inp.value;markUnexported(true);};
         inp.onclick=e=>e.stopPropagation();
@@ -4245,7 +4241,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         const c=document.createElement('span');
         c.className='chip'+(activeKind==='tag'&&i===activeG?' on':'');
         c.style.setProperty('--c',T.hex);
-        const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);
+        const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);amPalSw(sw,'tag',T);
         const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם השכבה';
         inp.onchange=()=>{T.name=inp.value;markUnexported(true);};
         inp.onclick=e=>e.stopPropagation();
@@ -4259,34 +4255,184 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         G.appendChild(c);});
     }
     updateArea();}
-  $('addType').onclick=()=>$('typeColor').click();
+/*AM_PAL400_START*/
+// 400 (Eli, 01/10): one colour board wherever a colour is chosen. The six palettes Eli sent,
+// as a matrix: a row each (red, yellow, green, blue, violet, summer), dark on the right and
+// light on the left, every row the same width; a shade that nearly repeats one in a row above
+// (CIEDE2000 under 3) is kept only there, and two more came out by Eli's hand, and the summer row keeps its own yellow by his hand too. No names, no
+// codes, square corners. Under it a sample from the model, and the round wheel that opens the
+// browser's free picker — its well lies over the wheel itself, since a picker opens only from
+// the hand's own press (375). No colour is reserved: "זה לא נראה אותו דבר ולא מבלבל".
+// The same text in the three screens that choose colours; each gives it only `sample`.
+const amPal=(function(){
+  const ROWS=[['641220','6E1423','85182A','A11D33','A71E34','B21E35','BD1F36','C71F37','DA1E37','E01E37'],
+    ['FF7B00','FF8800','FF9500','FFAA00','FFB700','FFC300','FFD000','FFDD00','FFEA00'],
+    ['004B23','006400','007200','008000','38B000','70E000','9EF01A','CCFF33'],
+    ['0D47A1','1565C0','1976D2','2196F3','42A5F5','64B5F6','90CAF9','BBDEFB','E3F2FD'],
+    ['240046','3C096C','5A189A','7B2CBF','9D4EDD'],
+    ['6A4C93','1982C4','FF6D00','FF595E','8AC926','FFCA3A']];
+  const HEAD={add:'צבע לשכבה החדשה',recolor:'צבע השכבה',patch:'צבע הטלאי'};
+  const SAY={add:'לחיצה פותחת את השכבה בצבע הזה',recolor:'לחיצה צובעת את השכבה בצבע הזה',patch:'לחיצה צובעת את הטלאי בצבע הזה'};
+  const EYE='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 6l4.5 4.5-8.8 8.8H4.7v-4.5z"/><path d="M17.5 3.2a1.8 1.8 0 0 1 2.5 0l.8.8a1.8 1.8 0 0 1 0 2.5l-1.3 1.3-3.3-3.3z" fill="currentColor"/></svg>';
+  let box=null, opts=null, samp=null, hint=null;
+  const hx=(r,g,b)=>'#'+[r,g,b].map(v=>v.toString(16).padStart(2,'0')).join('');
+  function css(){
+    if(document.getElementById('amPalCss')) return;
+    const s=document.createElement('style'); s.id='amPalCss';
+    s.textContent='.amPal{position:fixed;z-index:9000;direction:rtl;background:#141210;border:1px solid #6b5a33;padding:10px 12px;color:#d8cdb8;font:13px system-ui,"Segoe UI",Arial,sans-serif;width:300px;box-sizing:border-box;box-shadow:0 6px 24px #000a}'
+      +'.amPal .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-weight:600}'
+      +'.amPal .x{cursor:pointer;color:#8a8272;padding:0 4px}'
+      +'.amPal .r{display:flex;gap:2px;height:22px;margin-bottom:2px}'
+      +'.amPal .r i{flex:1 1 0;cursor:pointer}'
+      +'.amPal .r i:hover{outline:2px solid #d8cdb8;outline-offset:-2px}'
+      +'.amPal .f{border-top:1px solid #3a3228;margin-top:8px;padding-top:9px;display:flex;align-items:center;justify-content:space-between}'
+      +'.amPal .w{position:relative;display:flex;align-items:center;gap:8px;cursor:pointer}'
+      +'.amPal .w b{width:26px;height:26px;border-radius:50%;background:conic-gradient(#ef4444,#eab308,#22c55e,#06b6d4,#3b82f6,#a855f7,#ef4444);border:2px solid #d8cdb8;box-sizing:border-box}'
+      +'.amPal .w input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;border:0;padding:0;margin:0}'
+      +'.amPal .s{display:flex;align-items:center;gap:6px;border:1px solid #6b5a33;border-radius:0;padding:4px 9px;background:#232019;cursor:pointer;color:#d8cdb8;font:inherit}'
+      +'.amPal .n{margin-top:8px;min-height:18px;font-weight:700}'
+      +'.amPalHint{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:9001;direction:rtl;background:#141210;border:1px solid #b8934a;color:#d8cdb8;padding:7px 14px;font:13px system-ui,"Segoe UI",Arial,sans-serif}';
+    document.head.appendChild(s);
+  }
+  function outside(e){ if(box&&!box.contains(e.target)) close(); }
+  function esc(e){ if(e.key==='Escape'&&(box||samp)){ e.stopPropagation(); e.preventDefault(); close(); endSample(); } }
+  function close(){
+    if(box){ box.remove(); box=null; }
+    document.removeEventListener('pointerdown',outside,true);
+    if(!samp) document.removeEventListener('keydown',esc,true);
+  }
+  function pick(hex){ const o=opts; close(); if(o&&o.onPick) o.onPick(String(hex).toLowerCase()); }
+  function place(a){
+    const r=a?a.getBoundingClientRect():{left:innerWidth/2,right:innerWidth/2,top:80,bottom:80};
+    const W=box.offsetWidth, H=box.offsetHeight;
+    let x=r.right-W, y=r.bottom+4;
+    if(y+H>innerHeight-6) y=Math.max(6,r.top-H-4);
+    x=Math.max(6,Math.min(x,innerWidth-W-6));
+    box.style.left=x+'px'; box.style.top=y+'px';
+  }
+  function open(anchor,o){
+    close(); endSample(); css(); opts=o||{};
+    const v=HEAD[opts.verb]?opts.verb:'add';
+    box=document.createElement('div'); box.className='amPal';
+    const h=document.createElement('div'); h.className='h'; h.textContent=HEAD[v];
+    const x=document.createElement('span'); x.className='x'; x.textContent='✕'; x.title='סגירה'; x.onclick=close;
+    h.appendChild(x); box.appendChild(h);
+    const n=document.createElement('div'); n.className='n';
+    for(const row of ROWS){
+      const r=document.createElement('div'); r.className='r';
+      for(const c of row){
+        const i=document.createElement('i'); i.style.background='#'+c; i.dataset.c='#'+c.toLowerCase();
+        i.onmouseenter=()=>{ n.textContent=SAY[v]; n.style.color='#'+c; };
+        i.onclick=()=>pick('#'+c);
+        r.appendChild(i);
+      }
+      box.appendChild(r);
+    }
+    const f=document.createElement('div'); f.className='f';
+    const w=document.createElement('label'); w.className='w'; w.title='בוחר צבעים חופשי';
+    w.appendChild(document.createElement('b')); w.appendChild(document.createTextNode('צבע חופשי'));
+    const inp=document.createElement('input'); inp.type='color';
+    inp.value=/^#[0-9a-f]{6}$/i.test(opts.current||'')?opts.current:'#3b82f6';
+    inp.onchange=()=>pick(inp.value);
+    w.appendChild(inp); f.appendChild(w);
+    if(opts.sample){
+      const s=document.createElement('button'); s.type='button'; s.className='s';
+      s.innerHTML=EYE+'דגימה מהמודל'; s.title='לחיצה על נקודה במודל לוקחת את הגוון שלה';
+      s.onclick=startSample; f.appendChild(s);
+    }
+    box.appendChild(f); box.appendChild(n);
+    document.body.appendChild(box); place(anchor);
+    setTimeout(()=>{ if(box) document.addEventListener('pointerdown',outside,true); },0);
+    document.addEventListener('keydown',esc,true);
+  }
+  function startSample(){
+    const o=opts; close(); samp=o;
+    hint=document.createElement('div'); hint.className='amPalHint';
+    hint.textContent='לחיצה על נקודה במודל לוקחת את הגוון שלה · Esc לביטול';
+    document.body.appendChild(hint);
+    o.sample.el.style.cursor='crosshair';
+    o.sample.el.addEventListener('pointerdown',grab,true);
+    document.addEventListener('keydown',esc,true);
+  }
+  function grab(e){
+    if(!samp) return;
+    if(e.pointerType==='touch'&&samp.sample.penOnly) return;      // a finger still turns the view
+    e.stopImmediatePropagation(); e.preventDefault();
+    const hex=samp.sample.at(e);
+    if(!hex){ if(hint) hint.textContent='הלחיצה לא נחתה על המודל. אפשר ללחוץ שוב, או Esc לביטול.'; return; }
+    const o=samp; endSample(); if(o.onPick) o.onPick(hex.toLowerCase());
+  }
+  function endSample(){
+    if(!samp) return;
+    samp.sample.el.style.cursor=''; samp.sample.el.removeEventListener('pointerdown',grab,true);
+    if(hint){ hint.remove(); hint=null; }
+    samp=null; if(!box) document.removeEventListener('keydown',esc,true);
+  }
+  // the colour of the SURFACE at a point: the texture itself, not the shaded pixel on screen
+  const _cv=new WeakMap();
+  function texHex(img,u,v,flipY){
+    if(!img||!img.width) return null;
+    let c=_cv.get(img);
+    if(!c){ c=document.createElement('canvas'); c.width=img.width; c.height=img.height; c.getContext('2d').drawImage(img,0,0); _cv.set(img,c); }
+    u=((u%1)+1)%1; v=((v%1)+1)%1;
+    const x=Math.min(c.width-1,Math.floor(u*c.width)), y=Math.min(c.height-1,Math.floor((flipY?1-v:v)*c.height));
+    const d=c.getContext('2d').getImageData(x,y,1,1).data;
+    return hx(d[0],d[1],d[2]);
+  }
+  // without a texture: the pixel under the press, read in the frame that was just drawn
+  function glHex(renderer,scene,camera,e){
+    renderer.render(scene,camera);
+    const r=renderer.domElement.getBoundingClientRect(), gl=renderer.getContext(), px=new Uint8Array(4);
+    const x=Math.floor((e.clientX-r.left)/r.width*gl.drawingBufferWidth);
+    const y=Math.floor((1-(e.clientY-r.top)/r.height)*gl.drawingBufferHeight);
+    gl.readPixels(x,y,1,1,gl.RGBA,gl.UNSIGNED_BYTE,px);
+    return hx(px[0],px[1],px[2]);
+  }
+  return {open,close,texHex,glHex,ROWS,isOpen:()=>!!box,isSampling:()=>!!samp};
+})();
+/*AM_PAL400_END*/
+  // 400: the iPad's part of the board — where a sample is taken (a pencil or a finger tap), and what a new colour does
+  function amPalSampleAt(e){ const r=el.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1),camera);
+    const h=ray.intersectObject(mesh,false)[0]; if(!h) return null;
+    return (h.uv&&tex&&tex.image&&tex.image.width)?amPal.texHex(tex.image,h.uv.x,h.uv.y,tex.flipY):amPal.glHex(renderer,scene,camera,e); }
+  function amPalOpen(anchor,verb,current,onPick){ amPal.open(anchor,{verb:verb,current:current,onPick:onPick,sample:{el:el,at:amPalSampleAt}}); }
+  function amRecolor(kind,T,hex){ T.hex=hex;
+    if(kind==='area'){ T.color=hex2rgb(hex); recolorAll(); polyRebuild(); smRebuild(); }
+    else if(kind==='cnt') resizeCnt(T);
+    else if(kind==='len'){ for(const L of lines) if(L.t===T.id&&L.obj){ scene.remove(L.obj); L.obj=lineObj(L); L.obj.visible=!T.hid; scene.add(L.obj); } }
+    else if(kind==='rul') rulRebuild();
+    else if(kind==='tag') tagRebuild();
+    buildChips(); markUnexported(true); }
+  // every layer's dot is its colour control (400: "תעשה שאפשר לשנות לכולם")
+  function amPalSw(sw,kind,T){ sw.title='שינוי צבע השכבה'; sw.style.cursor='pointer';
+    sw.onclick=ev=>{ ev.stopPropagation(); amPalOpen(sw,'recolor',T.hex,hex=>amRecolor(kind,T,hex)); }; }
   $('typeColor').onchange=e=>{const hex=e.target.value;
-    if(reservedColor(hex)){amTell('אדום שמור למברשת המחיקה, וכתום לאזור הכללי.\nנא לבחור צבע אחר.');return;}
     const name=amAreaName(), k=types.findIndex(T=>T.park);
     if(k>=0){const T=types[k]; T.park=false; T.name=name; T.hex=hex; T.color=hex2rgb(hex); recolorAll(); activateT(k);}
     else {mkType(name,hex);activateT(types.length-1);}
     setMode('add');markUnexported(true);
     const inp=document.querySelector('#chipsA .chip.on input');if(inp)inp.focus();};
-  $('addCnt').onclick=()=>$('cntColor').click();
   $('cntColor').onchange=e=>{const hex=e.target.value;
-    if(reservedColor(hex)){amTell('כתום שמור לאזור הכללי.\nנא לבחור צבע אחר.');return;}
     mkCntType('',hex);activateC(cntTypes.length-1);markUnexported(true);
     const inp=document.querySelector('#chipsC .chip.on input');if(inp)inp.focus();};
-  $('addTag').onclick=()=>$('tagColor').click();
   $('tagColor').onchange=e=>{const hex=e.target.value;
     mkTagType('',hex);activateG(tagTypes.length-1);markUnexported(true);
     const inp=document.querySelector('#chipsG .chip.on input');if(inp)inp.focus();};
-  $('addRul').onclick=()=>$('rulColor').click();
   $('rulColor').onchange=e=>{const hex=e.target.value;
-    if(reservedColor(hex)){amTell("אדום שמור למברשת המחיקה, וכתום לאזור הכללי. נא לבחור צבע אחר.");return;}
     mkRulType('',hex);activateR(rulTypes.length-1);markUnexported(true);
     const inp=document.querySelector('#chipsR .chip.on input');if(inp)inp.focus();};
-  $('addLen').onclick=()=>$('lenColor').click();
   $('lenColor').onchange=e=>{const hex=e.target.value;
-    if(reservedColor(hex)){amTell('אדום שמור למברשת המחיקה, וכתום לאזור הכללי.\nנא לבחור צבע אחר.');return;}
     mkLenType('',hex);activateL(lenTypes.length-1);markUnexported(true);
     const inp=document.querySelector('#chipsL .chip.on input');if(inp)inp.focus();};
 
+  // the add buttons open the board (400); its wheel holds the browser's picker
+  function amPalAdd(B,id){ const I=$(id); amPalOpen(B,'add',I.value,hex=>{ I.value=hex; I.onchange({target:I}); }); }
+  $('addType').onclick=e=>amPalAdd(e.currentTarget,'typeColor');
+  $('addCnt').onclick=e=>amPalAdd(e.currentTarget,'cntColor');
+  $('addLen').onclick=e=>amPalAdd(e.currentTarget,'lenColor');
+  $('addRul').onclick=e=>amPalAdd(e.currentTarget,'rulColor');
+  $('addTag').onclick=e=>amPalAdd(e.currentTarget,'tagColor');
   fit(); amParkIdle(); buildChips(); syncKindUI(); recolorAll(); updateHB();
   if($('fit')) $('fit').onclick=()=>fit();      // 361: מרכוז, as in the report screen
   // 361 (Eli: "א"): the iPad has no wheel, and five fingers belong to the system — so the
