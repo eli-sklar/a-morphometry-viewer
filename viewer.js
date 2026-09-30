@@ -598,7 +598,8 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     const D=amSynthDecor(P, nf);
     o.geometry.setAttribute('aPN',new THREE.BufferAttribute(D.pn,3));
     o.geometry.setAttribute('aBand',new THREE.BufferAttribute(D.band,1));
-    o.material.onBeforeCompile=sh=>{
+    const shM=o.material;
+    shM.onBeforeCompile=sh=>{
       sh.vertexShader=sh.vertexShader
         .replace('#include <common>','#include <common>\nattribute vec3 aPN;attribute float aBand;varying vec3 vAPN;varying float vABand;varying vec3 vAPos;')
         .replace('#include <begin_vertex>','#include <begin_vertex>\nvAPN=aPN;vABand=aBand;vAPos=transformed;');
@@ -662,7 +663,23 @@ vec3 amPatchShade(vec3 wall, float isPatch, vec3 p){
   float d=abs(dot(c/l,vec3(0.426790,0.853580,0.298753)));
   return wall*(0.5234+0.4766*d);
 }
-`;
+
+  // 374: the built surface's own shade — a SMOOTH normal (from amSynthDecor) at the training's
+  // measured contrast, and the contours of 246/247 (2 cm from each surface's mean plane)
+  vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
+    if(isPatch<0.5) return wall;
+    vec3 n=(dot(pn,pn)>0.25)?pn:cross(dFdx(p),dFdy(p));
+    float l=length(n);
+    if(l<1e-12) return wall;
+    n/=l;
+    float d=abs(dot(n,vec3(0.426790,0.853580,0.298753)));
+    vec3 c=wall*(0.5234+0.4766*d);
+    float u=band/0.02; float w=fwidth(u); float fade=1.0-smoothstep(0.30,0.75,w);
+    if(fade>0.0){ float tri=abs(fract(u)-0.5)*2.0; float lw=clamp(w*2.2,0.06,0.45);
+      float ln=1.0-smoothstep(0.0,lw,tri); c*=1.0-0.28*ln*fade; }
+    return c;
+  }
+  `;
 
   // Regular dodecahedron, from the marker the user designed (13/08). 20 vertices all at
   // radius exactly 1, 12 pentagons as 36 triangles, un-indexed so each facet corner
@@ -831,7 +848,7 @@ mat.onBeforeCompile=sh=>{
       .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;attribute float aDes;attribute float aPatch;attribute vec3 aPN;attribute float aBand;varying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;varying vec3 vAPN;varying float vABand;')
       .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vADes=aDes;vAPatch=aPatch;vAPos=transformed;vAPN=aPN;vABand=aBand;');
     sh.fragmentShader=sh.fragmentShader
-      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;varying vec3 vAPN;varying float vABand;uniform float amDesign;'+AM_SHADER_FN+AM_SYNTH_GLSL)
+      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;varying vec3 vAPN;varying float vABand;uniform float amDesign;'+AM_SHADER_FN)
       .replace('#include <opaque_fragment>','outgoingLight=amStipple(amSynthShade(outgoingLight,vAPatch,vAPos,vAPN,vABand),vACol,vAFlat,vADes);\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
