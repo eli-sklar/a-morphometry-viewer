@@ -664,22 +664,22 @@ vec3 amPatchShade(vec3 wall, float isPatch, vec3 p){
   return wall*(0.5234+0.4766*d);
 }
 
-  // 374: the built surface's own shade — a SMOOTH normal (from amSynthDecor) at the training's
-  // measured contrast, and the contours of 246/247 (2 cm from each surface's mean plane)
-  vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
-    if(isPatch<0.5) return wall;
-    vec3 n=(dot(pn,pn)>0.25)?pn:cross(dFdx(p),dFdy(p));
-    float l=length(n);
-    if(l<1e-12) return wall;
-    n/=l;
-    float d=abs(dot(n,vec3(0.426790,0.853580,0.298753)));
-    vec3 c=wall*(0.5234+0.4766*d);
-    float u=band/0.02; float w=fwidth(u); float fade=1.0-smoothstep(0.30,0.75,w);
-    if(fade>0.0){ float tri=abs(fract(u)-0.5)*2.0; float lw=clamp(w*2.2,0.06,0.45);
-      float ln=1.0-smoothstep(0.0,lw,tri); c*=1.0-0.28*ln*fade; }
-    return c;
-  }
-  `;
+// 374: the built surface's own shade — a SMOOTH normal (from amSynthDecor) at the training's
+// measured contrast, and the contours of 246/247 (2 cm from each surface's mean plane)
+vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
+  if(isPatch<0.5) return wall;
+  vec3 n=(dot(pn,pn)>0.25)?pn:cross(dFdx(p),dFdy(p));
+  float l=length(n);
+  if(l<1e-12) return wall;
+  n/=l;
+  float d=abs(dot(n,vec3(0.426790,0.853580,0.298753)));
+  vec3 c=wall*(0.5234+0.4766*d);
+  float u=band/0.02; float w=fwidth(u); float fade=1.0-smoothstep(0.30,0.75,w);
+  if(fade>0.0){ float tri=abs(fract(u)-0.5)*2.0; float lw=clamp(w*2.2,0.06,0.45);
+    float ln=1.0-smoothstep(0.0,lw,tri); c*=1.0-0.28*ln*fade; }
+  return c;
+}
+`;
 
   // Regular dodecahedron, from the marker the user designed (13/08). 20 vertices all at
   // radius exactly 1, 12 pentagons as 36 triangles, un-indexed so each facet corner
