@@ -462,6 +462,154 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   const patchf=new Float32Array(N*3);
   for(let i=PATCH0*3;i<N*3;i++) patchf[i]=1;
   geo.setAttribute('aPatch',new THREE.BufferAttribute(patchf,1));
+  /* ---- 374: THE SHAPE OF A BUILT SURFACE ------------------------------------------------
+     Eli, 30/09: "add to the built surfaces (holes + continuation + volumes) a texture that helps
+     to understand their shape, and a thin dark line at sharp corners — from some angles they
+     look completely flat". His choice: smooth shading with a corner line, and the contour
+     lines (246/247: 2 cm, from each surface's own mean plane). One routine, the same in every
+     screen: from a triangle soup (9 numbers a face) it gives, per corner, a SMOOTH normal
+     (averaged only over the faces round a point that turn less than AM_SMOOTH_DEG from this
+     one, so a corner stays a corner), the signed distance from its surface's mean plane (the
+     contour's height), and the segments of every edge that is sharp or on the border. */
+  const AM_SMOOTH_DEG=40, AM_EDGE_DEG=28;
+  function amSynthDecor(P, nf){
+    const q=v=>Math.round(v*1e5);
+    const vid=new Int32Array(nf*3), map=new Map(); let nv=0;
+    for(let k=0;k<nf*3;k++){
+      const key=q(P[k*3])+','+q(P[k*3+1])+','+q(P[k*3+2]);
+      let id=map.get(key); if(id===undefined){ id=nv++; map.set(key,id); }
+      vid[k]=id;
+    }
+    const fn=new Float32Array(nf*3), fa=new Float32Array(nf);
+    for(let f=0;f<nf;f++){
+      const o=f*9;
+      const ux=P[o+3]-P[o],uy=P[o+4]-P[o+1],uz=P[o+5]-P[o+2], vx=P[o+6]-P[o],vy=P[o+7]-P[o+1],vz=P[o+8]-P[o+2];
+      let nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx; const l=Math.hypot(nx,ny,nz);
+      fa[f]=0.5*l; if(l>1e-15){ nx/=l; ny/=l; nz/=l; }
+      fn[f*3]=nx; fn[f*3+1]=ny; fn[f*3+2]=nz;
+    }
+    // the faces round each point
+    const cnt=new Int32Array(nv+1);
+    for(let k=0;k<nf*3;k++) cnt[vid[k]+1]++;
+    for(let i=0;i<nv;i++) cnt[i+1]+=cnt[i];
+    const fill=cnt.slice(0,nv), inc=new Int32Array(nf*3);
+    for(let k=0;k<nf*3;k++) inc[fill[vid[k]]++]=(k/3)|0;
+    const cs=Math.cos(AM_SMOOTH_DEG*Math.PI/180);
+    const pn=new Float32Array(nf*9);
+    for(let k=0;k<nf*3;k++){
+      const f=(k/3)|0, v=vid[k], ax=fn[f*3],ay=fn[f*3+1],az=fn[f*3+2];
+      let sx=0,sy=0,sz=0;
+      for(let t=cnt[v];t<cnt[v+1];t++){
+        const g=inc[t], bx=fn[g*3],by=fn[g*3+1],bz=fn[g*3+2];
+        // a patch's winding may run either way on a double-sided surface: the turn is measured unsigned
+        const d=ax*bx+ay*by+az*bz, s=d<0?-1:1;
+        if(Math.abs(d)>=cs){ sx+=s*bx*fa[g]; sy+=s*by*fa[g]; sz+=s*bz*fa[g]; }
+      }
+      const l=Math.hypot(sx,sy,sz)||1;
+      pn[k*3]=sx/l; pn[k*3+1]=sy/l; pn[k*3+2]=sz/l;
+    }
+    // the pieces, and each one's mean plane: the contours' height is the distance from it
+    const par=new Int32Array(nv); for(let i=0;i<nv;i++) par[i]=i;
+    const root=a=>{ while(par[a]!==a){ par[a]=par[par[a]]; a=par[a]; } return a; };
+    for(let f=0;f<nf;f++){ const a=root(vid[f*3]), b=root(vid[f*3+1]), c=root(vid[f*3+2]); par[b]=a; par[root(c)]=a; }
+    const acc=new Map();
+    for(let k=0;k<nf*3;k++){
+      const r=root(vid[k]); let A=acc.get(r); if(!A){ A=[0,0,0,0, 0,0,0,0,0,0]; acc.set(r,A); }
+      A[0]+=P[k*3]; A[1]+=P[k*3+1]; A[2]+=P[k*3+2]; A[3]++;
+    }
+    for(const A of acc.values()){ A[0]/=A[3]; A[1]/=A[3]; A[2]/=A[3]; }
+    for(let k=0;k<nf*3;k++){
+      const A=acc.get(root(vid[k])), dx=P[k*3]-A[0], dy=P[k*3+1]-A[1], dz=P[k*3+2]-A[2];
+      A[4]+=dx*dx; A[5]+=dx*dy; A[6]+=dx*dz; A[7]+=dy*dy; A[8]+=dy*dz; A[9]+=dz*dz;
+    }
+    const plane=new Map();
+    for(const [r,A] of acc){
+      // the direction of least spread (power iteration on trace*I - C, as patchBandPlane)
+      const tr=A[4]+A[7]+A[9], m=[tr-A[4],-A[5],-A[6], -A[5],tr-A[7],-A[8], -A[6],-A[8],tr-A[9]];
+      let x=0.5773,y=0.5774,z=0.5775;
+      for(let it=0;it<48;it++){
+        const X=m[0]*x+m[1]*y+m[2]*z, Y=m[3]*x+m[4]*y+m[5]*z, Z=m[6]*x+m[7]*y+m[8]*z;
+        const l=Math.hypot(X,Y,Z); if(l<1e-20) break; x=X/l; y=Y/l; z=Z/l;
+      }
+      plane.set(r,[A[0],A[1],A[2],x,y,z]);
+    }
+    const band=new Float32Array(nf*3);
+    for(let k=0;k<nf*3;k++){
+      const L=plane.get(root(vid[k]));
+      band[k]=(P[k*3]-L[0])*L[3]+(P[k*3+1]-L[1])*L[4]+(P[k*3+2]-L[2])*L[5];
+    }
+    // the edges: on the border (one face) or sharp (two faces turned more than AM_EDGE_DEG)
+    const ce=Math.cos(AM_EDGE_DEG*Math.PI/180), E=new Map(), seg=[];
+    for(let f=0;f<nf;f++) for(let c=0;c<3;c++){
+      const a=vid[f*3+c], b=vid[f*3+(c+1)%3]; if(a===b) continue;
+      const key=a<b?a*nv+b:b*nv+a, e=E.get(key);
+      if(e===undefined) E.set(key,[f,c,-1]); else if(e[2]<0) e[2]=f; else e[2]=-2;   // -2: more than two faces
+    }
+    for(const [key,e] of E){
+      let on=false;
+      if(e[2]===-1) on=true;
+      else if(e[2]>=0){ const f=e[0], g=e[2];
+        on=Math.abs(fn[f*3]*fn[g*3]+fn[f*3+1]*fn[g*3+1]+fn[f*3+2]*fn[g*3+2])<ce; }
+      if(!on) continue;
+      const f=e[0], c=e[1], i=f*3+c, j=f*3+(c+1)%3;
+      seg.push(P[i*3],P[i*3+1],P[i*3+2],P[j*3],P[j*3+1],P[j*3+2]);
+    }
+    return {pn, band, edges:new Float32Array(seg)};
+  }
+  // the line: dark and thin, with the surface's own fading (its opacity follows the model's)
+  const AM_EDGE_RGB=0x140806, AM_EDGE_ALPHA=0.75;
+  function amSynthEdges(seg){
+    const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(seg,3));
+    const m=new THREE.LineBasicMaterial({color:AM_EDGE_RGB,transparent:true,opacity:AM_EDGE_ALPHA,depthWrite:false});
+    // drawn a hair toward the eye: a line exactly in the surface is hidden by it half the time
+    m.onBeforeCompile=sh=>{ sh.vertexShader=sh.vertexShader.replace('#include <project_vertex>',
+      '#include <project_vertex>\n  gl_Position.z-=0.0006*gl_Position.w;'); };
+    const L=new THREE.LineSegments(g,m);
+    L.renderOrder=2; L.userData.amEdge=true;
+    return L;
+  }
+
+  // the built surfaces' own normals and contour heights, and their corner lines (374)
+  const AM_SYN=(N>PATCH0)?amSynthDecor(geo.attributes.position.array.subarray(PATCH0*9,N*9),N-PATCH0):null;
+  { const pnA=new Float32Array(N*9), bdA=new Float32Array(N*3);
+    if(AM_SYN){ pnA.set(AM_SYN.pn,PATCH0*9); bdA.set(AM_SYN.band,PATCH0*3); }
+    geo.setAttribute('aPN',new THREE.BufferAttribute(pnA,3)); geo.setAttribute('aBand',new THREE.BufferAttribute(bdA,1)); }
+  const AM_SYNTH_GLSL=`
+  // 374: the built surface's own shade — a SMOOTH normal (from amSynthDecor) at the training's
+  // measured contrast, and the contours of 246/247 (2 cm from each surface's mean plane)
+  vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
+    if(isPatch<0.5) return wall;
+    vec3 n=(dot(pn,pn)>0.25)?pn:cross(dFdx(p),dFdy(p));
+    float l=length(n);
+    if(l<1e-12) return wall;
+    n/=l;
+    float d=abs(dot(n,vec3(0.426790,0.853580,0.298753)));
+    vec3 c=wall*(0.5234+0.4766*d);
+    float u=band/0.02; float w=fwidth(u); float fade=1.0-smoothstep(0.30,0.75,w);
+    if(fade>0.0){ float tri=abs(fract(u)-0.5)*2.0; float lw=clamp(w*2.2,0.06,0.45);
+      float ln=1.0-smoothstep(0.0,lw,tri); c*=1.0-0.28*ln*fade; }
+    return c;
+  }
+  `;
+
+  // 374: a volume body's shell drawn as a built surface — its own shade, contours and corner lines.
+  // The colour stays the material's (the layer's, or 391's gold when the volume is selected)
+  function amSynthShell(o, P, nf){
+    const D=amSynthDecor(P, nf);
+    o.geometry.setAttribute('aPN',new THREE.BufferAttribute(D.pn,3));
+    o.geometry.setAttribute('aBand',new THREE.BufferAttribute(D.band,1));
+    o.material.onBeforeCompile=sh=>{
+      sh.vertexShader=sh.vertexShader
+        .replace('#include <common>','#include <common>\nattribute vec3 aPN;attribute float aBand;varying vec3 vAPN;varying float vABand;varying vec3 vAPos;')
+        .replace('#include <begin_vertex>','#include <begin_vertex>\nvAPN=aPN;vABand=aBand;vAPos=transformed;');
+      sh.fragmentShader=sh.fragmentShader
+        .replace('#include <common>','#include <common>\nvarying vec3 vAPN;varying float vABand;varying vec3 vAPos;'+AM_SYNTH_GLSL)
+        .replace('#include <opaque_fragment>','outgoingLight=amSynthShade(outgoingLight,1.0,vAPos,vAPN,vABand);\n#include <opaque_fragment>');
+    };
+    if(D.edges.length) o.add(amSynthEdges(D.edges));
+    return o;
+  }
+
   geo.computeBoundingSphere();
   // flat-mix marking (user round 11/08): aFlat=1 paints pure colour OVER the texture
   const mat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});    // ---- the marking's look (decision 75: the stipple, option 6) --------------------------
@@ -675,17 +823,20 @@ vec3 amPatchShade(vec3 wall, float isPatch, vec3 p){
     for(const m of ms){ m.transparent=(v<0.999); m.opacity=v;
                         m.depthWrite=(v>=0.999); m.needsUpdate=true; }
     if(amMarkMat){ amMarkMat.transparent=(v<0.999); amMarkMat.opacity=v; amMarkMat.depthWrite=(v>=0.999); amMarkMat.needsUpdate=true; }
+    if(amEdges) amEdges.material.opacity=AM_EDGE_ALPHA*v;       // 374
   }
 mat.onBeforeCompile=sh=>{
     sh.uniforms.amDesign=amDesignU;
     sh.vertexShader=sh.vertexShader
-      .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;attribute float aDes;attribute float aPatch;varying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;')
-      .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vADes=aDes;vAPatch=aPatch;vAPos=transformed;');
+      .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;attribute float aDes;attribute float aPatch;attribute vec3 aPN;attribute float aBand;varying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;varying vec3 vAPN;varying float vABand;')
+      .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vADes=aDes;vAPatch=aPatch;vAPos=transformed;vAPN=aPN;vABand=aBand;');
     sh.fragmentShader=sh.fragmentShader
-      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;uniform float amDesign;'+AM_SHADER_FN)
-      .replace('#include <opaque_fragment>','outgoingLight=amStipple(amPatchShade(outgoingLight,vAPatch,vAPos),vACol,vAFlat,vADes);\n#include <opaque_fragment>');
+      .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;varying vec3 vAPN;varying float vABand;uniform float amDesign;'+AM_SHADER_FN+AM_SYNTH_GLSL)
+      .replace('#include <opaque_fragment>','outgoingLight=amStipple(amSynthShade(outgoingLight,vAPatch,vAPos,vAPN,vABand),vACol,vAFlat,vADes);\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
+  const amEdges=(AM_SYN&&AM_SYN.edges.length)?amSynthEdges(AM_SYN.edges):null;   // 374
+  if(amEdges) scene.add(amEdges);
 
   /* ---- state ---- */
   let brushR=0.10, mode='nav';
