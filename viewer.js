@@ -1841,7 +1841,7 @@ mat.onBeforeCompile=sh=>{
      a shared corner, or 8 cm between their edges. 382 (Eli, 30/09): levels 11-20 go on from
      level 10 to the soap film on its rim, reached at 20. */
   const SM_LAMBDA=0.5, SM_MU=-0.5, SM_PASSES=10, SM_WELD=1e-4, SM_CELL=1e-4, SM_MAXLEVEL=20, SM_SOFT=10, SM_MERGE=0.08;
-  const SM_FILM_ROUNDS=8, SM_CG_MAX=2000, SM_CG_TOL=1e-20, SM_EPS=1e-8, SM_WMIN=1e-3;
+  const SM_FILM_ROUNDS=8, SM_CG_MAX=2000, SM_CG_TOL=1e-12, SM_EPS=1e-8, SM_WMIN=1e-3, SM_FILM_STOP=1e-7;
   // 335: a sub-face on the line comes in by its cut part — triangles given in the sub-face's own
   // barycentrics (b1,b2 per corner, rounded as the sheet carries them); the rest come in whole
   function smCorners(P,f,pc){
@@ -1861,17 +1861,17 @@ mat.onBeforeCompile=sh=>{
   // the copy as a mesh: its corners welded where they coincide (the first one met is kept; a
   // triangle the weld collapses is dropped, 381); tf: which of the faces each triangle came from
   function smMesh(P,faces,pc){
-    const X=[], T=[], tf=[], grid=new Map(), w2=SM_WELD*SM_WELD;
+    const X=[], T=[], tf=[], grid=new Map(), w2=SM_WELD*SM_WELD;   // 385: (i,j) a number, then k — the cells a string named
     for(let a=0;a<faces.length;a++){ const C=smCorners(P,faces[a],pc);
       for(let q=0;q+8<C.length;q+=9){ const tri=[];
         for(let c=0;c<3;c++){ const x=C[q+c*3], y=C[q+c*3+1], z=C[q+c*3+2];
           const i=Math.floor(x/SM_CELL), j=Math.floor(y/SM_CELL), k=Math.floor(z/SM_CELL); let id=-1;
           for(let di=-1;di<=1&&id<0;di++) for(let dj=-1;dj<=1&&id<0;dj++) for(let dk=-1;dk<=1&&id<0;dk++){
-            const L=grid.get((i+di)+','+(j+dj)+','+(k+dk)); if(!L) continue;
+            const G2=grid.get((i+di+33554432)*67108864+(j+dj+33554432)); const L=G2&&G2.get(k+dk); if(!L) continue;
             for(const v of L){ const dx=X[v*3]-x, dy=X[v*3+1]-y, dz=X[v*3+2]-z;
               if(dx*dx+dy*dy+dz*dz<=w2){ id=v; break; } } }
-          if(id<0){ id=X.length/3; X.push(x,y,z); const kk=i+','+j+','+k;
-            let L=grid.get(kk); if(!L){ L=[]; grid.set(kk,L); } L.push(id); }
+          if(id<0){ id=X.length/3; X.push(x,y,z); const kk=(i+33554432)*67108864+(j+33554432);
+            let G2=grid.get(kk); if(!G2){ G2=new Map(); grid.set(kk,G2); } let L=G2.get(k); if(!L){ L=[]; G2.set(k,L); } L.push(id); }
           tri.push(id); }
         if(tri[0]!==tri[1]&&tri[1]!==tri[2]&&tri[0]!==tri[2]){ T.push(tri[0],tri[1],tri[2]); tf.push(a); } } }
     return {X:Float64Array.from(X), T:Int32Array.from(T), tf:tf};
@@ -1885,12 +1885,16 @@ mat.onBeforeCompile=sh=>{
     const nb=[], bn=[]; for(let v=0;v<nV;v++){ nb.push([]); bn.push([]); }
     for(const [k,c] of E){ const a=Math.floor(k/nV), b=k-a*nV;
       nb[a].push(b); nb[b].push(a); if(c===1){ bn[a].push(b); bn[b].push(a); } }
+    // 385: each vertex's list, in the order it was met, in one flat array (the same sums, faster)
+    const O=new Int32Array(nV+1), U=[], FX=new Uint8Array(nV);
+    for(let v=0;v<nV;v++){ const L=bn[v].length?bn[v]:nb[v]; if(!L.length||(bn[v].length&&bn[v].length!==2)) FX[v]=1; else for(const u of L) U.push(u); O[v+1]=U.length; }
+    const UA=Int32Array.from(U);
     let A=Float64Array.from(X), B=new Float64Array(A.length);
     const step=w=>{
-      for(let v=0;v<nV;v++){ const L=bn[v].length?bn[v]:nb[v], o=v*3;
-        if(!L.length||(bn[v].length&&bn[v].length!==2)){ B[o]=A[o]; B[o+1]=A[o+1]; B[o+2]=A[o+2]; continue; }
-        let sx=0, sy=0, sz=0; for(const u of L){ sx+=A[u*3]; sy+=A[u*3+1]; sz+=A[u*3+2]; }
-        const m=1/L.length;
+      for(let v=0;v<nV;v++){ const o=v*3;
+        if(FX[v]){ B[o]=A[o]; B[o+1]=A[o+1]; B[o+2]=A[o+2]; continue; }
+        let sx=0, sy=0, sz=0; for(let q=O[v];q<O[v+1];q++){ const u=UA[q]; sx+=A[u*3]; sy+=A[u*3+1]; sz+=A[u*3+2]; }
+        const m=1/(O[v+1]-O[v]);
         B[o]=A[o]+w*(sx*m-A[o]); B[o+1]=A[o+1]+w*(sy*m-A[o+1]); B[o+2]=A[o+2]+w*(sz*m-A[o+2]); }
       const t=A; A=B; B=t; };
     for(let i=0;i<passes;i++){ step(SM_LAMBDA); step(SM_MU); }
@@ -1898,8 +1902,9 @@ mat.onBeforeCompile=sh=>{
   }
   // 382: the soap film on the copy's rim — the rim (a pinch, a corner of no edge) held, the rest
   // moved to the surface of least area that spans it: Pinkall-Polthier, a few rounds of the
-  // cotangent Laplacian of the surface as it is, each solved by conjugate gradients. Every sum
-  // runs in one order, the order smooth_surface.sm_film takes it.
+  // cotangent Laplacian of the surface as it is, each solved by conjugate gradients — until a round
+  // no longer lowers the area by a part in ten million (385). Every sum runs in one order, the
+  // order smooth_surface.sm_film takes it.
   function smFilm(X,T){
     const nV=X.length/3, nF=T.length/3; if(!nV||!nF) return Float64Array.from(X);
     const E=new Map(), ends=[];
@@ -1921,7 +1926,7 @@ mat.onBeforeCompile=sh=>{
     const Am=(p,y)=>{ for(let v=0;v<nV;v++){ let s=d[v]*p[v]; for(let q=0;q<K;q++) s=s-WW[v*K+q]*p[NB[v*K+q]]; y[v]=s*Fr[v]; } };
     const yc=new Float64Array(nV), xf=new Float64Array(nV), bv=new Float64Array(nV), x=new Float64Array(nV),
           r=new Float64Array(nV), p=new Float64Array(nV), Ap=new Float64Array(nV);
-    let Y=Float64Array.from(X);
+    let Y=Float64Array.from(X), aY=smArea(Y,T);
     for(let rd=0;rd<SM_FILM_ROUNDS;rd++){
       const w=new Float64Array(nE);
       for(let i=0;i<eid.length;i++){ const a=tri[i*3]*3, b=tri[i*3+1]*3, o=tri[i*3+2]*3;
@@ -1946,7 +1951,7 @@ mat.onBeforeCompile=sh=>{
           for(let v=0;v<nV;v++) p[v]=r[v]+be*p[v];
           rr=rn; }
         for(let v=0;v<nV;v++) Yn[v*3+c]=xf[v]+x[v]; }
-      Y=Yn; }
+      Y=Yn; const aN=smArea(Y,T), gain=aY-aN; aY=aN; if(gain<=SM_FILM_STOP*aN) break; }
     return Y;
   }
   function smArea(X,T){
@@ -1964,7 +1969,7 @@ mat.onBeforeCompile=sh=>{
     const M=(memo&&memo.M)||smMesh(P,fs,pc); if(memo) memo.M=M;
     if(!lv||!fs.length) return {X:M.X, T:M.T, area:painted, painted:painted, level:lv};
     const a0=smArea(M.X,M.T); let Xs;
-    if(lv<=SM_SOFT) Xs=smTaubin(M.X,M.T,SM_PASSES*lv);
+    if(lv<=SM_SOFT){ Xs=(memo&&lv===SM_SOFT&&memo.X10)||smTaubin(M.X,M.T,SM_PASSES*lv); if(memo&&lv===SM_SOFT) memo.X10=Xs; }
     else { const X10=(memo&&memo.X10)||smTaubin(M.X,M.T,SM_PASSES*SM_SOFT), F=(memo&&memo.F)||smFilm(X10,M.T);
       if(memo){ memo.X10=X10; memo.F=F; }
       const t=(lv-SM_SOFT)/SM_SOFT; Xs=new Float64Array(X10.length);
@@ -1975,9 +1980,10 @@ mat.onBeforeCompile=sh=>{
   // the connected pieces of a set of sub-faces, by shared corner position (a stroke that
   // touches a region joins it; an erasure that cuts one through splits it) — and, by the brush's
   // rule (381), two pieces whose edge sub-faces come within 8 cm of each other are one
-  function smPieces(P,faces,pc){
+  function smPieces(P,faces,pc,memo){
     const fs=Array.from(faces).sort((a,b)=>a-b); if(!fs.length) return [];
-    const M=smMesh(P,fs,pc), n=fs.length, par=new Int32Array(n); for(let i=0;i<n;i++) par[i]=i;
+    const M=(memo&&memo.M)||smMesh(P,fs,pc), n=fs.length, par=new Int32Array(n); for(let i=0;i<n;i++) par[i]=i;
+    if(memo) memo.M=M;
     const find=x=>{ while(par[x]!==x){ par[x]=par[par[x]]; x=par[x]; } return x; };
     const uni=(a,b)=>{ const r1=find(a), r2=find(b); if(r1!==r2) par[Math.max(r1,r2)]=Math.min(r1,r2); };
     const owner=new Map(), nV=M.X.length/3, E=new Map();
@@ -1992,9 +1998,9 @@ mat.onBeforeCompile=sh=>{
       const x=(P[o]+P[o+3]+P[o+6])/3, y=(P[o+1]+P[o+4]+P[o+7])/3, z=(P[o+2]+P[o+5]+P[o+8])/3; C[a*3]=x; C[a*3+1]=y; C[a*3+2]=z;
       const i=Math.floor(x/SM_MERGE), j=Math.floor(y/SM_MERGE), k=Math.floor(z/SM_MERGE);
       for(let di=-1;di<=1;di++) for(let dj=-1;dj<=1;dj++) for(let dk=-1;dk<=1;dk++){
-        const L=G.get((i+di)+','+(j+dj)+','+(k+dk)); if(!L) continue;
+        const L=G.get(((i+di+33554432)*67108864+(j+dj+33554432))*4096+((k+dk)&4095)); if(!L) continue;
         for(const b of L){ const dx=C[b*3]-x, dy=C[b*3+1]-y, dz=C[b*3+2]-z; if(dx*dx+dy*dy+dz*dz<=D2) uni(a,b); } }
-      const kk=i+','+j+','+k; let L=G.get(kk); if(!L){ L=[]; G.set(kk,L); } L.push(a); }
+      const kk=((i+33554432)*67108864+(j+33554432))*4096+(k&4095); let L=G.get(kk); if(!L){ L=[]; G.set(kk,L); } L.push(a); }
     const by=new Map(); for(let a=0;a<n;a++){ const r=find(a); if(!by.has(r)) by.set(r,[]); by.get(r).push(fs[a]); }
     return [...by.values()];
   }
@@ -2029,9 +2035,36 @@ mat.onBeforeCompile=sh=>{
     return {faces:fs, pc:pc}; }
   // 382: the copy's mesh, its level 10 and its film, kept per marking — the wheel turns over them
   const smMemoC=new Map();
-  function smMemoOf(r){ const k=r.faces.join(',')+'|'+(r.pc?JSON.stringify([...r.pc]):'');
+  function smMemoFor(faces,pc){ const k=faces.join(',')+'|'+(pc&&pc.size?JSON.stringify([...pc]):'');
     let m=smMemoC.get(k); if(!m){ if(smMemoC.size>=48) smMemoC.clear(); m={}; smMemoC.set(k,m); } return m; }
-  function smCompute(r){ const g=smRegion(pos,area,r.faces,r.level,r.pc,smMemoOf(r)); r.X=g.X; r.T=g.T; r.area=g.area; r.level=g.level; }
+  function smMemoOf(r){ return smMemoFor(r.faces,r.pc); }
+  /* 385 (Eli, 30/09, option א): the film of a large region is built in the background — the screen
+     does not stop; until it is ready the region shows level 10 and the bar says "בונה משטח מוחלק…".
+     The worker runs the same smFilm text, so what it returns is what the screen would have made. */
+  const SM_BG_FACES=6000;
+  var smW=null, smWSeq=0; const smWJobs=new Map();
+  function smWorker(){
+    if(smW!==null) return smW;
+    try{ const src='const SM_FILM_ROUNDS='+SM_FILM_ROUNDS+', SM_CG_MAX='+SM_CG_MAX+', SM_CG_TOL='+SM_CG_TOL+', SM_EPS='+SM_EPS+
+          ', SM_WMIN='+SM_WMIN+', SM_FILM_STOP='+SM_FILM_STOP+';\n'+smArea.toString()+'\n'+smFilm.toString()+
+          '\nonmessage=e=>{ const F=smFilm(e.data.X,e.data.T); postMessage({id:e.data.id,F:F},[F.buffer]); };';
+      smW=new Worker(URL.createObjectURL(new Blob([src],{type:'text/javascript'})));
+      smW.onmessage=e=>{ const m=smWJobs.get(e.data.id); smWJobs.delete(e.data.id); if(m){ m.F=e.data.F; m.job=0; } smFilmDone(); };
+      smW.onerror=ev=>{ if(ev&&ev.preventDefault) ev.preventDefault(); smW=false; for(const m of smWJobs.values()) m.job=0; smWJobs.clear(); smFilmDone(); };
+    }catch(_){ smW=false; }
+    return smW;
+  }
+  function smBusyShow(on){ const e=document.getElementById('smBusy'); if(e) e.style.display=on?'':'none'; }
+  // a film came back (or the worker is gone): the regions that waited for it take their level
+  function smFilmDone(){ let busy=false, ch=false;
+    for(const r of SMR) if(r.pending){ const m=smMemoOf(r); if(m.F||!smWorker()){ smCompute(r); ch=true; } else busy=true; }
+    smBusyShow(busy); if(ch){ smRebuild(); updateArea(); } }
+  function smCompute(r){ const m=smMemoOf(r);
+    if(r.level>SM_SOFT&&!m.F&&r.faces.length>SM_BG_FACES&&smWorker()){
+      const g=smRegion(pos,area,r.faces,SM_SOFT,r.pc,m); r.X=g.X; r.T=g.T; r.area=g.area; r.pending=true;
+      if(!m.job){ m.job=++smWSeq; smWJobs.set(m.job,m); smW.postMessage({id:m.job,X:m.X10,T:m.M.T}); }
+      smBusyShow(true); return; }
+    const g=smRegion(pos,area,r.faces,r.level,r.pc,m); r.X=g.X; r.T=g.T; r.area=g.area; r.level=g.level; r.pending=false; }
   function smSnap(at){ const t=smT(at), S=[], X=[];
     for(let f=0;f<N;f++){ if(t.S[f]) S.push(f); if(t.X[f]) X.push(f); }
     return {S:S, X:X, ops:t.ops.slice(),
@@ -2053,7 +2086,7 @@ mat.onBeforeCompile=sh=>{
     const keep=new Map(); for(const r of SMR) if(r.at===at&&r.X) keep.set(smSig(r),r);
     for(let i=SMR.length-1;i>=0;i--) if(SMR[i].at===at) SMR.splice(i,1);
     for(const q of snap.regs){ const r={id:q.id,at:at,level:q.level,faces:q.faces.slice(),pc:q.pc||null};
-      const o=keep.get(smSig(r)); if(o){ r.X=o.X; r.T=o.T; r.area=o.area; r.level=o.level; } else smCompute(r); SMR.push(r); }
+      const o=keep.get(smSig(r)); if(o){ r.X=o.X; r.T=o.T; r.area=o.area; r.level=o.level; r.pending=o.pending; } else smCompute(r); SMR.push(r); }
     if(smSel) smSel=SMR.find(r=>r.id===smSel.id)||null;
     smSyncWheel(); smRebuild(); updateArea(); markDirty();
   }
@@ -2073,7 +2106,7 @@ mat.onBeforeCompile=sh=>{
     const M=smMarked(smT(at)), owner=new Map();
     for(const q of before.regs) for(const f of q.faces) owner.set(f,q);
     const used=new Map(), fresh=[];
-    for(const piece of smPieces(pos,M.faces,M.pc).sort((a,b)=>b.length-a.length)){
+    for(const piece of smPieces(pos,M.faces,M.pc,smMemoFor(M.faces,M.pc)).sort((a,b)=>b.length-a.length)){   // 385: its mesh kept for the region
       const cnt=new Map(); for(const f of piece){ const q=owner.get(f); if(q) cnt.set(q,(cnt.get(q)||0)+1); }
       let best=null, bn=0; for(const [q,n] of cnt) if(n>bn&&!used.has(q)){ best=q; bn=n; }
       const pc=new Map(); for(const f of piece) if(M.pc.has(f)) pc.set(f,M.pc.get(f));
