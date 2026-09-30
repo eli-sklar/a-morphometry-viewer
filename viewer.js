@@ -1548,7 +1548,7 @@ mat.onBeforeCompile=sh=>{
       // one tag per run, at its centroid: "3 : 4.67 מ'" — the number and the sum, which is
       // what the report prints too, so the model and the table cannot disagree
       for(const run of rulRuns(T.id)){
-        const sp=rulTag(T.lab?(run.n+' : '+run.len.toFixed(2)+' מ\u05f3'):String(run.n), T.hex);
+        const sp=rulTag(run.len.toFixed(2)+' מ\u05f3', T.hex);   // 373: the reading, without the report's number
         sp.userData.amTag={kind:'rul', t:T.id, ids:run.pts.map(x=>x.id)};   // 321: the run, by its tag
         sp.position.set(run.c.x,run.c.y,run.c.z);
         rulGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
@@ -1656,15 +1656,26 @@ mat.onBeforeCompile=sh=>{
     const hit=_amTagRay.intersectObjects(tags,false);
     return hit.length?hit[0].object.userData.amTag:null;
   }
+  // 373: the ring under the cursor, by its own fill (a ring has no label here any more)
+  function amRingAt(e){
+    const r=el.getBoundingClientRect();
+    _amTagRay.setFromCamera(new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1),camera);
+    const fills=polyGroup.children.filter(o=>o.isMesh&&o.visible&&o.userData.ring&&(activeT<0||!types[activeT]||o.userData.smAt===types[activeT].id));
+    const h=_amTagRay.intersectObjects(fills,false); if(!h.length) return null;
+    // a press on one of its points is the point's (the eraser asks: the point or the ring, 252)
+    const R=h[0].object.userData.ring, v=new THREE.Vector3();
+    for(const q of R.pts){ v.set(q[0],q[1],q[2]).project(camera);
+      if(Math.hypot((v.x+1)*r.width/2-(e.clientX-r.left),(1-v.y)*r.height/2-(e.clientY-r.top))<14) return null; }
+    return R;
+  }
   function amTagErase(e){
     if(activeKind==='rul'){ const t=amTagAt(e,'rul');
       if(!t||(activeR>=0&&t.t!==rulTypes[activeR].id)) return false;
       rulDropPoints(t.ids); return true; }
-    if(activeKind==='area'&&areaTool===AM_POLY){ const t=amTagAt(e,'poly');
-      if(!t) return false; const i=polys.indexOf(t.ring); if(i<0) return false;
+    if(activeKind==='area'&&areaTool===AM_POLY){ const R=amRingAt(e);      // 373: inside the ring, not on a label
+      if(!R) return false; const i=polys.indexOf(R); if(i<0) return false;
       amPolyOut(i); return true; }
-    if(activeKind==='area'&&areaTool===AM_SMOOTH){ const t=amTagAt(e,'smooth');   // 329: a whole region
-      if(!t) return false; smRemoveRegion(t.reg); return true; }
+    // 373: a smoothed region is erased by parts, as a painted one (Eli) — no whole-region click
     if(activeKind==='tag'){ const t=amTagAt(e,'tag');                             // 332: the tag, whole
       if(!t||(activeG>=0&&t.g.t!==tagTypes[activeG].id)) return false; tagDel(t.g); return true; }
     return false;
@@ -1946,11 +1957,22 @@ mat.onBeforeCompile=sh=>{
             regs:SMR.filter(r=>r.at===at).map(r=>({id:r.id,level:r.level,faces:r.faces.slice(),pc:r.pc||null}))}; }
   // the layer back to a snapshot — its marking (the line asked again unless it already is) and
   // its regions
+  // 373 (ב): what makes a region's copy — its faces, its cut parts and its level — as one number
+  function smSig(r){
+    let h=2166136261>>>0; const mix=v=>{ h=Math.imul(h^(v|0),16777619)>>>0; };
+    mix(Math.round(r.level||0)); const fs=Array.from(r.faces).sort((a,b)=>a-b); mix(fs.length);
+    for(const f of fs){ mix(f); const bb=r.pc&&r.pc.get?r.pc.get(f):null; if(bb) for(const b of bb) mix(Math.round(b*1e4)); }
+    return h+':'+fs.length;
+  }
   function smSetLayer(at,snap,fresh){ const t=smT(at);
     if(!fresh){ t.S.fill(0); for(const f of snap.S) t.S[f]=1; t.X.fill(0); for(const f of snap.X) t.X[f]=1;
       t.ops=snap.ops.slice(); amMarkFull(t); }
+    // 373 (ב): a region whose faces, cuts and level did not change keeps the copy it has — the
+    // smoothing is redone only where the stroke changed something (it was every region of the layer)
+    const keep=new Map(); for(const r of SMR) if(r.at===at&&r.X) keep.set(smSig(r),r);
     for(let i=SMR.length-1;i>=0;i--) if(SMR[i].at===at) SMR.splice(i,1);
-    for(const q of snap.regs){ const r={id:q.id,at:at,level:q.level,faces:q.faces.slice(),pc:q.pc||null}; smCompute(r); SMR.push(r); }
+    for(const q of snap.regs){ const r={id:q.id,at:at,level:q.level,faces:q.faces.slice(),pc:q.pc||null};
+      const o=keep.get(smSig(r)); if(o){ r.X=o.X; r.T=o.T; r.area=o.area; r.level=o.level; } else smCompute(r); SMR.push(r); }
     if(smSel) smSel=SMR.find(r=>r.id===smSel.id)||null;
     smSyncWheel(); smRebuild(); updateArea(); markDirty();
   }
@@ -2013,7 +2035,31 @@ mat.onBeforeCompile=sh=>{
           t.S[f]=add?1:0; smStroke.add(f); smLive[f]=1; recolorFace(f); ch=true; } } }
     const now=performance.now();
     if(now>=smMarkAt){ amMarkNear(t); amMarkDraw(); smMarkAt=performance.now()+16; ch=true; }
+    if(!add&&smLiveHide(t.at,p,brushR)) ch=true;   // 373 (א)
     if(ch){ colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true; invalidate(); }
+  }
+  // 373 (א): an erasure shows while the hand moves. The copy was rebuilt only when the hand lifted
+  // — up to two seconds on a large region, and nothing moved meanwhile. The copy's triangles under
+  // the eraser are folded to a point as it passes (a grid of their centres, made once a stroke);
+  // the smoothing itself is redone at the lift, as before.
+  function smLiveHide(at,p,rad){
+    let any=false;
+    for(const mm of smGroup.children){ if(!mm.isMesh||mm.userData.smAt!==at) continue;
+      const A=mm.geometry.attributes.position, X=A.array;
+      if(!mm.userData.lg){ const G=new Map(), C=Math.max(rad,1e-3);
+        for(let k=0;k<A.count/3;k++){ const o=k*9, cx=(X[o]+X[o+3]+X[o+6])/3, cy=(X[o+1]+X[o+4]+X[o+7])/3, cz=(X[o+2]+X[o+5]+X[o+8])/3;
+          const key=Math.floor(cx/C)+','+Math.floor(cy/C)+','+Math.floor(cz/C); let L=G.get(key); if(!L){ L=[]; G.set(key,L); } L.push(k,cx,cy,cz); }
+        mm.userData.lg={G:G,C:C}; }
+      const {G,C}=mm.userData.lg, r2=rad*rad, i0=Math.floor(p.x/C), j0=Math.floor(p.y/C), k0=Math.floor(p.z/C);
+      const R=Math.ceil(rad/C); let ch=false;
+      for(let di=-R;di<=R;di++) for(let dj=-R;dj<=R;dj++) for(let dk=-R;dk<=R;dk++){
+        const L=G.get((i0+di)+','+(j0+dj)+','+(k0+dk)); if(!L) continue;
+        for(let q=0;q<L.length;q+=4){ const dx=L[q+1]-p.x, dy=L[q+2]-p.y, dz=L[q+3]-p.z;
+          if(dx*dx+dy*dy+dz*dz>r2) continue; const o=L[q]*9;
+          if(X[o]===X[o+3]&&X[o]===X[o+6]&&X[o+1]===X[o+4]&&X[o+2]===X[o+5]) continue;
+          for(let c=1;c<3;c++){ X[o+c*3]=X[o]; X[o+c*3+1]=X[o+1]; X[o+c*3+2]=X[o+2]; } ch=true; } }
+      if(ch){ A.needsUpdate=true; any=true; } }
+    return any;
   }
   function smStrokeEnd(){
     const s=smStroke, t=smLiveT, op=smOp, before=smBefore; smStroke=null; smOp=null; smBefore=null;
@@ -2026,7 +2072,12 @@ mat.onBeforeCompile=sh=>{
     if(!op.c.length){ const k=t.ops.lastIndexOf(op); if(k>=0) t.ops.splice(k,1); }
     const after=smSnap(t.at); after.regs=smDerive(t.at,before);
     // 319's rule: a stroke that changed no region is not a step — and leaves no trace
-    if(!smCommitLayer(t.at,before,after,true)){ smSetLayer(t.at,before); invalidate(); return; }
+    if(!smCommitLayer(t.at,before,after,true)){
+    // 373: a press on a region that changes nothing CHOOSES it for the level wheel — the label
+    // that used to be the handle is gone
+    const q=SMR.find(r=>r.at===t.at&&r.faces.some(f=>s.has(f)));
+    if(q) smSel=q;
+    smSetLayer(t.at,before); invalidate(); return; }
     let f0=-1; for(const f of s) f0=f;
     smSel=SMR.find(r=>r.at===t.at&&r.faces.includes(f0))||SMR.filter(r=>r.at===t.at).slice(-1)[0]||null;
     smSyncWheel(); smRebuild(); invalidate();
@@ -2083,9 +2134,9 @@ mat.onBeforeCompile=sh=>{
       mm.renderOrder=997; smGroup.add(mm);
       let cx=0,cy=0,cz=0; const nv=r.X.length/3;
       for(let v=0;v<nv;v++){ cx+=r.X[v*3]; cy+=r.X[v*3+1]; cz+=r.X[v*3+2]; }
-      const sp=rulTag((amLab(types,r.at)?amMeasText(r.at,'s',num[r.at]-1):String(amMeasNo(r.at,'s',num[r.at]-1)))+(r===smSel?' ◂':''),'#'+col.getHexString());   // 355: the label, or the number alone
-      sp.userData.amTag={kind:'smooth',reg:r};
-      sp.position.set(cx/nv,cy/nv,cz/nv); smGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
+      // 373 (Eli, 30/09): "אני לא רוצה בכלל תגיות על הסימונים במשך המדידה; המספור שייך לדוח ולא
+      // למדידה עצמה!" — no number and no label on a region here; the report numbers them
+      mm.userData.smReg=r;
     }
     smRecolor(); rescaleFixed(); invalidate();
   }
@@ -2324,17 +2375,14 @@ mat.onBeforeCompile=sh=>{
       { const key=JSON.stringify(P.pts);
         if(P._fk!==key){ P._fill=pgFill(P.pts,pos,uv,N,pgTexAt); P._fk=key; }
         if(!P._fill.wall&&P._fill.surf.length) P._fill.wall=pgWallOf(P._fill.surf,pos,uv,pgTexAt);   // the texture came since
-        for(const m of pgMeshes(P._fill,T)){ m.userData.smAt=P.at; polyGroup.add(m); } }
+        for(const m of pgMeshes(P._fill,T)){ m.userData.smAt=P.at; if(!open) m.userData.ring=P; polyGroup.add(m); } }
       let cx=0,cy=0,cz=0; for(const q of P.pts){cx+=q[0];cy+=q[1];cz+=q[2];}
       // 265: the ring is numbered 1..n WITHIN ITS LAYER, in marking order — the ruler's
       // rule, and the order the report lists the layer's rings in. A ring still being
       // drawn takes the next number, so its identity does not change when it closes.
       const _pi=polys.filter(q=>q.at===P.at).indexOf(P);
       const _pk=(_pi>=0)?_pi:polys.filter(q=>q.at===P.at).length;
-      const sp=rulTag(amLab(types,P.at)?amMeasText(P.at,'p',_pk):String(amMeasNo(P.at,'p',_pk)), '#'+col.getHexString());   // 355
-      if(!open) sp.userData.amTag={kind:'poly', ring:P};     // 321: the eraser takes the ring by its tag
-      sp.position.set(cx/n,cy/n,cz/n);
-      polyGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
+      // 373: no number and no label on a ring in the measurement — the report numbers it
     };
     for(const P of polys) if(!amHidOf(types,P.at)) draw(P,false);
     if(curPoly&&curPoly.pts.length) draw(curPoly,true);
@@ -2839,8 +2887,6 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     else if(!amOnSurface(e)){ if(activeKind==='rul') rulEnd(); dragging='rot'; }
     else if(mode==='grow'){growAt(e);dragging=null;}
     // 329: the smoothed surface — a tag chooses the region the wheel acts on; else the brush
-    else if(activeKind==='area'&&areaTool===AM_SMOOTH&&mode==='add'&&amTagAt(e,'smooth')){
-      smSel=amTagAt(e,'smooth').reg; smSyncWheel(); smRebuild(); dragging=null;}
     else if(activeKind==='area'&&areaTool===AM_SMOOTH){dragging='smpaint';smStroke=new Set();smPaintAt(e);}
     else if(activeKind==='area'&&areaTool===AM_POLY&&mode==='add'){
       polyAt(e);dragging=null;}
@@ -3780,7 +3826,6 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       // 10: no measurement-mode menu on the layer — the side bar picks the tool
       if(T.hid) c.style.opacity='0.45';
       c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;recolorAll();polyRebuild();buildChips();markUnexported(true);}));
-      c.appendChild(amLabBtn(T,()=>{polyRebuild();smRebuild();}));   // 355
       c.appendChild(amDelX('area',i));
       c.onclick=()=>{activateT(i);if(mode==='nav')setMode('add');};
       A.appendChild(c);});
@@ -3830,7 +3875,6 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         const u=document.createElement('span');u.className='u';u.textContent='מ׳';c.appendChild(u);
         if(T.hid) c.style.opacity='0.45';
         c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;rulRebuild();buildChips();markUnexported(true);}));
-        c.appendChild(amLabBtn(T,()=>rulRebuild()));   // 355
         c.appendChild(amDelX('rul',i));
         c.onclick=()=>activateR(i);
         R.appendChild(c);});
