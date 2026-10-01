@@ -577,9 +577,10 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   function amSynthEdges(seg){
     const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(seg,3));
     const m=new THREE.LineBasicMaterial({color:AM_EDGE_RGB,transparent:true,opacity:AM_EDGE_ALPHA,depthWrite:false});
-    // drawn a hair toward the eye: a line exactly in the surface is hidden by it half the time
+    // drawn a hair toward the eye: a line exactly in the surface is hidden by it half the time. A share of
+  // its own distance (0.15%), not a fixed depth: a fixed one carried it in front of a wall (411)
     m.onBeforeCompile=sh=>{ sh.vertexShader=sh.vertexShader.replace('#include <project_vertex>',
-      '#include <project_vertex>\n  gl_Position.z-=0.0006*gl_Position.w;'); };
+      '#include <project_vertex>\n  mvPosition.xyz*=0.9985;gl_Position=projectionMatrix*mvPosition;'); };
     const L=new THREE.LineSegments(g,m);
     L.renderOrder=2; L.userData.amEdge=true;
     return L;
