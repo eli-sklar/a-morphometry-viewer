@@ -3182,7 +3182,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(amPinchH===undefined) amPinchH=amNavHit({clientX:mx,clientY:my});
     amZoomAbout(amPinchH,s);
     amPanBy(dmx,dmy,amWorldPerPx(amPinchH?amDepthOf(amPinchH):dist));
-  }  const AM_YAW_SIGN=1;
+  }  const AM_NAV_R=()=>bs.radius;   // 379: the model's radius, for the walk's floor
+  const AM_YAW_SIGN=1;
   /*AM_NAV361_START*/
   // 361 (Eli, 29/09): two more ways to move, in the navigation mode. Shift+wheel turns the
   // view IN PLACE — the camera stands and the gaze swings about the upright axis through it
@@ -3193,6 +3194,11 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // wheel turns the gaze the same way everywhere.
   // 362 (Eli, on 361 in the field: "צריך להקטין את הצעדים"): the turn halved, the walk a tenth
   const AM_YAW_STEP=2.5*Math.PI/180, AM_WALK_STEP=0.016;   // 366: the walk doubled (Eli: "לחזק פי שניים")
+  // 379 (Eli, 01/10, the training screen: "הצעד של ההליכה נהיה ממש קטן"): the step is a share of the
+  // orbit's distance, and close to a wall — where the holes are worked — that distance is small, and
+  // the walk does not grow it. A floor of 3% of the model's radius (AM_NAV_R, each screen's own): far
+  // off the walk is as it was; close in it does not shrink below the floor (Eli: "מאשר 3%")
+  const AM_WALK_MIN=0.03;
   function amYawInPlace(dAz){
     const c=camera.position.clone(); az+=dAz*AM_YAW_SIGN; amApply();
     target.add(c.sub(camera.position)); amApply(); amWheel=null;
@@ -3208,7 +3214,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   function amWheelMove(e){
     const d=e.deltaY||e.deltaX; if(!d) return false;
     if(e.shiftKey){ amYawInPlace(Math.sign(d)*AM_YAW_STEP); return true; }
-    if(e.ctrlKey||e.metaKey){ amWalk(e,-Math.sign(d)*AM_WALK_STEP); return true; }
+    if(e.ctrlKey||e.metaKey){ amWalk(e,-Math.sign(d)*Math.max(AM_WALK_STEP,AM_WALK_MIN*AM_NAV_R()/Math.max(dist,1e-9))); return true; }
     return false;
   }
   /*AM_NAV361_END*/
