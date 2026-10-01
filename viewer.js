@@ -3210,11 +3210,31 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
                                               -((e.clientY-r.top)/r.height)*2+1),camera);
     target.addScaledVector(_amNavRay.ray.direction,f*dist); amApply(); amWheel=null;
   }
-  // Chrome turns Shift+wheel into a sideways scroll, so the step is read from either axis
+  // 420 (Eli, 01/10): "אני רוצה שהיא תהיה זמינה תמיד, בכל מצב, ואותו דבר גם הסיבוב במקום" — held
+  // Space + wheel walks, held Alt + wheel turns in place, in EVERY mode of every screen; Ctrl and
+  // Shift no longer move ("זה צריך להיות אחיד") and are left to the tools and to the zoom. Space is
+  // held, not typed: in a field that takes text it stays a space; elsewhere it is kept from scrolling
+  // the page and from pressing the button last clicked. Alt alone is kept from the window's menu.
+  let amSpace=false;
+  function amTyping(t){
+    if(!t||!t.tagName) return false;
+    if(t.isContentEditable||t.tagName==='TEXTAREA'||t.tagName==='SELECT') return true;
+    return t.tagName==='INPUT'&&!/^(range|button|checkbox|radio|color|file|submit|reset|image)$/i.test(t.type||'');
+  }
+  window.addEventListener('keydown',e=>{
+    if(e.code==='Space'&&!amTyping(e.target)){ amSpace=true; e.preventDefault(); }
+    else if(e.key==='Alt') e.preventDefault();
+  },true);
+  window.addEventListener('keyup',e=>{
+    if(e.code==='Space'){ const was=amSpace; amSpace=false; if(was) e.preventDefault(); }
+    else if(e.key==='Alt') e.preventDefault();
+  },true);
+  window.addEventListener('blur',()=>{ amSpace=false; });
+  // a sideways scroll is read too: a mouse may send its wheel on either axis
   function amWheelMove(e){
     const d=e.deltaY||e.deltaX; if(!d) return false;
-    if(e.shiftKey){ amYawInPlace(Math.sign(d)*AM_YAW_STEP); return true; }
-    if(e.ctrlKey||e.metaKey){ amWalk(e,-Math.sign(d)*Math.max(AM_WALK_STEP,AM_WALK_MIN*AM_NAV_R()/Math.max(dist,1e-9))); return true; }
+    if(e.altKey){ amYawInPlace(Math.sign(d)*AM_YAW_STEP); return true; }
+    if(amSpace){ amWalk(e,-Math.sign(d)*Math.max(AM_WALK_STEP,AM_WALK_MIN*AM_NAV_R()/Math.max(dist,1e-9))); return true; }
     return false;
   }
   /*AM_NAV361_END*/
