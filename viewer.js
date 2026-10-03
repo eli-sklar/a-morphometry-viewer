@@ -1611,10 +1611,12 @@ mat.onBeforeCompile=sh=>{
        else for(let f=0;f<N;f++)if(isType(ti,f))a+=area[f];}
       // 258: a polygon layer's area lives in its rings, not in painted faces
       for(const P of polys) if(P.at===T.id) a+=P.area;
-      if(typeof SMR!=='undefined'&&SMR) for(const r of SMR) if(r.at===T.id) a+=r.area;   // 329
+      if(typeof SMR!=='undefined'&&SMR){ let aS=0, aP=0, has=false; for(const r of SMR) if(r.at===T.id){ aS+=r.area; aP+=(r.painted||0); has=true; }
+      if(has&&smLevelOf(T)>0) a-=aP; a+=aS; }   // 329 · 433: a smoothed layer is its regions' copies
       T.area=a;
       const e2=document.getElementById('tA_'+T.id); if(e2)e2.textContent=a.toFixed(2);}
     $('area').textContent='';
+    if(typeof smSyncSoon==='function') smSyncSoon();   // 433: the regions follow the brush
     for(const lt of lenTypes){let s2=0;for(const ln of lines)if(ln.t===lt.id)s2+=ln.len;
       const e3=document.getElementById('lA_'+lt.id); if(e3)e3.textContent=s2.toFixed(2);}
     for(const ct of cntTypes){let n2=0;for(const m of xmarks)if(m.t===ct.id)n2++;
@@ -2235,14 +2237,20 @@ mat.onBeforeCompile=sh=>{
   // one region: its copy smoothed to its level, and its area — the painted area of its sub-faces
   // (a cut one by its part, 335) times what the smoothing did to the copy. memo (the screen's):
   // the mesh, level 10 and the film of the same marking, kept while the wheel turns
+  // 433: a layer's level turns every region at once — each level's copy is kept, and the next one
+  // goes on from the nearest kept below it (the same passes, in the same order, as from the start)
+  function smTaubinTo(M,lv,memo){ if(!memo) return smTaubin(M.X,M.T,SM_PASSES*lv);
+    if(!memo.Xl) memo.Xl=[]; if(memo.Xl[lv]) return memo.Xl[lv];
+    let k=lv-1; while(k>0&&!memo.Xl[k]) k--;
+    const X=smTaubin(k>0?memo.Xl[k]:M.X,M.T,SM_PASSES*(lv-k)); memo.Xl[lv]=X; if(lv===SM_SOFT) memo.X10=X; return X; }
   function smRegion(P,AREA,faces,level,pc,memo){
     const fs=Array.from(faces).sort((a,b)=>a-b), lv=Math.max(0,Math.min(SM_MAXLEVEL,Math.round(level||0)));
     let painted=0; for(const f of fs){ const bb=pc&&pc.get(f); painted+=bb?AREA[f]*Math.min(1,smFrac(bb)):AREA[f]; }
     const M=(memo&&memo.M)||smMesh(P,fs,pc); if(memo) memo.M=M;
     if(!lv||!fs.length) return {X:M.X, T:M.T, area:painted, painted:painted, level:lv};
     const a0=smArea(M.X,M.T); let Xs;
-    if(lv<=SM_SOFT){ Xs=(memo&&lv===SM_SOFT&&memo.X10)||smTaubin(M.X,M.T,SM_PASSES*lv); if(memo&&lv===SM_SOFT) memo.X10=Xs; }
-    else { const X10=(memo&&memo.X10)||smTaubin(M.X,M.T,SM_PASSES*SM_SOFT), F=(memo&&memo.F)||smFilm(X10,M.T);
+    if(lv<=SM_SOFT){ Xs=smTaubinTo(M,lv,memo); }
+    else { const X10=smTaubinTo(M,SM_SOFT,memo), F=(memo&&memo.F)||smFilm(X10,M.T);
       if(memo){ memo.X10=X10; memo.F=F; }
       const t=(lv-SM_SOFT)/SM_SOFT; Xs=new Float64Array(X10.length);
       for(let i=0;i<X10.length;i++) Xs[i]=X10[i]+t*(F[i]-X10[i]); }
@@ -2388,6 +2396,52 @@ mat.onBeforeCompile=sh=>{
     for(const r of fresh){ r.id='s'+(++smSeq); regs.push(r); }
     return regs;
   }
+  /* 433 (Eli, 02/10; the plan approved 03/10, and: "the smoothing works at once on all the brush's
+     marks in the layer, there is no level per region"): ONE brush. The smoothed tool's own marking
+     is gone; a layer has a level (T.sm, 0-20) that smooths every region its brush marks. At 0 it is
+     the brush as it always was — no copy, no rim. Above 0 each connected region (the brush's 8 cm
+     rule, smPieces) has its copy at the layer's level and is counted by it, as the smoothed tool
+     counted (329/335/382). The regions are found again from the brush's marking whenever it changes
+     (smSyncSoon, from updateArea), never while a stroke is down. */
+  const SM_TINY=0.01;   // m2: the report's MIN — a smaller region is a small patch of the brush
+  function smLevelOf(T){ return Math.max(0,Math.min(SM_MAXLEVEL,Math.round((T&&T.sm)||0))); }
+  // what the layer's brush measures: whole sub-faces off its line, and those on it by their part
+  function smBrushMarked(T,ti){ const fs=[], pc=new Map(), B=T.band;
+    for(let f=0;f<N;f++) if(isType(ti,f)&&!(B&&B.has(f))) fs.push(f);
+    if(T.pieces) for(const [f,q] of T.pieces){ if(q.fr>1e-6){ fs.push(f); pc.set(f,q.bb.map(smQ)); } }
+    fs.sort((a,b)=>a-b); return {faces:fs, pc:pc}; }
+  function smLayerSync(ti){ const T=types[ti]; if(!T) return false;
+    const lv=smLevelOf(T), M=lv?smBrushMarked(T,ti):{faces:[],pc:new Map()};
+    const sig=lv?smSig({level:lv,faces:M.faces,pc:M.pc}):'0';
+    if(T._smSig===sig) return false; T._smSig=sig;
+    // a region whose faces, cuts and level did not change keeps the copy it has (373 ב)
+    const keep=new Map(); for(const r of SMR) if(r.at===T.id&&r.X) keep.set(smSig(r),r);
+    for(let i=SMR.length-1;i>=0;i--) if(SMR[i].at===T.id) SMR.splice(i,1);
+    if(lv&&M.faces.length) for(const piece of smPieces(pos,M.faces,M.pc,smMemoFor(M.faces,M.pc))){
+      const pc=new Map(); for(const f of piece) if(M.pc.has(f)) pc.set(f,M.pc.get(f));
+      // a speck under SM_TINY stays the brush's — the report's own threshold puts it with the small patches
+      let pa=0; for(const f of piece){ const bb=pc.get(f); pa+=bb?area[f]*Math.min(1,smFrac(bb)):area[f]; } if(pa<SM_TINY) continue;
+      const r={id:'s'+piece[0], at:T.id, level:lv, faces:piece, pc:pc.size?pc:null, painted:pa};
+      const o=keep.get(smSig(r)); if(o){ r.X=o.X; r.T=o.T; r.area=o.area; r.pending=o.pending; } else smCompute(r);
+      SMR.push(r); }
+    return true; }
+  var smSyncT=0;
+  function smSyncSoon(){ clearTimeout(smSyncT); smSyncT=setTimeout(smSyncNow,120); }
+  function smSyncNow(){ clearTimeout(smSyncT);
+    if(typeof amLive!=='undefined'&&amLive){ smSyncSoon(); return; }      // not while a stroke is down
+    let ch=false; for(let ti=0;ti<types.length;ti++) if(smLayerSync(ti)) ch=true;
+    if(ch){ smRebuild(); updateArea(); } smWheelShow();
+  // the bar's word follows the films still being built — none left, no word
+  smBusyShow(SMR.some(r=>r.pending)||(typeof volSmWait!=='undefined'&&!!volSmWait)); }
+  // 433: what of a layer's marking reaches the report as the brush's: all of it at level 0; at a level,
+  // only what no smoothed region took (its specks)
+  function smBrushLeft(T,d){ if(!(smLevelOf(T)>0)) return d;
+    const In=new Set(); for(const r of SMR) if(r.at===T.id) for(const f of r.faces) In.add(f); if(!In.size) return d;
+    const fr=new Map(d.frac), fs=d.faces.filter(f=>!In.has(f)); let a=0; for(const f of fs) a+=(fr.has(f)?fr.get(f):1)*area[f];
+    return {a:a, faces:fs, frac:d.frac.filter(q=>!In.has(q[0])), pieces:d.pieces.filter(q=>!In.has(q[0]))}; }
+  // the wheel shows the open layer's level
+  function smWheelShow(){ const e=document.getElementById('smLevel'), v=document.getElementById('smLevelV'); if(!e) return;
+    if(activeKind==='area'&&types[activeT]){ e.value=smLevelOf(types[activeT]); if(v) v.textContent=e.value; } }
   function smRemoveRegion(r){ const at=r.at, before=smSnap(at), t=smT(at);
     for(const f of r.faces){ if(r.pc&&r.pc.has(f)) t.X[f]=1; else t.S[f]=0; }
     const after=smSnap(at); after.regs=before.regs.filter(q=>q.id!==r.id);
@@ -2580,18 +2634,19 @@ mat.onBeforeCompile=sh=>{
     }
     smRecolor(); rescaleFixed(); invalidate();
   }
-  // the wheel: the level of the region chosen (its tag, or the last one marked), undone as one step
+  // 433: the wheel is the open layer's level — every region its brush marks, at once; undone as one step
   { const e=document.getElementById('smLevel');
     if(e){
       e.oninput=()=>{ const v=document.getElementById('smLevelV'); if(v) v.textContent=e.value;
-        if(!smSel) return;
-        if(!smWheelFrom) smWheelFrom={at:smSel.at,before:smSnap(smSel.at)};
-        clearTimeout(smWheelT);
-        smWheelT=setTimeout(()=>{ if(!smSel) return; smSel.level=smWheelLevel(); smCompute(smSel); smRebuild(); updateArea(); },60); };
+        if(activeKind!=='area') return;
+        const T=types[activeT]; if(!T) return;
+        if(!smWheelFrom) smWheelFrom={at:T.id, from:smLevelOf(T)};
+        T.sm=smWheelLevel();
+        clearTimeout(smWheelT); smWheelT=setTimeout(smSyncNow,60); };
       e.onchange=()=>{ clearTimeout(smWheelT); const w=smWheelFrom; smWheelFrom=null;
-        if(!smSel||!w) return;
-        const after=Object.assign({},w.before,{regs:w.before.regs.map(q=>q.id===smSel.id?Object.assign({},q,{level:smWheelLevel()}):q)});
-        smCommitLayer(w.at,w.before,after,true); smSyncWheel(); };
+        const T=w&&types.find(q=>q.id===w.at);
+        if(T&&w.from!==smLevelOf(T)){ undoStack.push([['SML',{at:T.id,from:w.from,to:smLevelOf(T)}]]); redoStack.length=0; updateHB(); markDirty(); }
+        smSyncNow(); };
     } }
   /* ---- 335ב: THE POLYGON ON THE MODEL -------------------------------------------------------
      Eli, 29/09 (option ג, approved): the three tools of an area layer read in ONE tone — the wall
@@ -3144,6 +3199,8 @@ mat.onBeforeCompile=sh=>{
       else if(d[0]==='D'){inv.push(['D-',d[1]]);amLayerIn(d[1]);}
       // 329: a smoothed region's stroke, erasure or level — the layer's regions before and after
       else if(d[0]==='SMR'){inv.push(['SMR',{at:d[1].at,before:d[1].after,after:d[1].before}]);smSetLayer(d[1].at,d[1].before);}
+    else if(d[0]==='SML'){const T=types.find(q=>q.id===d[1].at); inv.push(['SML',{at:d[1].at,from:d[1].to,to:d[1].from}]);   // 433: the layer's level
+      if(T){T.sm=d[1].from; T._smSig=null; smSyncNow();}}
       // 324: a stroke's balls, or a grow, leave with its undo and come back with its redo
       else if(d[0]==='OP'){inv.push(['OP-',d[1],d[2]]);amOpOut(d[1],d[2]);}
       else if(d[0]==='OP-'){inv.push(['OP',d[1],d[2]]);amOpIn(d[1],d[2]);}
@@ -3533,7 +3590,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const hit=castAt(e); if(!hit.length)return;
     const p=hit[0].point,r2=brushR*brushR;let ch=false;
     const val=(mode==='add')?1:-1;
-    amStrokeDab(p);                             // 324: the stroke's balls
+    amStrokeDab(p); if(val<0&&smLevelOf(types[activeT])>0) smLiveHide(types[activeT].id,p,brushR);   // 433                             // 324: the stroke's balls
     const seen=amSeenUnder(e,p);                // 6: null = the ball; a set = the flat cut
     const ix0=Math.floor((p.x-brushR)/CELL),ix1=Math.floor((p.x+brushR)/CELL);
     const iy0=Math.floor((p.y-brushR)/CELL),iy1=Math.floor((p.y+brushR)/CELL);
@@ -3884,11 +3941,13 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     }
     return {id:T.id,name:T.name,color:T.hex,thr:T.thr,op:T.op,hid:!!T.hid,repHid:!!T.repHid,am:(T.am||AM_BRUSH),manual:m,faceThr:ov,
       ops:amOpsOut(T),     // 324: the strokes' balls and the grows, in their order
+          ...(smLevelOf(T)?{sm:smLevelOf(T)}:{}),   // 433: the layer's smoothing level
       hasProb:T.hasProb,
       prob:T.hasProb?(()=>{const p=new Array(FO);
         for(let fo=0;fo<FO;fo++)p[fo]=Math.round(T.prob[OFF[fo]]*1000)/1000;return p;})():null};
   }
   function getSheet(){
+    smSyncNow();   // 433: the regions are the brush's marking as it is now
     const t0=typeState(types[0]);
     // הזהה לעורך במילה: התחום שנוסע חזרה נגזר — מה שנצבע, בתוספת כל פאה
     // שיש עליה סימון שטח; נסוג עם מחיקת הסימון, ואינו נשמר כצבע (החלטה 84)
@@ -3930,7 +3989,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         t:T.id,n:g.n,len:Math.round(g.len*1000)/1000,
         c:[Math.round(g.c.x*1000)/1000,Math.round(g.c.y*1000)/1000,
            Math.round(g.c.z*1000)/1000]})))),
-      minReader:(SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1)))))),   // 329 · 332 · 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
+      minReader:(SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1)))))),   // 329 · 332 · 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
       tagTypes:tagTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid})),
       tags:tags.map(g=>({id:g.id,t:g.t,p:g.p.slice(),nrm:g.nrm?g.nrm.slice():null,
                          title:g.title,text:g.text,img:g.img||null})),
@@ -3938,15 +3997,12 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         area:Math.round(r.area*10000)/10000},
         // 335: a sub-face on the line, by its cut part — the report builds the copy from these
         r.pc?{pieces:[...r.pc].map(([f,b])=>[f].concat(b))}:{})),
-      // 335: each layer's smooth marking — the whole sub-faces, the held-out ones, the strokes' balls
-      smoothOps:[...smTs.values()].filter(t=>types.some(q=>q.id===t.at)&&(t.ops.length||SMR.some(r=>r.at===t.at)))
-        .map(t=>{ const S=[], X=[]; for(let f=0;f<N;f++){ if(t.S[f]) S.push(f); if(t.X[f]) X.push(f); }
-          return {at:t.at, S:S, X:X, ops:amOpsOut(t)}; }),
+      // 433: no smoothed marking apart from the brush's — the brush's marking and the layer's level (sm) are all
       saved:new Date().toISOString(),
       jobId:AM.jobId,exportedBy:'A-morphometry iPad'};
     // 324: every layer with the parts of the sub-faces on its line — the report counts them
     // as the screen does, and draws them as the screen does
-    const per=types.map((T,ti)=>amMarkDerived(T,ti));
+    const per=types.map((T,ti)=>smBrushLeft(T,amMarkDerived(T,ti)));   // 433: a smoothed layer reaches the report as its regions (smooths) and its specks
     const unF=new Map();
     per.forEach(d=>{ const fr=new Map(d.frac); for(const f of d.faces){ const v=fr.has(f)?fr.get(f):1; if(!(unF.get(f)>=v)) unF.set(f,v); } });
     const rep=[...unF.keys()].sort((x,y)=>x-y); let un=0; for(const [f,v] of unF) un+=v*area[f];
@@ -4000,14 +4056,13 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
 
   $('mGrow').onclick=()=>setMode('grow');
   function amSetAreaTool(k){
-    areaTool=(k===AM_POLY||k===AM_SMOOTH)?k:AM_BRUSH;
+    areaTool=(k===AM_POLY)?k:AM_BRUSH;   // 433: the smoothed tool is the brush, at the layer's level
     const T=types[activeT]; if(T&&T.am!==areaTool){T.am=areaTool; markUnexported(true);}
     if(mode!=='add'&&mode!=='rem') setMode('add'); else amSideWhat();
     applyBrush();
   }
   $('aBrush').onclick=()=>amSetAreaTool(AM_BRUSH);
   $('aPoly').onclick=()=>amSetAreaTool(AM_POLY);
-  if($('aSmooth')) $('aSmooth').onclick=()=>amSetAreaTool(AM_SMOOTH);   // an older cached page has no button
   // The keys stay — a keyboard may be attached, and the same page opens on a computer —
   // but the NOTE about them is gone (user decision 13/08): an iPad normally has no
   // keyboard, so a strip telling the user about Ctrl+Z described something that is not
@@ -4043,9 +4098,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   function amSideWhat(){
     const growing=((mode==='nav'?amKeepMode:mode)==='grow'&&activeKind==='area');   // 421
     const poly=(activeKind==='area'&&areaTool===AM_POLY&&!growing);
-    const smooth=(activeKind==='area'&&areaTool===AM_SMOOTH&&!growing);   // 329
+    const smooth=(activeKind==='area'&&areaTool===AM_BRUSH&&!growing);   // 329 · 433: the brush carries the level wheel
     const w=$('brushWhat'); if(w) w.textContent=AM_BRUSH_WHAT[activeKind]||'גודל המברשת';
-    const t=$('sideTool'); if(t) t.textContent=activeKind==='none'?'אין שכבה פתוחה':growing?'נביטה':poly?'שטח פוליגון':smooth?'שטח מוחלק':(AM_TOOL_NAME[activeKind]||'סימון');
+    const t=$('sideTool'); if(t) t.textContent=activeKind==='none'?'אין שכבה פתוחה':growing?'נביטה':poly?'שטח פוליגון':(AM_TOOL_NAME[activeKind]||'סימון');
     const smw=$('smWrap'); if(smw) smw.style.display=smooth?'':'none';
     const g=$('growWrap'); if(g) g.style.display=growing?'':'none';
     // 10: the tool pair belongs to an area layer; a polygon has no brush size
@@ -4153,7 +4208,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     syncKindUI();buildChips();
     if(mode!=='add'&&mode!=='rem')setMode('add');}
   function activateT(i){activeKind='area';activeT=i;const T=types[i];
-    areaTool=(T&&(T.am===AM_POLY||T.am===AM_SMOOTH))?T.am:AM_BRUSH;   // 10: the tool last used on this layer
+    areaTool=(T&&(T.am===AM_POLY))?T.am:AM_BRUSH;   // 10: the tool last used on this layer
     $('thr').value=Math.round(T.thr*1000);$('thrV').textContent=T.thr.toFixed(3);
     syncKindUI();buildChips();}
   function activateR(i){activeKind='rul';activeR=i;rulEnd();
@@ -4568,7 +4623,7 @@ const amPal=(function(){
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
-  const AM_SHEET_READER = 7;   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
+  const AM_SHEET_READER = 8;   // 433: one brush, a level per layer   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
   const AM_SUB_SCHEME = 1;      // core.subdiv_weights, face-major child order
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -4657,7 +4712,7 @@ const amPal=(function(){
     for(const fo of (sh.roiPainted||sh.roiFaces||[])) if(fo<FO)
       for(let t=OFF[fo];t<OFF[fo+1];t++){ if(!roi[t]){roi[t]=1;roiCount++;} }
     const loadT=(T,src)=>{
-      T.am=(src.am===AM_POLY||src.am===AM_SMOOTH)?src.am:AM_BRUSH;   // an older sheet is a brush layer
+      T.am=(src.am===AM_POLY)?AM_POLY:AM_BRUSH; T.sm=Math.max(0,Math.min(SM_MAXLEVEL,Math.round(+src.sm||0)));   // 433: the layer's smoothing level   // an older sheet is a brush layer
       if(src.name!==undefined)T.name=src.name;
       if(src.color){T.hex=src.color;T.color=hex2rgb(src.color);}
       if(typeof src.thr==='number')T.thr=src.thr;
@@ -4701,25 +4756,28 @@ const amPal=(function(){
     // 335: each layer's smooth marking — its whole and held-out sub-faces through the same map,
     // its strokes' balls as they are, and the line asked again; then the regions the sheet names,
     // found again in that marking (a sheet from before 335 marks whole sub-faces only)
-    smTs.clear();
-    const smHas=new Set();
-    for(const src of (sh.smoothOps||[])){ if(!src||!src.at) continue; const t=smT(src.at); smHas.add(src.at);
-      for(const f of (src.S||[])) amEach(MAP,f,q=>{ t.S[q]=1; });
-      for(const f of (src.X||[])) amEach(MAP,f,q=>{ t.X[q]=1; });
-      t.ops=(src.ops||[]).filter(o=>o&&o.t==='balls'&&Array.isArray(o.c)&&o.c.length)
-        .map(o=>({t:'balls', r:+o.r||0.1, s:(o.s<0)?-1:1, c:o.c.map(Number)})); }
-    const smLoad=new Map();
-    for(const src of (sh.smooths||[])){
-      const fs=new Set(); for(const f of (src.faces||[])) amEach(MAP,f,t=>fs.add(t));
-      if(!fs.size||!src.at) continue;
-      const q={id:String(src.id||('s'+(smSeq+1))),
-               level:Math.max(0,Math.min(SM_MAXLEVEL,Math.round(+src.level||0))),faces:[...fs].sort((a,b)=>a-b)};
-      const k=parseInt(q.id.slice(1),10); if(k>smSeq) smSeq=k; else if(!src.id) smSeq++;
-      if(!smHas.has(src.at)){ const t=smT(src.at); for(const f of q.faces) t.S[f]=1; }
-      if(!smLoad.has(src.at)) smLoad.set(src.at,[]); smLoad.get(src.at).push(q); }
-    for(const [at,regs] of smLoad){ amMarkFull(smT(at));
-      for(const q of smDerive(at,{regs:regs})){ const r={id:q.id,at:at,level:q.level,faces:q.faces,pc:q.pc}; smCompute(r); SMR.push(r); } }
-    smRebuild();
+    // 433: one brush. A sheet from before it (reader 7 and below) kept the smoothed tool's marking apart
+    // (smoothOps: its whole and held-out sub-faces and its strokes; before 335 only the regions'
+    // faces). It joins the layer's brush marking once, here — a sub-face both tools marked is one
+    // mark and counts once — and the layer takes the level of its largest smoothed region.
+    smTs.clear(); SMR.length=0;
+    if(!(_need>=8)){
+      const lvAt=new Map(), opsAt=new Map();
+      for(const src of (sh.smooths||[])){ if(!src||!src.at) continue; const n=(src.faces||[]).length, L=lvAt.get(src.at);
+        if(!L||n>L[1]) lvAt.set(src.at,[Math.max(0,Math.min(SM_MAXLEVEL,Math.round(+src.level||0))),n]); }
+      for(const src of (sh.smoothOps||[])) if(src&&src.at) opsAt.set(src.at,src);
+      for(const T of types){ const O=opsAt.get(T.id), L=lvAt.get(T.id); if(!O&&!L) continue;
+        const X=new Set(); if(O) for(const f of (O.X||[])) amEach(MAP,f,q=>X.add(q));
+        const add=q=>{ if(!X.has(q)) T.manual[q]=1; };
+        if(O){ for(const f of (O.S||[])) amEach(MAP,f,add);
+          if(!T.ops) T.ops=[];
+          for(const o of (O.ops||[])) if(o&&o.t==='balls'&&Array.isArray(o.c)&&o.c.length)
+            T.ops.push({t:'balls', r:(+o.r>0)?+o.r:0.1, s:(o.s<0)?-1:1, c:o.c.map(Number)}); }
+        else for(const src of (sh.smooths||[])) if(src&&src.at===T.id) for(const f of (src.faces||[])) amEach(MAP,f,add);
+        if(L) T.sm=L[0];
+        amSOf(T); amMarkFull(T); T._smSig=null; } }
+    for(const T of types) T._smSig=null;
+    smSyncNow();
     for(const src of (sh.polygons||[])){
       const P={id:src.id||(++pSeq),at:src.at,pts:(src.pts||[]).map(q=>q.slice()),area:0};
       if(src.id&&src.id>pSeq) pSeq=src.id;
