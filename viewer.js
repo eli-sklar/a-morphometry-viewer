@@ -2115,7 +2115,7 @@ mat.onBeforeCompile=sh=>{
      a shared corner, or 8 cm between their edges. 382 (Eli, 30/09): levels 11-20 go on from
      level 10 to the soap film on its rim, reached at 20. */
   const SM_LAMBDA=0.5, SM_MU=-0.5, SM_PASSES=10, SM_WELD=1e-4, SM_CELL=1e-4, SM_MAXLEVEL=20, SM_SOFT=10, SM_MERGE=0.08;
-  const SM_FILM_ROUNDS=8, SM_CG_MAX=2000, SM_CG_TOL=1e-12, SM_EPS=1e-8, SM_WMIN=1e-3, SM_FILM_STOP=1e-7;
+  const SM_FILM_ROUNDS=8, SM_CG_MAX=20000, SM_CG_TOL=1e-20, SM_EPS=1e-8, SM_WMIN=1e-3, SM_FILM_STOP=1e-7;   // 434: converged — the server solves it
   // 335: a sub-face on the line comes in by its cut part — triangles given in the sub-face's own
   // barycentrics (b1,b2 per corner, rounded as the sheet carries them); the rest come in whole
   function smCorners(P,f,pc){
@@ -2199,7 +2199,7 @@ mat.onBeforeCompile=sh=>{
     const dot=(a,b)=>{ let s=0; for(let i=0;i<a.length;i++) s+=a[i]*b[i]; return s; };
     const Am=(p,y)=>{ for(let v=0;v<nV;v++){ let s=d[v]*p[v]; for(let q=0;q<K;q++) s=s-WW[v*K+q]*p[NB[v*K+q]]; y[v]=s*Fr[v]; } };
     const yc=new Float64Array(nV), xf=new Float64Array(nV), bv=new Float64Array(nV), x=new Float64Array(nV),
-          r=new Float64Array(nV), p=new Float64Array(nV), Ap=new Float64Array(nV);
+          r=new Float64Array(nV), p=new Float64Array(nV), Ap=new Float64Array(nV), z=new Float64Array(nV);
     let Y=Float64Array.from(X), aY=smArea(Y,T);
     for(let rd=0;rd<SM_FILM_ROUNDS;rd++){
       const w=new Float64Array(nE);
@@ -2214,16 +2214,16 @@ mat.onBeforeCompile=sh=>{
       for(let c=0;c<3;c++){
         for(let v=0;v<nV;v++){ yc[v]=Y[v*3+c]; xf[v]=yc[v]*(1-Fr[v]); }
         for(let v=0;v<nV;v++){ let s=SM_EPS*yc[v]; for(let q=0;q<K;q++) s=s+WW[v*K+q]*xf[NB[v*K+q]]; bv[v]=s*Fr[v]; x[v]=yc[v]*Fr[v]; }
-        Am(x,Ap); for(let v=0;v<nV;v++){ r[v]=bv[v]-Ap[v]; p[v]=r[v]; }
-        let rr=dot(r,r); const bb=dot(bv,bv);
+        Am(x,Ap); for(let v=0;v<nV;v++){ r[v]=bv[v]-Ap[v]; z[v]=r[v]*Fr[v]/d[v]; p[v]=z[v]; }   // 434: Jacobi
+        let rr=dot(r,r), rz=dot(r,z); const bb=dot(bv,bv);
         for(let it=0;it<SM_CG_MAX;it++){
           if(rr<=SM_CG_TOL*bb) break;
           Am(p,Ap); const pAp=dot(p,Ap); if(!(pAp>0)) break;
-          const al=rr/pAp;
-          for(let v=0;v<nV;v++){ x[v]=x[v]+al*p[v]; r[v]=r[v]-al*Ap[v]; }
-          const rn=dot(r,r), be=rn/rr;
-          for(let v=0;v<nV;v++) p[v]=r[v]+be*p[v];
-          rr=rn; }
+          const al=rz/pAp;
+          for(let v=0;v<nV;v++){ x[v]=x[v]+al*p[v]; r[v]=r[v]-al*Ap[v]; z[v]=r[v]*Fr[v]/d[v]; }
+          const rzn=dot(r,z), be=rzn/rz;
+          for(let v=0;v<nV;v++) p[v]=z[v]+be*p[v];
+          rr=dot(r,r); rz=rzn; }
         for(let v=0;v<nV;v++) Yn[v*3+c]=xf[v]+x[v]; }
       Y=Yn; const aN=smArea(Y,T), gain=aY-aN; aY=aN; if(gain<=SM_FILM_STOP*aN) break; }
     return Y;
@@ -2325,6 +2325,7 @@ mat.onBeforeCompile=sh=>{
   var smW=null, smWSeq=0; const smWJobs=new Map();
   function smWorker(){
     if(smW!==null) return smW;
+    if(typeof amFilmServer==='function'){ smW={postMessage:d=>amFilmServer(d)}; return smW; }   // 434: the report's own film
     try{ const src='const SM_FILM_ROUNDS='+SM_FILM_ROUNDS+', SM_CG_MAX='+SM_CG_MAX+', SM_CG_TOL='+SM_CG_TOL+', SM_EPS='+SM_EPS+
           ', SM_WMIN='+SM_WMIN+', SM_FILM_STOP='+SM_FILM_STOP+';\n'+smArea.toString()+'\n'+smFilm.toString()+
           '\nonmessage=e=>{ const F=smFilm(e.data.X,e.data.T); postMessage({id:e.data.id,F:F},[F.buffer]); };';
@@ -2340,7 +2341,7 @@ mat.onBeforeCompile=sh=>{
     for(const r of SMR) if(r.pending){ const m=smMemoOf(r); if(m.F||!smWorker()){ smCompute(r); ch=true; } else busy=true; }
     smBusyShow(busy); if(ch){ smRebuild(); updateArea(); } }
   function smCompute(r){ const m=smMemoOf(r);
-    if(r.level>SM_SOFT&&!m.F&&r.faces.length>SM_BG_FACES&&smWorker()){
+    if(r.level>SM_SOFT&&!m.F&&(r.faces.length>SM_BG_FACES||typeof amFilmServer==='function')&&smWorker()){
       const g=smRegion(pos,area,r.faces,SM_SOFT,r.pc,m); r.X=g.X; r.T=g.T; r.area=g.area; r.pending=true;
       if(!m.job){ m.job=++smWSeq; smWJobs.set(m.job,m); smW.postMessage({id:m.job,X:m.X10,T:m.M.T}); }
       smBusyShow(true); return; }
