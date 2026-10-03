@@ -2135,7 +2135,7 @@ mat.onBeforeCompile=sh=>{
   // the copy as a mesh: its corners welded where they coincide (the first one met is kept; a
   // triangle the weld collapses is dropped, 381); tf: which of the faces each triangle came from
   function smMesh(P,faces,pc){
-    const X=[], T=[], tf=[], grid=new Map(), w2=SM_WELD*SM_WELD;   // 385: (i,j) a number, then k — the cells a string named
+    const X=[], T=[], tf=[], tq=[], grid=new Map(), w2=SM_WELD*SM_WELD;   // 385: (i,j) a number, then k — the cells a string named
     for(let a=0;a<faces.length;a++){ const C=smCorners(P,faces[a],pc);
       for(let q=0;q+8<C.length;q+=9){ const tri=[];
         for(let c=0;c<3;c++){ const x=C[q+c*3], y=C[q+c*3+1], z=C[q+c*3+2];
@@ -2147,8 +2147,8 @@ mat.onBeforeCompile=sh=>{
           if(id<0){ id=X.length/3; X.push(x,y,z); const kk=(i+33554432)*67108864+(j+33554432);
             let G2=grid.get(kk); if(!G2){ G2=new Map(); grid.set(kk,G2); } let L=G2.get(k); if(!L){ L=[]; G2.set(k,L); } L.push(id); }
           tri.push(id); }
-        if(tri[0]!==tri[1]&&tri[1]!==tri[2]&&tri[0]!==tri[2]){ T.push(tri[0],tri[1],tri[2]); tf.push(a); } } }
-    return {X:Float64Array.from(X), T:Int32Array.from(T), tf:tf};
+        if(tri[0]!==tri[1]&&tri[1]!==tri[2]&&tri[0]!==tri[2]){ T.push(tri[0],tri[1],tri[2]); tf.push(a); tq.push(q/9); } } }   // 435: and which of its triangles
+    return {X:Float64Array.from(X), T:Int32Array.from(T), tf:tf, tq:tq};
   }
   // Taubin, uniform weights: a vertex inside moves toward all its neighbours, a vertex on the
   // rim toward its two neighbours ALONG the rim (a pinch — any other count — stays put)
@@ -2422,7 +2422,7 @@ mat.onBeforeCompile=sh=>{
       const pc=new Map(); for(const f of piece) if(M.pc.has(f)) pc.set(f,M.pc.get(f));
       // a speck under SM_TINY stays the brush's — the report's own threshold puts it with the small patches
       let pa=0; for(const f of piece){ const bb=pc.get(f); pa+=bb?area[f]*Math.min(1,smFrac(bb)):area[f]; } if(pa<SM_TINY) continue;
-      const r={id:'s'+piece[0], at:T.id, level:lv, faces:piece, pc:pc.size?pc:null, painted:pa};
+      const r={id:'s'+piece[0]+'-'+T.id, at:T.id, level:lv, faces:piece, pc:pc.size?pc:null, painted:pa};   // 435: the layer in the id — two layers may start at one sub-face
       const o=keep.get(smSig(r)); if(o){ r.X=o.X; r.T=o.T; r.area=o.area; r.pending=o.pending; } else smCompute(r);
       SMR.push(r); }
     return true; }
@@ -2566,11 +2566,18 @@ mat.onBeforeCompile=sh=>{
   // copy's corners in the order smMesh lays its triangles (sorted sub-faces; a cut one by its
   // parts), each corner's uv taken from its sub-face as its position is.
   function smUV(r){
+    // 435 (Eli, 04/10: "under the area marking, the model's texture is scrambled"): the texture by the
+    // triangles the copy KEPT. A triangle the weld collapses is dropped (381), and walking every
+    // face's corners put each later triangle's texture on the one before it — the noise of mixed
+    // triangles over every region with such a sliver, which 433 made every region of the layer.
     const fs=Array.from(r.faces).sort((a,b)=>a-b), U=[], pf=[];
-    for(const f of fs){ const o=(f*3)*2, bb=r.pc&&r.pc.get(f), pp=(f>=PATCH0)?1:0;
-      if(!bb){ for(let c=0;c<3;c++){ U.push(uv[o+c*2],uv[o+c*2+1]); pf.push(pp); } continue; }
-      for(let i=0;i+1<bb.length;i+=2){ const b1=bb[i], b2=bb[i+1];
-        U.push(uv[o]+b1*(uv[o+2]-uv[o])+b2*(uv[o+4]-uv[o]), uv[o+1]+b1*(uv[o+3]-uv[o+1])+b2*(uv[o+5]-uv[o+1])); pf.push(pp); } }
+    const m=smMemoFor(r.faces,r.pc), M=(m.M&&m.M.tq)?m.M:(m.M=smMesh(pos,fs,r.pc));
+    for(let t=0;t<M.tf.length;t++){ const f=fs[M.tf[t]], q=M.tq[t], o=(f*3)*2, bb=r.pc&&r.pc.get(f), pp=(f>=PATCH0)?1:0;
+      for(let c=0;c<3;c++){
+        if(!bb) U.push(uv[o+c*2],uv[o+c*2+1]);
+        else { const i=(q*3+c)*2, b1=bb[i], b2=bb[i+1];
+          U.push(uv[o]+b1*(uv[o+2]-uv[o])+b2*(uv[o+4]-uv[o]), uv[o+1]+b1*(uv[o+3]-uv[o+1])+b2*(uv[o+5]-uv[o+1])); }
+        pf.push(pp); } }
     return {U:U, pf:pf};
   }
   var smMatC=null;
