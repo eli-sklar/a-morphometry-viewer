@@ -873,7 +873,7 @@ mat.onBeforeCompile=sh=>{
   if(amEdges) scene.add(amEdges);
 
   /* ---- state ---- */
-  let brushR=0.10, mode='nav';
+  let brushR=0.10, mode='nav', amKeepMode='nav';   // 421: the mode "ניווט" was pressed over
   const roi=new Uint8Array(N); let roiCount=0;
   if(roi0) for(let f=0;f<N;f++){ if(roi0[FACEOF[f]]){roi[f]=1;roiCount++;} }
   /* marking TYPES (decision 58) — field-for-field the desktop model: every colour is
@@ -3910,7 +3910,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   };
 
   /* ---- toolbar ---- */
-  function setMode(m){mode=m;
+  // 421 (Eli, 03/10): "ניווט" changes the hand only — the side bar goes on showing what was open
+  function setMode(m){ if(mode!=='nav'&&m==='nav') amKeepMode=mode; else if(m!=='nav') amKeepMode=m; mode=m;
     ['mNav','mAdd','mRem','mGrow'].forEach(id=>{const b=$(id);if(b)b.classList.remove('on');});
     const _b=$({nav:'mNav',add:'mAdd',rem:'mRem',grow:'mGrow'}[m]);
     if(_b)_b.classList.add('on');
@@ -3965,7 +3966,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // The tolerance belongs to growing alone (Eli, 24/09) — hidden, not dimmed, in every
   // other mode; while growing the side bar's title says so.
   function amSideWhat(){
-    const growing=(mode==='grow'&&activeKind==='area');
+    const growing=((mode==='nav'?amKeepMode:mode)==='grow'&&activeKind==='area');   // 421
     const poly=(activeKind==='area'&&areaTool===AM_POLY&&!growing);
     const smooth=(activeKind==='area'&&areaTool===AM_SMOOTH&&!growing);   // 329
     const w=$('brushWhat'); if(w) w.textContent=AM_BRUSH_WHAT[activeKind]||'גודל המברשת';
