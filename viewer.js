@@ -100,11 +100,11 @@ function amTagCanvas(title,hex,cam,gold){
   const tw=Math.ceil(t0.measureText(txt).width), w=tw+pad*2+camW;
   c.width=w; c.height=H;
   const x=c.getContext('2d'); x.direction='rtl';
-  x.fillStyle=gold?'#3a2f16':'rgba(20,18,16,0.92)'; x.strokeStyle=gold?'#ffc72c':(hex||'#b8934a'); x.lineWidth=6;
+  x.fillStyle=gold?'#3a2f16':'rgba(20,18,16,0.92)'; x.strokeStyle=gold?'#ffca3a':(hex||'#b8934a'); x.lineWidth=6;
   const rr=18; x.beginPath(); x.moveTo(rr,3);
   x.arcTo(w-3,3,w-3,H-3,rr); x.arcTo(w-3,H-3,3,H-3,rr); x.arcTo(3,H-3,3,3,rr); x.arcTo(3,3,w-3,3,rr);
   x.closePath(); x.fill(); x.stroke();
-  const ink=gold?'#ffc72c':'#f0e6d2';
+  const ink=gold?'#ffca3a':'#f0e6d2';
   x.font='bold 54px system-ui, Arial, sans-serif'; x.fillStyle=ink;
   x.textAlign='center'; x.textBaseline='middle'; x.fillText(txt,camW+pad+tw/2,58);
   if(cam){                      // the camera sits at the END of a Hebrew line: the left
@@ -229,7 +229,7 @@ function amTagCard(o){
     const file=document.createElement('input'); file.type='file'; file.accept='image/*,.heic,.heif'; file.style.display='none';
     const imgRow=document.createElement('div'); imgRow.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
     const add=btn('',false,()=>file.click()), del=btn('הסרת התמונה',false,()=>{img=null;changed=null;sync();});
-    const warn=document.createElement('div'); warn.style.cssText='font-size:13px;color:#f87171;display:none';
+    const warn=document.createElement('div'); warn.style.cssText='font-size:13px;color:#ff595e;display:none';
     const save=btn('שמירה',true,()=>{ const t=ti.value.trim(); if(!t){ti.focus();return;}
       done({title:t,text:tx.value.trim(),img:changed}); });
     const sync=()=>{ add.textContent=img?'החלפת התמונה':'הוספת תמונה'; del.style.display=img?'':'none';
@@ -376,7 +376,7 @@ function checkReady(tries){
     .then(rs=>{
       if(rs.every(Boolean)){
         $('ready').textContent='✓ מוכן לשטח — עובד גם בלי רשת · '+$('ver').textContent;
-        $('ready').style.color='#22c55e';
+        $('ready').style.color='#38b000';
       } else if(tries>0){
         setTimeout(()=>checkReady(tries-1),3000);
       } else {
@@ -892,7 +892,7 @@ mat.onBeforeCompile=sh=>{
     manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,area:0,
     am:AM_BRUSH};
     types.push(T);return T;}
-  const T0=mkType('שטח 1','#4dff4d'); T0.prob=prob;
+  const T0=mkType('שטח 1','#38b000'); T0.prob=prob;
   // 357: opens with no layer open, as the measurement screen does; the first area layer
   // is PARKED while it holds nothing — off the bar and off the sheet's report part, and the
   // first "＋ מדידת שטח" takes it. Layers are named "שטח N" (360).
@@ -913,7 +913,7 @@ mat.onBeforeCompile=sh=>{
     if(roiCount>0&&!roi[f])return false;
     return T.prob[f]>effThr(ti,f);}
   function isRepair(f){for(let ti=0;ti<types.length;ti++)if(isType(ti,f))return true;return false;}
-  const ROIC=[1.0,0.80,0.45];
+  const ROIC=[1.000,0.667,0.000];
   const _vis=[];
   /* ---- 324: THE SMOOTH MARK ----------------------------------------------------------------
      Eli, 27/09: "now the brush is approved — all the brushes in the program will become like
@@ -1498,7 +1498,7 @@ mat.onBeforeCompile=sh=>{
     let r=null, a=0, d=0; _vis.length=0;
     // 329: the smoothed-surface brush, while it is down — the sub-faces it has taken
     if(typeof smLive!=='undefined'&&smLive&&smLive[f]&&mode!=='rem'&&!(typeof smLiveT!=='undefined'&&smLiveT&&smLiveT.band.has(f))){   // 389: an erasure is drawn by its own red (smRed), not face by face
-      const T=types[activeT], c=(mode==='rem')?[1,0.3,0.3]:((T&&T.color)||[0.3,1,0.3]), o0=f*9;
+      const T=types[activeT], c=(mode==='rem')?[0.780,0.122,0.216]:((T&&T.color)||[0.220,0.690,0.000]), o0=f*9;
       for(let k=0;k<3;k++){colors[o0+k*3]=c[0];colors[o0+k*3+1]=c[1];colors[o0+k*3+2]=c[2];flats[f*3+k]=0.8;dess[f*3+k]=0;}
       return;
     }
@@ -2221,7 +2221,7 @@ mat.onBeforeCompile=sh=>{
   function smT(at){ let t=smTs.get(at); if(t) return t;
     const L=()=>types.find(q=>q.id===at)||{};
     t={at:at, S:new Uint8Array(N), X:new Uint8Array(N), ops:[], band:new Set(), pieces:new Map(), hid:false,
-       get color(){ return L().color||[0.3,1,0.3]; }, get op(){ const o=L().op; return (typeof o==='number')?o:0.75; },
+       get color(){ return L().color||[0.220,0.690,0.000]; }, get op(){ const o=L().op; return (typeof o==='number')?o:0.75; },
        get design(){ return L().design; }};
     smTs.set(at,t); return t; }
   // what the layer's smooth marking holds: whole sub-faces, and the cut ones by their part
@@ -2352,7 +2352,7 @@ mat.onBeforeCompile=sh=>{
     if(!n){ invalidate(); return; }
     if(!smRedMesh){ let cap=9*1024; while(cap<n) cap*=2;
       const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(cap),3));
-      smRedMesh=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:0xff4d4d,transparent:true,opacity:0.8,depthTest:false,side:THREE.DoubleSide}));
+      smRedMesh=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:0xc71f37,transparent:true,opacity:0.8,depthTest:false,side:THREE.DoubleSide}));
       smRedMesh.userData.cap=cap; smRedMesh.frustumCulled=false; smRedMesh.renderOrder=998; scene.add(smRedMesh); }
     const A=smRedMesh.geometry.attributes.position; let o=0;
     for(const X of smRed.values()){ A.array.set(X,o); o+=X.length; }
@@ -2462,12 +2462,12 @@ mat.onBeforeCompile=sh=>{
   function smRecolor(){
     for(const o of smGroup.children.concat(polyGroup.children)){ const at=o.userData&&o.userData.smAt; if(!at) continue;   // and the polygons' fills
       const T=types.find(t=>t.id===at); if(!T) continue;
-      const A=o.geometry.attributes, c=T.color||[0.3,1,0.3], op=(typeof T.op==='number')?T.op:0.75, d=(typeof T.design==='number')?T.design:0.6;
+      const A=o.geometry.attributes, c=T.color||[0.220,0.690,0.000], op=(typeof T.op==='number')?T.op:0.75, d=(typeof T.design==='number')?T.design:0.6;
       for(let k=0;k<A.aFlat.count;k++){ A.aCol.array[k*3]=c[0]; A.aCol.array[k*3+1]=c[1]; A.aCol.array[k*3+2]=c[2]; A.aFlat.array[k]=op; A.aDes.array[k]=d; }
       A.aCol.needsUpdate=true; A.aFlat.needsUpdate=true; A.aDes.needsUpdate=true; }
     for(const o of smGroup.children){ const at=o.userData&&o.userData.smLine; if(!at) continue;   // 383: and the rims
       // 373/383: the region the level wheel works on has its rim in gold (the ◂ on its label went with the label)
-      const T=types.find(t=>t.id===at); if(T) o.material.color.set((smSel&&o.userData.smReg===smSel)?0xffc72c:(T.hex||'#4dff4d')); }
+      const T=types.find(t=>t.id===at); if(T) o.material.color.set((smSel&&o.userData.smReg===smSel)?0xffca3a:(T.hex||'#38b000')); }
     smMat(); invalidate();
   }
   // each region's copy: the layer's colour, its opacity and design, over the model, and its tag
@@ -2479,7 +2479,7 @@ mat.onBeforeCompile=sh=>{
       const T=types.find(t=>t.id===r.at); if(!T) continue;
       num[r.at]=(num[r.at]||0)+1;
       if(amHidOf(types,r.at)||!r.T||!r.T.length) continue;
-      const col=new THREE.Color(T.hex||'#4dff4d');
+      const col=new THREE.Color(T.hex||'#38b000');
       const nt=r.T.length, G=smUV(r), XP=new Float32Array(nt*3);
       for(let k=0;k<nt;k++){ const v=r.T[k]*3; XP[k*3]=r.X[v]; XP[k*3+1]=r.X[v+1]; XP[k*3+2]=r.X[v+2]; }
       const g=new THREE.BufferGeometry();
@@ -2660,7 +2660,7 @@ mat.onBeforeCompile=sh=>{
   // a polygon's fill as meshes in the wall's law: its cut parts on the model (the model's texture,
   // a shared material), and its triangles on the plane where no model is (a 1x1 texture of the wall)
   function pgMeshes(F,T){
-    const col=T.color||[0.3,1,0.3], op=(typeof T.op==='number')?T.op:0.75, de=(typeof T.design==='number')?T.design:0.6, out=[];
+    const col=T.color||[0.220,0.690,0.000], op=(typeof T.op==='number')?T.op:0.75, de=(typeof T.design==='number')?T.design:0.6, out=[];
     const attrs=(g,n,pf)=>{ const C=new Float32Array(n*3);
       for(let k=0;k<n;k++){ C[k*3]=col[0]; C[k*3+1]=col[1]; C[k*3+2]=col[2]; }
       g.setAttribute('aCol',new THREE.BufferAttribute(C,3)); g.setAttribute('aFlat',new THREE.BufferAttribute(new Float32Array(n).fill(op),1));
@@ -2713,7 +2713,7 @@ mat.onBeforeCompile=sh=>{
     }
     const draw=(P,open)=>{
       const T=types.find(t=>t.id===P.at)||types[0];
-      const col=new THREE.Color((T&&T.hex)||'#4dff4d');
+      const col=new THREE.Color((T&&T.hex)||'#38b000');
       // the whole layer fades, outline and corners included (Eli, 24/09); the tag stays
       const _op=(T&&typeof T.op==='number')?T.op:0.75;
       // ALWAYS in the transparent pass, even at 100% (24/09): an opaque overlay is drawn in the
@@ -2887,7 +2887,7 @@ mat.onBeforeCompile=sh=>{
   function mkCntType(name,hex){const T={design:0.6,designU:{value:0.6},id:'c'+(cSeq++),name:name,hex:hex,size:cntDefSize(),op:1.0};cntTypes.push(T);return T;}
   function xObj(m){const T=cntTypes.find(x=>x.id===m.t);
     const dm=new THREE.Mesh(AM_MK.geometry(((T&&T.size)||cntDefSize())/2),
-      AM_MK.material(T?T.hex:'#ef4444', T?(T.op!==undefined?T.op:1):1, amDesignU, m.n||1));
+      AM_MK.material(T?T.hex:'#c71f37', T?(T.op!==undefined?T.op:1):1, amDesignU, m.n||1));
     dm.position.set(m.p[0],m.p[1],m.p[2]); dm.renderOrder=3; return dm;}
   function resizeCnt(T){for(const m of xmarks)if(m.t===T.id&&m.obj){
     scene.remove(m.obj);m.obj=xObj(m);m.obj.visible=!T.hid;scene.add(m.obj);}}
@@ -3038,7 +3038,7 @@ mat.onBeforeCompile=sh=>{
   // with non-technical users the export is the step that gets forgotten
   function markUnexported(on){
     $('mExport').textContent=on?'⚠ ייצוא גיליון':'ייצוא גיליון';
-    $('mExport').style.outline=on?'2px solid #ef4444':'';
+    $('mExport').style.outline=on?'2px solid #c71f37':'';
     if(on) amSnapSoon(); else { clearTimeout(amSnapT); snapDrop(); }   // 327
   }
   // 327: the recovery copy — the whole sheet, a second and a half after the last change.
@@ -3092,7 +3092,7 @@ mat.onBeforeCompile=sh=>{
   function updateHB(){$('undo').disabled=!undoStack.length;$('redo').disabled=!redoStack.length;
     amSnapSoon();}                     // 327: every step of the history is a change of the work
   function findOrMkType(hex,name){
-    let T=types.find(t=>t.hex===hex); if(!T){T=mkType(name||'',hex||'#4dff4d');buildChips();}
+    let T=types.find(t=>t.hex===hex); if(!T){T=mkType(name||'',hex||'#38b000');buildChips();}
     return types.indexOf(T);}
 
   /* ---- orbit + gestures (verbatim port: this code is what killed the jumps) --- */
@@ -4159,7 +4159,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     }
     list.splice(snap.i,1);
     if(snap.kind==='area'&&!types.length){            // never without an area layer — a parked one (357)
-      if(!snap.fill) snap.fill=mkType('','#4dff4d'); else types.push(snap.fill);
+      if(!snap.fill) snap.fill=mkType('','#38b000'); else types.push(snap.fill);
       snap.fill.park=true;
     }
     amLayerAfter();
@@ -4369,7 +4369,7 @@ const amPal=(function(){
     const w=document.createElement('label'); w.className='w'; w.title='בוחר צבעים חופשי';
     w.appendChild(document.createElement('b')); w.appendChild(document.createTextNode('צבע חופשי'));
     const inp=document.createElement('input'); inp.type='color';
-    inp.value=/^#[0-9a-f]{6}$/i.test(opts.current||'')?opts.current:'#3b82f6';
+    inp.value=/^#[0-9a-f]{6}$/i.test(opts.current||'')?opts.current:'#0d47a1';
     inp.onchange=()=>pick(inp.value);
     w.appendChild(inp); f.appendChild(w);
     if(opts.sample){
@@ -4577,7 +4577,7 @@ const amPal=(function(){
     cntTypes.length=0; activeC=-1;
     types.length=1; activeT=0;
     const T0=types[0]; T0.manual.fill(0); T0.faceThr=null; T0.prob=prob; T0.hasProb=false;
-    T0.name='שטח 1'; T0.hex='#4dff4d'; T0.color=hex2rgb(T0.hex); T0.hid=false;
+    T0.name='שטח 1'; T0.hex='#38b000'; T0.color=hex2rgb(T0.hex); T0.hid=false;
     roi.fill(0);roiCount=0;
     for(const fo of (sh.roiPainted||sh.roiFaces||[])) if(fo<FO)
       for(let t=OFF[fo];t<OFF[fo+1];t++){ if(!roi[t]){roi[t]=1;roiCount++;} }
@@ -4606,7 +4606,7 @@ const amPal=(function(){
     };
     if(Array.isArray(sh.types)&&sh.types.length){          // v3 sheet: full multi-type state
       loadT(T0,sh.types[0]); if(sh.types[0].id)T0.id=sh.types[0].id;
-      for(let i=1;i<sh.types.length;i++){const T=mkType('','#3b82f6');loadT(T,sh.types[i]);
+      for(let i=1;i<sh.types.length;i++){const T=mkType('','#0d47a1');loadT(T,sh.types[i]);
         if(sh.types[i].id)T.id=sh.types[i].id;}
     } else {                                               // legacy sheet: single type
       loadT(T0,{name:'שטח 1',thr:(typeof sh.globalThreshold==='number')?sh.globalThreshold:T0.thr,
@@ -4658,7 +4658,7 @@ const amPal=(function(){
         len:(src.fit&&typeof src.fit.length_m==='number')?src.fit.length_m:lineLen(src.pts),
         w:src.w||0.008,obj:null};  // a measured stroke keeps its truth on the iPad too
       addLine(L);}
-    for(const src of (sh.cntTypes||[])){const T=mkCntType(src.name||'',src.color||'#ef4444');if(src.id)T.id=src.id;
+    for(const src of (sh.cntTypes||[])){const T=mkCntType(src.name||'',src.color||'#c71f37');if(src.id)T.id=src.id;
       if(typeof src.size==='number')T.size=src.size;
       if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true); T.repHid=(src.repHid===true);}
     for(const src of (sh.counters||[])){const pts=src.pts||[];
