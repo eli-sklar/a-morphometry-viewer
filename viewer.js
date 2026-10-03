@@ -591,10 +591,47 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   { const pnA=new Float32Array(N*9), bdA=new Float32Array(N*3);
     if(AM_SYN){ pnA.set(AM_SYN.pn,PATCH0*9); bdA.set(AM_SYN.band,PATCH0*3); }
     geo.setAttribute('aPN',new THREE.BufferAttribute(pnA,3)); geo.setAttribute('aBand',new THREE.BufferAttribute(bdA,1)); }
+  if(!self.AM_SPK_CELL) self.AM_SPK_CELL={value:0};   // 413: the blot cell, set with the model (1/400 of its diagonal)
   const AM_SYNTH_GLSL=`
   // 374: the built surface's own shade — a SMOOTH normal (from amSynthDecor) at the training's
   // measured contrast, and the contours of 246/247 (2 cm from each surface's mean plane)
-  vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
+  // 413 (Eli, 03/10, sample 9 of nine): fine blots of random shape, half a tone above the colour and
+// half below, scattered at random over every built surface. In the model's own space, so they stay on
+// it; the cell is a share of the model's diagonal (a cave and a sherd alike); a blot may lie across its
+// cell's edge, so the cells round a point are asked too; gone where a blot would be under a pixel.
+uniform float amSpkCell;
+float amH3(vec3 c){ return fract(sin(dot(c,vec3(127.1,311.7,74.7)))*43758.5453); }
+vec3 amSpeckle(vec3 c, vec3 p){
+  if(amSpkCell<=0.0) return c;
+  vec3 n=abs(cross(dFdx(p),dFdy(p)));
+  float ax=(n.x>=n.y&&n.x>=n.z)?1.0:((n.y>=n.z)?2.0:3.0);
+  vec2 q=((ax<1.5)?p.yz:((ax<2.5)?p.xz:p.xy))/amSpkCell;
+  float w=length(fwidth(q));
+  float fade=smoothstep(0.6,1.4,0.30/max(w,1e-6));
+  if(fade<=0.0) return c;
+  float t=0.0;
+  for(int g=0;g<3;g++){
+    vec2 qq=q+float(g)*vec2(0.5,0.37)+float(g/2)*vec2(-0.21,0.29);
+    vec2 c0=floor(qq);
+    for(int i=0;i<9;i++){
+      vec2 ce=c0+vec2(float(i-3*(i/3))-1.0,float(i/3)-1.0);
+      vec3 k=vec3(ce,ax+4.0*float(g));
+      if(amH3(k)>0.9) continue;
+      float r=0.30*(0.85+0.15*amH3(k+7.1));
+      vec2 d=qq-ce-vec2(amH3(k+1.3),amH3(k+2.9));
+      float th=6.2832*amH3(k+9.7); float cs=cos(th); float sn=sin(th);
+      d=vec2(cs*d.x+sn*d.y,-sn*d.x+cs*d.y); d.y/=0.75+0.25*amH3(k+8.8);
+      float dl=length(d);
+      if(dl>1.7*r+w) continue;
+      float a=atan(d.y,d.x);
+      dl*=1.0+(0.15+0.1*amH3(k+5.1))*sin(2.0*a+6.2832*amH3(k+3.3))+0.08*amH3(k+6.2)*sin(3.0*a+6.2832*amH3(k+4.7))
+            +0.05*amH3(k+8.4)*sin(5.0*a+6.2832*amH3(k+5.9));
+      t+=((amH3(k+11.3)<0.5)?1.0:-1.0)*(1.0-smoothstep(r-w,r+w,dl));
+    }
+  }
+  return c*(1.0+0.11*clamp(t,-1.0,1.0)*fade);
+}
+vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
     if(isPatch<0.5) return wall;
     vec3 n=(dot(pn,pn)>0.25)?pn:cross(dFdx(p),dFdy(p));
     float l=length(n);
@@ -605,7 +642,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     float u=band/0.02; float w=fwidth(u); float fade=1.0-smoothstep(0.30,0.75,w);
     if(fade>0.0){ float tri=abs(fract(u)-0.5)*2.0; float lw=clamp(w*2.2,0.06,0.45);
       float ln=1.0-smoothstep(0.0,lw,tri); c*=1.0-0.28*ln*fade; }
-    return c;
+    return amSpeckle(c,p);
   }
   `;
 
@@ -616,7 +653,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
     o.geometry.setAttribute('aPN',new THREE.BufferAttribute(D.pn,3));
     o.geometry.setAttribute('aBand',new THREE.BufferAttribute(D.band,1));
     const shM=o.material;
-    shM.onBeforeCompile=sh=>{
+    shM.onBeforeCompile=sh=>{if(typeof AM_SPK_CELL!=='undefined') sh.uniforms.amSpkCell=AM_SPK_CELL;   // 413
       sh.vertexShader=sh.vertexShader
         .replace('#include <common>','#include <common>\nattribute vec3 aPN;attribute float aBand;varying vec3 vAPN;varying float vABand;varying vec3 vAPos;')
         .replace('#include <begin_vertex>','#include <begin_vertex>\nvAPN=aPN;vABand=aBand;vAPos=transformed;');
@@ -683,6 +720,42 @@ vec3 amPatchShade(vec3 wall, float isPatch, vec3 p){
 
 // 374: the built surface's own shade — a SMOOTH normal (from amSynthDecor) at the training's
 // measured contrast, and the contours of 246/247 (2 cm from each surface's mean plane)
+// 413 (Eli, 03/10, sample 9 of nine): fine blots of random shape, half a tone above the colour and
+// half below, scattered at random over every built surface. In the model's own space, so they stay on
+// it; the cell is a share of the model's diagonal (a cave and a sherd alike); a blot may lie across its
+// cell's edge, so the cells round a point are asked too; gone where a blot would be under a pixel.
+uniform float amSpkCell;
+float amH3(vec3 c){ return fract(sin(dot(c,vec3(127.1,311.7,74.7)))*43758.5453); }
+vec3 amSpeckle(vec3 c, vec3 p){
+  if(amSpkCell<=0.0) return c;
+  vec3 n=abs(cross(dFdx(p),dFdy(p)));
+  float ax=(n.x>=n.y&&n.x>=n.z)?1.0:((n.y>=n.z)?2.0:3.0);
+  vec2 q=((ax<1.5)?p.yz:((ax<2.5)?p.xz:p.xy))/amSpkCell;
+  float w=length(fwidth(q));
+  float fade=smoothstep(0.6,1.4,0.30/max(w,1e-6));
+  if(fade<=0.0) return c;
+  float t=0.0;
+  for(int g=0;g<3;g++){
+    vec2 qq=q+float(g)*vec2(0.5,0.37)+float(g/2)*vec2(-0.21,0.29);
+    vec2 c0=floor(qq);
+    for(int i=0;i<9;i++){
+      vec2 ce=c0+vec2(float(i-3*(i/3))-1.0,float(i/3)-1.0);
+      vec3 k=vec3(ce,ax+4.0*float(g));
+      if(amH3(k)>0.9) continue;
+      float r=0.30*(0.85+0.15*amH3(k+7.1));
+      vec2 d=qq-ce-vec2(amH3(k+1.3),amH3(k+2.9));
+      float th=6.2832*amH3(k+9.7); float cs=cos(th); float sn=sin(th);
+      d=vec2(cs*d.x+sn*d.y,-sn*d.x+cs*d.y); d.y/=0.75+0.25*amH3(k+8.8);
+      float dl=length(d);
+      if(dl>1.7*r+w) continue;
+      float a=atan(d.y,d.x);
+      dl*=1.0+(0.15+0.1*amH3(k+5.1))*sin(2.0*a+6.2832*amH3(k+3.3))+0.08*amH3(k+6.2)*sin(3.0*a+6.2832*amH3(k+4.7))
+            +0.05*amH3(k+8.4)*sin(5.0*a+6.2832*amH3(k+5.9));
+      t+=((amH3(k+11.3)<0.5)?1.0:-1.0)*(1.0-smoothstep(r-w,r+w,dl));
+    }
+  }
+  return c*(1.0+0.11*clamp(t,-1.0,1.0)*fade);
+}
 vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
   if(isPatch<0.5) return wall;
   vec3 n=(dot(pn,pn)>0.25)?pn:cross(dFdx(p),dFdy(p));
@@ -694,7 +767,7 @@ vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
   float u=band/0.02; float w=fwidth(u); float fade=1.0-smoothstep(0.30,0.75,w);
   if(fade>0.0){ float tri=abs(fract(u)-0.5)*2.0; float lw=clamp(w*2.2,0.06,0.45);
     float ln=1.0-smoothstep(0.0,lw,tri); c*=1.0-0.28*ln*fade; }
-  return c;
+  return amSpeckle(c,p);
 }
 `;
 
@@ -861,6 +934,7 @@ vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
   }
 mat.onBeforeCompile=sh=>{
     sh.uniforms.amDesign=amDesignU;
+    if(typeof AM_SPK_CELL!=='undefined') sh.uniforms.amSpkCell=AM_SPK_CELL;   // 413
     sh.vertexShader=sh.vertexShader
       .replace('#include <common>','#include <common>\nattribute vec3 aCol;attribute float aFlat;attribute float aDes;attribute float aPatch;attribute vec3 aPN;attribute float aBand;varying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;varying vec3 vAPN;varying float vABand;')
       .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vADes=aDes;vAPatch=aPatch;vAPos=transformed;vAPN=aPN;vABand=aBand;');
@@ -869,6 +943,7 @@ mat.onBeforeCompile=sh=>{
       .replace('#include <opaque_fragment>','outgoingLight=amStipple(amSynthShade(outgoingLight,vAPatch,vAPos,vAPN,vABand),vACol,vAFlat,vADes);\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
+  if(!geo.boundingSphere) geo.computeBoundingSphere(); AM_SPK_CELL.value=2*geo.boundingSphere.radius/400;   // 413
   const amEdges=(AM_SYN&&AM_SYN.edges.length)?amSynthEdges(AM_SYN.edges):null;   // 374
   if(amEdges) scene.add(amEdges);
 
