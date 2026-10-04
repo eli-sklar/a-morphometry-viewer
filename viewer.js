@@ -2576,11 +2576,32 @@ mat.onBeforeCompile=sh=>{
      model hides it, and the line where the two cross shows. It used to carry the model's own texture,
      pulled in front of it — the model looked bent, though its corners were never moved. At level 0
      there is no copy: the brush paints the model, in the layer's tone. */
-  function amShellMesh(P, hex, op){
+  // 448 (Eli, 05/10: "the smoothed surfaces get no design"; "the volume bodies too — their design in the
+  // style of the other measurements, not of the synthetic surfaces"): the layer's design on a copy and on a body
+  // is the marking's own lattice and law (257, amStippleA): as the wheel rises the shell turns into dots of the
+  // layer's flat colour, the model seen between them; at 0 it is the built surface of 437
+  const AM_DES_GLSL=`
+float amB2(vec2 a){a=floor(a);return fract(a.x*0.5+a.y*a.y*0.75);}
+float amBayer(vec2 px){return amB2(px*0.5)*0.25+amB2(px);}
+float amStippleA(float a, float lvl){
+  if(lvl<=0.001) return a;
+  float t=amBayer(floor(gl_FragCoord.xy/3.0));
+  return mix(a,(a>t)?1.0:0.0,lvl);
+}
+`;
+  function amShellMesh(P, hex, op, des){
     const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(P,3));
     const o=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:hex, side:THREE.DoubleSide, transparent:true, opacity:op}));
-    amSynthShell(o, P, P.length/9); amShellLines(o);
+    amSynthShell(o, P, P.length/9); amShellDes(o, des); amShellLines(o);
     return o;
+  }
+  function amShellDes(o, des){
+    const m=o.material, U={value:(typeof des==='number')?des:0}, base=m.onBeforeCompile;
+    m.userData.amDesU=U;
+    m.onBeforeCompile=sh=>{ base(sh); sh.uniforms.amDes=U;
+      sh.fragmentShader=sh.fragmentShader
+        .replace('#include <common>','#include <common>\nuniform float amDes;'+AM_DES_GLSL)
+        .replace('#include <opaque_fragment>','outgoingLight=mix(outgoingLight,diffuse,amDes);diffuseColor.a=amStippleA(diffuseColor.a,amDes);\n#include <opaque_fragment>'); };
   }
   // its corner lines fade with its opacity (Eli, 04/10: "when a layer is almost fully transparent, the corner
   // lines stay opaque"): as they are from a volume's own opacity (0.55) up, and below it in proportion, to none
@@ -2598,7 +2619,8 @@ mat.onBeforeCompile=sh=>{
   function smRecolor(){
     for(const o of smGroup.children.concat(polyGroup.children)){ const at=o.userData&&o.userData.smAt; if(!at) continue;   // and the polygons' fills
       const T=types.find(t=>t.id===at); if(!T) continue;
-      if(o.userData.smShell){ o.material.color.set(T.hex||'#38b000'); o.material.opacity=(typeof T.op==='number')?T.op:0.75; amShellLines(o); continue; }   // 437
+      if(o.userData.smShell){ o.material.color.set(T.hex||'#38b000'); o.material.opacity=(typeof T.op==='number')?T.op:0.75; amShellLines(o);
+        if(o.material.userData.amDesU) o.material.userData.amDesU.value=(typeof T.design==='number')?T.design:0.6; continue; }   // 437 · 448: and its design
       const A=o.geometry.attributes, c=T.color||[0.220,0.690,0.000], op=(typeof T.op==='number')?T.op:0.75, d=(typeof T.design==='number')?T.design:0.6;
       for(let k=0;k<A.aFlat.count;k++){ A.aCol.array[k*3]=c[0]; A.aCol.array[k*3+1]=c[1]; A.aCol.array[k*3+2]=c[2]; A.aFlat.array[k]=op; A.aDes.array[k]=d; }
       A.aCol.needsUpdate=true; A.aFlat.needsUpdate=true; A.aDes.needsUpdate=true; }
@@ -2619,7 +2641,7 @@ mat.onBeforeCompile=sh=>{
       const col=new THREE.Color(T.hex||'#38b000');
       const nt=r.T.length, XP=new Float32Array(nt*3);
       for(let k=0;k<nt;k++){ const v=r.T[k]*3; XP[k*3]=r.X[v]; XP[k*3+1]=r.X[v+1]; XP[k*3+2]=r.X[v+2]; }
-      const mm=amShellMesh(XP,col,(typeof T.op==='number')?T.op:0.75); mm.userData.smAt=r.at; mm.userData.smShell=true;   // 437
+      const mm=amShellMesh(XP,col,(typeof T.op==='number')?T.op:0.75,(typeof T.design==='number')?T.design:0.6); mm.userData.smAt=r.at; mm.userData.smShell=true;   // 437 · 448
       smGroup.add(mm);
       // 383 (Eli, 30/09): the copy's rim, a thin opaque line in the layer's tone — drawn over the
       // model, as a polygon's outline is, so the edge reads where the model shows through
@@ -4158,7 +4180,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     // 257: the polygon reads the same wheel through a uniform, so the layer's own
     // designU has to move with it — a brush layer repaints, a polygon layer does not
     else if(activeKind==='area'){const T=types[activeT];if(T){T.design=v;
-      if(!T.designU)T.designU={value:v}; T.designU.value=v; amDessSoon();}}
+      if(!T.designU)T.designU={value:v}; T.designU.value=v; amDessSoon(); if(SMR.length) smRecolor();}}   // 448: its smoothed copies too
     // 25/09: a ruler's design is its dash — the 302 definition
     else if(activeKind==='rul'){const T=rulTypes[activeR];if(T){T.design=v;rulRebuild();markUnexported(true);}}
     // this viewer renders on a continuous tick, so nothing has to be poked to redraw
