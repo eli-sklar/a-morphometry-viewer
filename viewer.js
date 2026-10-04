@@ -2568,33 +2568,24 @@ mat.onBeforeCompile=sh=>{
     smSel=SMR.find(r=>r.at===t.at&&r.faces.includes(f0))||SMR.filter(r=>r.at===t.at).slice(-1)[0]||null;
     smSyncWheel(); smRebuild(); invalidate();
   }
-  // 335ב (Eli, 29/09 — option ג): the copy is drawn as the wall's marking is — the model's own
-  // texture on it and the same law (amStipple, the colour decoded), not a coloured sheet laid over
-  // the model: the three tools of an area layer read in one tone. The texture comes with the
-  // copy's corners in the order smMesh lays its triangles (sorted sub-faces; a cut one by its
-  // parts), each corner's uv taken from its sub-face as its position is.
-  function smUV(r){
-    // 435 (Eli, 04/10: "under the area marking, the model's texture is scrambled"): the texture by the
-    // triangles the copy KEPT. A triangle the weld collapses is dropped (381), and walking every
-    // face's corners put each later triangle's texture on the one before it — the noise of mixed
-    // triangles over every region with such a sliver, which 433 made every region of the layer.
-    const fs=Array.from(r.faces).sort((a,b)=>a-b), U=[], pf=[];
-    const m=smMemoFor(r.faces,r.pc), M=(m.M&&m.M.tq)?m.M:(m.M=smMesh(pos,fs,r.pc));
-    for(let t=0;t<M.tf.length;t++){ const f=fs[M.tf[t]], q=M.tq[t], o=(f*3)*2, bb=r.pc&&r.pc.get(f), pp=(f>=PATCH0)?1:0;
-      for(let c=0;c<3;c++){
-        if(!bb) U.push(uv[o+c*2],uv[o+c*2+1]);
-        else { const i=(q*3+c)*2, b1=bb[i], b2=bb[i+1];
-          U.push(uv[o]+b1*(uv[o+2]-uv[o])+b2*(uv[o+4]-uv[o]), uv[o+1]+b1*(uv[o+3]-uv[o+1])+b2*(uv[o+5]-uv[o+1])); }
-        pf.push(pp); } }
-    return {U:U, pf:pf};
+  /* 437 (Eli, 04/10: "a built surface like the other surfaces that close the volume — I want them
+     compatible, to look like one body"; and "if they do not get the blots, add them too, so every
+     synthetic surface in the model is alike"): a smoothed copy is drawn as a volume's shell is, by the
+     same function — the layer's colour at its opacity, the shade, contours, blots and corner lines of a
+     built surface (amSynthShell), and NO pull toward the eye: where the copy sinks under the model the
+     model hides it, and the line where the two cross shows. It used to carry the model's own texture,
+     pulled in front of it — the model looked bent, though its corners were never moved. At level 0
+     there is no copy: the brush paints the model, in the layer's tone. */
+  function amShellMesh(P, hex, op){
+    const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(P,3));
+    const o=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:hex, side:THREE.DoubleSide, transparent:true, opacity:op}));
+    amSynthShell(o, P, P.length/9); amShellLines(o);
+    return o;
   }
-  var smMatC=null;
-  function smMat(){
-    if(!smMatC){ smMatC=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide,polygonOffset:true,
-        polygonOffsetFactor:-2,polygonOffsetUnits:-6}); smMatC.onBeforeCompile=mat.onBeforeCompile; }
-    smMatC.transparent=mat.transparent; smMatC.opacity=mat.opacity; smMatC.depthWrite=mat.depthWrite;
-    return smMatC;
-  }
+  // its corner lines fade with its opacity (Eli, 04/10: "when a layer is almost fully transparent, the corner
+  // lines stay opaque"): as they are from a volume's own opacity (0.55) up, and below it in proportion, to none
+  function amShellLines(o){ const op=o.material.opacity; for(const c of o.children){ c.visible=op>0; if(c.material) c.material.opacity=AM_EDGE_ALPHA*Math.min(1,op/0.55); } }
+  function amShellFree(o){ for(const c of o.children){ if(c.geometry) c.geometry.dispose(); if(c.material) c.material.dispose(); } }
   // 383: the copy's rim — each edge that only one of its triangles has — as line segments
   function smRim(X,T){
     const nV=X.length/3, E=new Map(), L=[];
@@ -2607,35 +2598,29 @@ mat.onBeforeCompile=sh=>{
   function smRecolor(){
     for(const o of smGroup.children.concat(polyGroup.children)){ const at=o.userData&&o.userData.smAt; if(!at) continue;   // and the polygons' fills
       const T=types.find(t=>t.id===at); if(!T) continue;
+      if(o.userData.smShell){ o.material.color.set(T.hex||'#38b000'); o.material.opacity=(typeof T.op==='number')?T.op:0.75; amShellLines(o); continue; }   // 437
       const A=o.geometry.attributes, c=T.color||[0.220,0.690,0.000], op=(typeof T.op==='number')?T.op:0.75, d=(typeof T.design==='number')?T.design:0.6;
       for(let k=0;k<A.aFlat.count;k++){ A.aCol.array[k*3]=c[0]; A.aCol.array[k*3+1]=c[1]; A.aCol.array[k*3+2]=c[2]; A.aFlat.array[k]=op; A.aDes.array[k]=d; }
       A.aCol.needsUpdate=true; A.aFlat.needsUpdate=true; A.aDes.needsUpdate=true; }
     for(const o of smGroup.children){ const at=o.userData&&o.userData.smLine; if(!at) continue;   // 383: and the rims
       // 373/383: the region the level wheel works on has its rim in gold (the ◂ on its label went with the label)
       const T=types.find(t=>t.id===at); if(T) o.material.color.set((smSel&&o.userData.smReg===smSel)?0xffca3a:(T.hex||'#38b000')); }
-    smMat(); invalidate();
+    invalidate();
   }
   // each region's copy: the layer's colour, its opacity and design, over the model, and its tag
   function smRebuild(){
     for(let i=smGroup.children.length-1;i>=0;i--){ const o=smGroup.children[i]; forgetOnScreen(o); smGroup.remove(o);
-      if(o.geometry) o.geometry.dispose(); if(o.material&&!(o.userData&&o.userData.amShared)){ if(o.material.map) o.material.map.dispose(); o.material.dispose(); } }
+      if(o.geometry) o.geometry.dispose(); if(o.material&&!(o.userData&&o.userData.amShared)){ if(o.material.map) o.material.map.dispose(); o.material.dispose(); } amShellFree(o); }
     const num={};
     for(const r of SMR){
       const T=types.find(t=>t.id===r.at); if(!T) continue;
       num[r.at]=(num[r.at]||0)+1;
       if(amHidOf(types,r.at)||!r.T||!r.T.length) continue;
       const col=new THREE.Color(T.hex||'#38b000');
-      const nt=r.T.length, G=smUV(r), XP=new Float32Array(nt*3);
+      const nt=r.T.length, XP=new Float32Array(nt*3);
       for(let k=0;k<nt;k++){ const v=r.T[k]*3; XP[k*3]=r.X[v]; XP[k*3+1]=r.X[v+1]; XP[k*3+2]=r.X[v+2]; }
-      const g=new THREE.BufferGeometry();
-      g.setAttribute('position',new THREE.BufferAttribute(XP,3));
-      g.setAttribute('uv',new THREE.BufferAttribute(Float32Array.from(G.U),2));
-      g.setAttribute('aCol',new THREE.BufferAttribute(new Float32Array(nt*3),3));
-      g.setAttribute('aFlat',new THREE.BufferAttribute(new Float32Array(nt),1));
-      g.setAttribute('aDes',new THREE.BufferAttribute(new Float32Array(nt),1));
-      g.setAttribute('aPatch',new THREE.BufferAttribute(Float32Array.from(G.pf),1));
-      const mm=new THREE.Mesh(g,smMat()); mm.userData.smAt=r.at; mm.userData.amShared=true;
-      mm.renderOrder=997; smGroup.add(mm);
+      const mm=amShellMesh(XP,col,(typeof T.op==='number')?T.op:0.75); mm.userData.smAt=r.at; mm.userData.smShell=true;   // 437
+      smGroup.add(mm);
       // 383 (Eli, 30/09): the copy's rim, a thin opaque line in the layer's tone — drawn over the
       // model, as a polygon's outline is, so the edge reads where the model shows through
       { const L=smRim(r.X,r.T);
