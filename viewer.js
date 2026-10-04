@@ -393,6 +393,14 @@ $('mFull').onclick=()=>{
 };
 
 /* ================= load a work package and start the engine ================== */
+// 449: the model on the mean of its points, in place — the measurement screen's centre
+function amCentre(pos){
+  const n=pos.length/3; if(!n) return [0,0,0];
+  let cx=0,cy=0,cz=0; for(let i=0;i<pos.length;i+=3){ cx+=pos[i]; cy+=pos[i+1]; cz+=pos[i+2]; }
+  cx/=n; cy/=n; cz/=n;
+  for(let i=0;i<pos.length;i+=3){ pos[i]-=cx; pos[i+1]-=cy; pos[i+2]-=cz; }
+  return [cx,cy,cz];
+}
 function load(buf){
   const g=parseGLB(buf);
   const am=g.json.asset&&g.json.asset.extras&&g.json.asset.extras.amWork;
@@ -401,6 +409,11 @@ function load(buf){
   AM=am;
   const acc=g.json.accessors, app=am.appData;
   const pos=bview(g,g.bin,acc[0].bufferView,Float32Array);
+  // 449 (Eli, 05/10: "the polygons, the ruler and the tape are off the model"): the measurement screen centres
+  // the model on the mean of its points (core.quantize_positions) and the sheet's points — rings, rulers, tapes,
+  // counters, tags — are written in that frame; the package carries the model where it was scanned. Centred
+  // here the same way, the iPad and the computer share one frame (on Eli's work the shift was 3 m)
+  amCentre(pos);
   const uv=bview(g,g.bin,acc[1].bufferView,Float32Array);
   const area=bview(g,g.bin,app.area,Float32Array);
   const qprob=bview(g,g.bin,app.prob,Uint8Array);
@@ -2872,7 +2885,10 @@ float amStippleA(float a, float lvl){
       // ALWAYS in the transparent pass, even at 100% (24/09): an opaque overlay is drawn in the
       // opaque pass, BEFORE the transparent model and layers, which then paint over it — the
       // ruler vanished at 100% and came back at 99% (Eli).
-      const _lm=()=>({color:col,depthTest:false,transparent:true,opacity:_op});
+      // 449 (Eli, 05/10: "the polygon does not draw — no points appear on a tap"): a ring still being drawn
+      // shows its points and lines whole — they are the drawing's aid; at the layer's opacity (14% on his
+      // work) they were all but invisible. A closed ring fades with its layer, as before (24/09)
+      const _lm=()=>({color:col,depthTest:false,transparent:true,opacity:open?1:_op});
       for(const q of P.pts){
         const m=new THREE.Mesh(new THREE.SphereGeometry(1,14,10),
           new THREE.MeshBasicMaterial(_lm()));
@@ -3044,8 +3060,20 @@ float amStippleA(float a, float lvl){
     dm.position.set(m.p[0],m.p[1],m.p[2]); dm.renderOrder=3; return dm;}
   function resizeCnt(T){for(const m of xmarks)if(m.t===T.id&&m.obj){
     scene.remove(m.obj);m.obj=xObj(m);m.obj.visible=!T.hid;scene.add(m.obj);}}
-  function addX(m){if(!m.obj)m.obj=xObj(m); m.obj.visible=!amHidOf(cntTypes,m.t); scene.add(m.obj); if(!xmarks.includes(m))xmarks.push(m);}
-  function delX(m){if(m.obj)scene.remove(m.obj); const i=xmarks.indexOf(m); if(i>=0)xmarks.splice(i,1);}
+  // 449 (Eli, 05/10: "all the counters came out with the number 1"): numbered within their layer, in marking
+  // order, as the measurement screen numbers them — the iPad never had it
+  function amRenumberCnt(){
+    const seen={};
+    for(const m of xmarks){
+      seen[m.t]=(seen[m.t]||0)+1;
+      if(m.n===seen[m.t]) continue;
+      m.n=seen[m.t];
+      if(m.obj&&m.obj.material&&m.obj.material.userData.amTexU)
+        m.obj.material.userData.amTexU.value=AM_MK.texture(m.n);
+    }
+  }
+  function addX(m){if(!m.obj)m.obj=xObj(m); m.obj.visible=!amHidOf(cntTypes,m.t); scene.add(m.obj); if(!xmarks.includes(m))xmarks.push(m); amRenumberCnt();}
+  function delX(m){if(m.obj)scene.remove(m.obj); const i=xmarks.indexOf(m); if(i>=0)xmarks.splice(i,1); amRenumberCnt();}
   function placeXAt(e){if(activeC<0)return;
     const hit=castAt(e); if(!hit.length)return;
     const h=hit[0],nrm=h.face?h.face.normal:null;
