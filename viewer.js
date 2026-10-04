@@ -3429,7 +3429,37 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
                                         -((e.clientY-r.top)/r.height)*2+1),camera);
     return ray.intersectObject(mesh,false).length>0;
   }
+  /* ---- 451 (Eli, 05/10: "the polygon does not draw on the iPad — this is something real; find the problem"):
+     a log of what the pencil does, copied from the device by "העתק יומן". Data only: what it records changes
+     nothing that happens — an exception it sees is written down and thrown on, as it would have been */
+  const AMLOG=[];
+  function amLog(s){ AMLOG.push((performance.now()/1000).toFixed(2)+' '+s); if(AMLOG.length>500) AMLOG.splice(0,AMLOG.length-500); }
+  window.addEventListener('error',e=>amLog('ERROR '+(e.message||'')+' @'+(e.lineno||'')+':'+(e.colno||'')));
+  window.addEventListener('unhandledrejection',e=>amLog('REJECT '+String((e.reason&&e.reason.message)||e.reason)));
+  function amLogThrow(what,err){ amLog('  '+what+' THREW '+(err&&err.message)+' | '+String((err&&err.stack)||'').split('\n').slice(0,4).join(' | ')); }
+  function amLogPoly(e){
+    const n0=curPoly?curPoly.pts.length:0, on=amOnSurface(e);
+    try{ polyAt(e); }catch(err){ amLogThrow('polyAt',err); throw err; }
+    amLog('  poly hit='+on+' pts '+n0+'->'+(curPoly?curPoly.pts.length:0)+' rings='+polys.length+' drawn='+polyGroup.children.length);
+  }
+  function amLogRul(e){
+    const n0=rulPts.length;
+    try{ rulAt(e); }catch(err){ amLogThrow('rulAt',err); throw err; }
+    amLog('  ruler pts '+n0+'->'+rulPts.length+' drawn='+rulGroup.children.length);
+  }
+  function amLogText(){
+    const r=el.getBoundingClientRect(), T=types[activeT];
+    let gpu='?'; try{ const gl=renderer.getContext(), ext=gl.getExtension('WEBGL_debug_renderer_info');
+      gpu=(ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER))+' · webgl'+(renderer.capabilities.isWebGL2?2:1); }catch(_){}
+    const head=['A-morphometry iPad · '+((document.getElementById('ver')||{}).textContent||''),
+      navigator.userAgent, 'screen '+Math.round(r.width)+'x'+Math.round(r.height)+' dpr '+devicePixelRatio+' · '+gpu,
+      'mode='+mode+' kind='+activeKind+' tool='+areaTool+' layer='+(T?(T.id+' "'+T.name+'" op='+T.op+' am='+T.am+' sm='+(T.sm||0)):'-'),
+      'rings='+polys.length+' cur='+(curPoly?curPoly.pts.length:0)+' ruler pts='+rulPts.length+' layers='+types.map(t=>t.id+':'+(t.am||'b')).join(','),
+      '----'];
+    return head.concat(AMLOG).join('\n');
+  }
   el.addEventListener('pointerdown',e=>{
+    amLog('down '+e.pointerType+' mode='+mode+' kind='+activeKind+' tool='+areaTool+' at '+Math.round(e.clientX)+','+Math.round(e.clientY));   // 451
     if(e.pointerType==='pen'){
       for(const [id,p] of [...ptrs]) if(p.type==='touch'){try{el.releasePointerCapture(id);}catch(_){}ptrs.delete(id);}
       if(dragging==='pinch'||dragging==='rot'){pinch=null;dragging=null;dragId=null;}
@@ -3463,10 +3493,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     // 329: the smoothed surface — a tag chooses the region the wheel acts on; else the brush
     else if(activeKind==='area'&&areaTool===AM_SMOOTH){dragging='smpaint';smStroke=new Set();smPaintAt(e);}
     else if(activeKind==='area'&&areaTool===AM_POLY&&mode==='add'){
-      polyAt(e);dragging=null;}
+      amLogPoly(e);dragging=null;}   // 451: polyAt, logged
     else if(activeKind==='area'&&areaTool===AM_POLY&&mode==='rem'){
       polyEraseAt(e);dragging=null;}
-    else if(activeKind==='rul'&&mode==='add'){rulAt(e);dragging=null;}
+    else if(activeKind==='rul'&&mode==='add'){amLogRul(e);dragging=null;}   // 451: rulAt, logged
     else if(activeKind==='rul'&&mode==='rem'){rulEraseAt(e);dragging=null;}
     else if(activeKind==='len'&&mode==='add'){dragging='line';curLine=null;lineAt(e);}
     else if(activeKind==='len'&&mode==='rem'){dragging='lerase';lineEraseAt(e);}
@@ -3474,6 +3504,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     else if(activeKind==='tag'){if(mode==='add')tagAt(e);dragging=null;}
     else if(activeKind==='cnt'&&mode==='rem'){dragging='xerase';eraseXAt(e);}
     else {dragging='paint';paintManual=true;beginH();amStrokeBegin();paintAt(e);}
+    amLog('  -> '+(dragging||'done'));   // 451: which way the press went
   });
   el.addEventListener('pointermove',e=>{
     if(!ptrs.has(e.pointerId)) return;                    // hovering pencil guard
@@ -4120,6 +4151,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // there. On this shell the buttons are the whole story. Gestures for undo/redo were
   // proposed and dropped in the same breath — two fingers are already the pinch.
   $('undo').onclick=()=>{undo();};
+  // 451: the log, to the clipboard and on the screen — Eli pastes it to the chat
+  if($('amLogBtn')) $('amLogBtn').onclick=()=>{ const t=amLogText();
+    try{ if(navigator.clipboard) navigator.clipboard.writeText(t).catch(()=>{}); }catch(_){}
+    amTell('היומן הועתק — הדבק אותו בצ\'אט.\n\n'+t,'סגור'); };
   $('redo').onclick=()=>{redo();};
   addEventListener('keydown',ev=>{
     if(!(ev.ctrlKey||ev.metaKey)) return;
