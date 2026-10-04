@@ -2266,13 +2266,17 @@ mat.onBeforeCompile=sh=>{
     if(memo) memo.M=M;
     const find=x=>{ while(par[x]!==x){ par[x]=par[par[x]]; x=par[x]; } return x; };
     const uni=(a,b)=>{ const r1=find(a), r2=find(b); if(r1!==r2) par[Math.max(r1,r2)]=Math.min(r1,r2); };
-    const owner=new Map(), nV=M.X.length/3, E=new Map();
-    for(let t=0;t<M.tf.length;t++){ const a=M.tf[t];
-      for(let c=0;c<3;c++){ const v=M.T[t*3+c], u=M.T[t*3+(c+1)%3], k=v<u?v*nV+u:u*nV+v; E.set(k,(E.get(k)||0)+1);
-        if(owner.has(v)) uni(a,owner.get(v)); else owner.set(v,a); } }
+    // 436 (Eli, 04/10: "very slow, stuck all the time"): the same pieces, kept in flat arrays — the
+    // Maps took a second on a layer of 130,000 sub-faces, after every stroke
+    const nV=M.X.length/3, nt=M.tf.length, owner=new Int32Array(nV).fill(-1), K=new Float64Array(nt*3);
+    for(let t=0;t<nt;t++){ const a=M.tf[t];
+      for(let c=0;c<3;c++){ const v=M.T[t*3+c], u=M.T[t*3+(c+1)%3]; K[t*3+c]=v<u?v*nV+u:u*nV+v;
+        const o=owner[v]; if(o>=0) uni(a,o); else owner[v]=a; } }
+    const S=Float64Array.from(K).sort(), once=k=>{ let lo=0, hi=S.length; while(lo<hi){ const m=(lo+hi)>>1; if(S[m]<k) lo=m+1; else hi=m; }
+      return !(lo+1<S.length&&S[lo+1]===k); };            // an edge only one triangle has
     const bnd=new Uint8Array(n), has=new Uint8Array(n);
-    for(let t=0;t<M.tf.length;t++){ const a=M.tf[t]; has[a]=1;
-      for(let c=0;c<3;c++){ const v=M.T[t*3+c], u=M.T[t*3+(c+1)%3]; if(E.get(v<u?v*nV+u:u*nV+v)===1) bnd[a]=1; } }
+    for(let t=0;t<nt;t++){ const a=M.tf[t]; has[a]=1;
+      for(let c=0;c<3;c++) if(!bnd[a]&&once(K[t*3+c])) bnd[a]=1; }
     const G=new Map(), C=new Float64Array(n*3), D2=SM_MERGE*SM_MERGE;
     for(let a=0;a<n;a++){ if(has[a]&&!bnd[a]) continue; const o=fs[a]*9;
       const x=(P[o]+P[o+3]+P[o+6])/3, y=(P[o+1]+P[o+4]+P[o+7])/3, z=(P[o+2]+P[o+5]+P[o+8])/3; C[a*3]=x; C[a*3+1]=y; C[a*3+2]=z;
@@ -2337,7 +2341,11 @@ mat.onBeforeCompile=sh=>{
   }
   function smBusyShow(on){ const e=document.getElementById('smBusy'); if(e) e.style.display=on?'':'none'; }
   // a film came back (or the worker is gone): the regions that waited for it take their level
-  function smFilmDone(){ let busy=false, ch=false;
+  // 436: films that come back together (a layer's regions, each its own) make ONE redraw — each made its own,
+  // half a second of every layer's copies a film, and a level turned on a layer of eleven regions froze for six
+  var smFilmT=0;
+  function smFilmDone(){ clearTimeout(smFilmT); smFilmT=setTimeout(smFilmApply,40); }
+  function smFilmApply(){ let busy=false, ch=false;
     for(const r of SMR) if(r.pending){ const m=smMemoOf(r); if(m.F||!smWorker()){ smCompute(r); ch=true; } else busy=true; }
     smBusyShow(busy); if(ch){ smRebuild(); updateArea(); } }
   function smCompute(r){ const m=smMemoOf(r);
@@ -2427,7 +2435,7 @@ mat.onBeforeCompile=sh=>{
       SMR.push(r); }
     return true; }
   var smSyncT=0;
-  function smSyncSoon(){ clearTimeout(smSyncT); smSyncT=setTimeout(smSyncNow,120); }
+  function smSyncSoon(){ clearTimeout(smSyncT); smSyncT=setTimeout(smSyncNow,600); }   // 436: once the brush rests, not between strokes
   function smSyncNow(){ clearTimeout(smSyncT);
     if(typeof amLive!=='undefined'&&amLive){ smSyncSoon(); return; }      // not while a stroke is down
     let ch=false; for(let ti=0;ti<types.length;ti++) if(smLayerSync(ti)) ch=true;
