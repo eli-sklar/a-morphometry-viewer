@@ -337,6 +337,71 @@ addEventListener('resize',resize); resize();
 (function tick(){requestAnimationFrame(tick);if(window.amMarkTick)window.amMarkTick();if(window.amRescaleFixed)window.amRescaleFixed();renderer.render(scene,camera);})();
 
 $('openBtn').onclick=()=>$('file').click();
+/* ---- 453 (Eli, 05/10: "the keyboard that opens on the iPad should be the big comfortable one, not the small
+   annoying one"; in Notes, the same minute, it is the docked one): a TEMPORARY diagnosis, opened only by its
+   button on the opening screen. Six fields, each with one thing of this page taken away or added, and for each
+   the page measures whether the keyboard docked — a docked keyboard shortens the visible viewport, a floating
+   one does not. Eli reports the letters; 43 fixes what they show and removes the button */
+if($('kbTest')) $('kbTest').onclick=()=>{
+  const res={}, out=document.createElement('div');
+  const wrap=document.createElement('div');
+  wrap.style.cssText='position:fixed;inset:0;z-index:2147483000;background:#0a0a0a;color:#d8cdb8;overflow:auto;'
+    +'padding:calc(14px + env(safe-area-inset-top)) 18px 18px;font:15px system-ui,Arial,sans-serif;direction:rtl';
+  const h=document.createElement('div'); h.style.cssText='font-size:18px;font-weight:700;margin-bottom:6px';
+  h.textContent='בדיקת מקלדת'; wrap.appendChild(h);
+  const p=document.createElement('div'); p.style.cssText='line-height:1.6;margin-bottom:10px;color:#a89f8a';
+  p.textContent='נגיעה באצבע בכל שדה לפי הסדר, ואחריה סגירת המקלדת. בכל שדה נרשם אם המקלדת נצמדה לתחתית או צפה. '
+    +'בסוף — צילום מסך של הדף.';
+  wrap.appendChild(p);
+  const S='width:100%;box-sizing:border-box;padding:9px 10px;font:16px system-ui,Arial,sans-serif;'
+    +'background:#141210;color:#d8cdb8;border:1px solid #6b5a33;border-radius:2px;margin:4px 0 12px';
+  function show(){ out.textContent=Object.keys(res).map(k=>k+': '+res[k]).join(' · ')||'—'; }
+  function measure(k,win){
+    setTimeout(()=>{ const vv=window.visualViewport, ih=window.innerHeight,
+      vh=vv?Math.round(vv.height):ih, gap=ih-vh;
+      res[k]=(gap>120?'נצמדה':'צפה')+' ('+vh+'/'+ih+')'; show(); },900);
+  }
+  function field(k,label,extra,before){
+    const l=document.createElement('div'); l.textContent=k+' — '+label; l.style.cssText='font-weight:600;margin-top:6px';
+    wrap.appendChild(l);
+    if(before) wrap.appendChild(before);
+    const i=document.createElement('input'); i.placeholder='נגיעה באצבע כאן'; i.style.cssText=S+(extra||'');
+    i.addEventListener('focus',()=>measure(k,window)); wrap.appendChild(i);
+  }
+  function step(text,fn){ const b=document.createElement('button'); b.textContent=text;
+    b.style.cssText='margin:4px 0;padding:8px 12px;font-size:14px';
+    b.onclick=()=>{ fn(); b.textContent='✓ '+text; b.disabled=true; }; return b; }
+  field('א','שדה רגיל, כמו בתוכנה');
+  field('ב','בלי נעילת הבחירה (user-select)','-webkit-user-select:text;user-select:text;-webkit-touch-callout:default');
+  // ג: a clean document — no CSS and no script of ours, in the same window
+  const gl=document.createElement('div'); gl.textContent='ג — מסמך נקי, בלי שום עיצוב או קוד של התוכנה';
+  gl.style.cssText='font-weight:600;margin-top:6px'; wrap.appendChild(gl);
+  const fr=document.createElement('iframe'); fr.style.cssText='width:100%;height:64px;border:1px solid #6b5a33;background:#fff;margin:4px 0 12px';
+  fr.srcdoc='<!doctype html><meta charset="utf-8"><input placeholder="נגיעה באצבע כאן" style="width:90%;font-size:16px;margin:12px">';
+  fr.onload=()=>{ try{ const ii=fr.contentDocument.querySelector('input'); ii.addEventListener('focus',()=>measure('ג',fr.contentWindow)); }catch(_){} };
+  wrap.appendChild(fr);
+  field('ד','אחרי הסרת נעילת הדף (position:fixed על הגוף)','',
+    step('הסר את נעילת הדף',()=>{ for(const e of [document.documentElement,document.body]){
+      e.style.position='static'; e.style.overflow='visible'; e.style.height='auto';
+      e.style.webkitUserSelect='text'; e.style.userSelect='text'; e.style.webkitTouchCallout='default'; } }));
+  field('ה','אחרי הסרת נעילת הזום (viewport)','',
+    step('הסר את נעילת הזום',()=>{ const m=document.querySelector('meta[name=viewport]');
+      if(m) m.setAttribute('content','width=device-width, initial-scale=1'); }));
+  field('ו','אחרי הפעלת השומרים של מסך העבודה (גלילה ומחוות)','',
+    step('הפעל את השומרים',()=>{
+      document.addEventListener('touchmove',e=>{ if(e.touches.length>1){e.preventDefault();return;}
+        const t=e.target; if(!(t.closest&&t.closest('input,button,select,textarea,label'))) e.preventDefault(); },{passive:false});
+      ['gesturestart','gesturechange','gestureend'].forEach(g=>document.addEventListener(g,e=>e.preventDefault(),{passive:false}));
+    }));
+  const ol=document.createElement('div'); ol.textContent='תוצאות'; ol.style.cssText='font-weight:700;margin-top:10px'; wrap.appendChild(ol);
+  out.style.cssText='direction:rtl;line-height:1.7;margin:4px 0 12px;color:#38b000'; wrap.appendChild(out);
+  const info=document.createElement('div'); info.style.cssText='font-size:12px;color:#8a7f68;direction:ltr;text-align:left;margin-bottom:12px';
+  info.textContent=(STANDALONE?'standalone':'browser tab')+' · '+innerWidth+'x'+innerHeight+' · '+navigator.userAgent;
+  wrap.appendChild(info);
+  const c=document.createElement('button'); c.textContent='סגירה (טעינה מחדש)'; c.style.cssText='padding:10px 16px';
+  c.onclick=()=>location.reload(); wrap.appendChild(c);
+  document.body.appendChild(wrap); show();
+};
 $('mImport').onclick=()=>$('file').click();     // slice 2 (decision 42): the reverse button
 $('file').addEventListener('change',e=>{
   const f=e.target.files[0]; e.target.value='';
