@@ -1598,13 +1598,25 @@ mat.onBeforeCompile=sh=>{
       for(let k=0;k<3;k++){colors[o0+k*3]=c[0];colors[o0+k*3+1]=c[1];colors[o0+k*3+2]=c[2];flats[f*3+k]=0.8;dess[f*3+k]=0;}
       return;
     }
-    for(let ti=0;ti<types.length;ti++) if(types[ti].op>0&&!types[ti].hid&&isType(ti,f)&&!(types[ti].band&&types[ti].band.has(f))) _vis.push(ti);
-    if(!_vis.length){ if(roi[f]){r=ROIC;a=0.45;} else {r=[1,1,1];a=0;} }
-    else { const T=types[_vis[f%_vis.length]]; r=T.color; a=T.op; d=(typeof T.design==='number')?T.design:0.6; }   // alternating triangles
+    // Volume paint wins the pixel, SOLID. It was drawn as a dither on every other
+    // sub-face, and the holes in it swallowed the edge of the marking — the one
+    // thing the user has to see, because that edge becomes the skirt (Eli, 30/08).
+    if(typeof volPaint!=='undefined' && volPaint[f] && !(volMarkT&&volMarkT.band&&volMarkT.band.has(f))){
+      const o0=f*9;
+      for(let c=0;c<3;c++){colors[o0+c*3]=VOLC[0];colors[o0+c*3+1]=VOLC[1];colors[o0+c*3+2]=VOLC[2];
+        flats[f*3+c]=volOp; dess[f*3+c]=volDes;}
+      return;
+    }
+    for(let ti=0;ti<types.length;ti++) if(types[ti].op>0 && !types[ti].hid && isType(ti,f) && !(types[ti].band&&types[ti].band.has(f))) _vis.push(ti);
+    if(!_vis.length){ if(roi[f]){r=ROIC;a=0.45*roiOp;} else {r=[1,1,1];a=0;} }
+    else { const T=types[_vis[f%_vis.length]]; r=T.color; a=T.op; d=(typeof T.design==='number')?T.design:0.6; }
+    if(selMask[f]){ r=[(r[0]+SELC[0])*0.5,(r[1]+SELC[1])*0.5,(r[2]+SELC[2])*0.5]; a=Math.max(a,0.35); }
     const o=f*9;
     for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;dess[f*3+c]=d;}
   }
-  function amMarkLayers(){ return (typeof smLiveT!=='undefined'&&smLiveT)?types.concat([smLiveT]):types; }   // 325: no volume brush · 335: the smooth brush's line while it is down
+  const roiOp=1.0, selMask=new Uint8Array(0);   // 349: the editor's orange-zone opacity wheel and rectangle selection — fixed and empty here; the shared recolorFace reads them
+  function amMarkLayers(){ const L=(typeof volMarkT!=='undefined'&&volMarkT)?types.concat([volMarkT]):types;
+    return (typeof smLiveT!=='undefined'&&smLiveT)?L.concat([smLiveT]):L; }   // 325: no volume brush · 335: the smooth brush's line while it is down
   function recolorAll(){if(typeof smRecolor==='function') smRecolor();   // 335ב: the copies take the layer's colour too
     for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();
     if(typeof amMarkDraw==='function'){ amMarkDraw(); amMarkSoon(); }}   // 324: the line follows whatever changed
@@ -3244,13 +3256,21 @@ float amStippleA(float a, float lvl){
     clearTimeout(amSnapT);
     amSnapT=setTimeout(()=>{ try{ snapPut(getSheet()); }catch(_){} },1500);
   }
-  function applyDiff(diff){
-    const inv=[];
+  function applyDiff(diff){const inv=[];
     for(let i=diff.length-1;i>=0;i--){const d=diff[i];
       if(d[0]==='L+'){inv.push(['L-',d[1]]);delLine(d[1]);}
       else if(d[0]==='L-'){inv.push(['L+',d[1]]);addLine(d[1]);}
       else if(d[0]==='X+'){inv.push(['X-',d[1]]);delX(d[1]);}
       else if(d[0]==='X-'){inv.push(['X+',d[1]]);addX(d[1]);}
+      // a closed hole undoes like every other edit: the click writes, Ctrl+Z takes it
+      // back (decision 128 — the approve step went, the undo carries its weight)
+      else if(d[0]==='V'){                       // a volume-brush stroke
+        const back=[];
+        for(const pr of d[1]){ back.push([pr[0],volPaint[pr[0]]]); volPaint[pr[0]]=pr[1]; recolorFace(pr[0]); }
+        // 325: the stroke's balls leave with its undo and come back with its redo
+        if(d[2]){ if(d[3]) volOpIn(d[2]); else volOpOut(d[2]); }
+        inv.push(['V',back,d[2]||null,!d[3]]); volCount(); volSmSoon();
+      }
       // 258: a point that was dragged undoes to where it came from — Ctrl+Z puts it back,
       // it does not delete it. The ring is held by reference, the way a line already is.
       else if(d[0]==='M'){const m=d[1];
@@ -3264,8 +3284,8 @@ float amStippleA(float a, float lvl){
       else if(d[0]==='D'){inv.push(['D-',d[1]]);amLayerIn(d[1]);}
       // 329: a smoothed region's stroke, erasure or level — the layer's regions before and after
       else if(d[0]==='SMR'){inv.push(['SMR',{at:d[1].at,before:d[1].after,after:d[1].before}]);smSetLayer(d[1].at,d[1].before);}
-    else if(d[0]==='SML'){const T=types.find(q=>q.id===d[1].at); inv.push(['SML',{at:d[1].at,from:d[1].to,to:d[1].from}]);   // 433: the layer's level
-      if(T){T.sm=d[1].from; T._smSig=null; smSyncNow();}}
+      else if(d[0]==='SML'){const T=types.find(q=>q.id===d[1].at); inv.push(['SML',{at:d[1].at,from:d[1].to,to:d[1].from}]);   // 433: the layer's level
+        if(T){T.sm=d[1].from; T._smSig=null; smSyncNow();}}
       // 324: a stroke's balls, or a grow, leave with its undo and come back with its redo
       else if(d[0]==='OP'){inv.push(['OP-',d[1],d[2]]);amOpOut(d[1],d[2]);}
       else if(d[0]==='OP-'){inv.push(['OP',d[1],d[2]]);amOpIn(d[1],d[2]);}
@@ -3275,15 +3295,19 @@ float amStippleA(float a, float lvl){
       else if(d[0]==='PD'){inv.push(['PA',d[1]]);polys.splice(Math.min(d[1].i,polys.length),0,d[1].ring);polyRebuild();}
       else if(d[0]==='PA'){inv.push(['PD',d[1]]);const k=polys.indexOf(d[1].ring);if(k>=0)polys.splice(k,1);polyRebuild();}
       else if(d[0]==='D-'){inv.push(['D',d[1]]);amLayerOut(d[1]);}
-      // 332: a tag placed, deleted, edited
+      // 332: a tag placed, deleted, edited — and the compose screen's whole set (GS)
       else if(d[0]==='G+'){const k=tags.indexOf(d[1]); inv.push(['G-',{g:d[1],i:k}]); if(k>=0) tags.splice(k,1); tagRebuild(); buildChips();}
       else if(d[0]==='G-'){inv.push(['G+',d[1].g]); tags.splice(Math.min(d[1].i,tags.length),0,d[1].g); tagRebuild(); buildChips();}
       else if(d[0]==='GE'){const g=d[1].g; inv.push(['GE',{g:g,from:d[1].to,to:d[1].from}]);
         g.title=d[1].from.title; g.text=d[1].from.text; g.img=d[1].from.img; tagRebuild(); buildChips();}
-      else {const [ti,f,o]=d;inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;amSUpd(ti,f);recolorFace(f);}}
-    inv.reverse();
-    colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();return inv;
-  }
+      else if(d[0]==='GS'){inv.push(['GS',{from:d[1].to,to:d[1].from}]); tagSetAll(d[1].from.ts,d[1].from.gs);}
+      // 391: a deleted volume comes back in its place; redo takes it again
+      else if(d[0]==='VD'){inv.push(['VA',d[1]]);MEMBRANES.splice(Math.min(d[1].i,MEMBRANES.length),0,d[1].rec);volRimBuild();volChips();volLayerChips();volCount();}
+      else if(d[0]==='VA'){inv.push(['VD',d[1]]);volDelete(d[1].rec.id);}
+      else if(d[0]==='H+'){inv.push(['H-',d[1]]);holeRemove(d[1].id);}
+      else if(d[0]==='H-'){inv.push(['H+',d[1]]);holeAdd(d[1]);}
+      else {const ti=d[0],f=d[1],o=d[2];inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;amSUpd(ti,f);recolorFace(f);}}
+    inv.reverse(); colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();return inv;}
   const undo=()=>{if(undoStack.length){redoStack.push(applyDiff(undoStack.pop()));updateHB();}};
   const redo=()=>{if(redoStack.length){undoStack.push(applyDiff(redoStack.pop()));updateHB();}};
   function updateHB(){document.getElementById('undo').disabled=!undoStack.length;document.getElementById('redo').disabled=!redoStack.length;
@@ -3441,6 +3465,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const r=el.getBoundingClientRect();
     ray.setFromCamera(new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,
                                         -((e.clientY-r.top)/r.height)*2+1),camera);
+    if(mode==='wallshape') return !!(wallEdit&&wallEdit.mesh&&ray.intersectObject(wallEdit.mesh,false).length);
     return ray.intersectObject(mesh,false).length>0;
   }
   el.addEventListener('pointerdown',e=>{
@@ -3516,14 +3541,16 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   });
   function endDrag(e){
     amHoldClear();
-    if(e){ptrs.delete(e.pointerId);if(e.pointerId===dragId)dragId=null;}
-    if(dragging==='pinch'){if(touchList().length>=2)startPinch();else{pinch=null;dragging=null;}return;}
+    if(e){ ptrs.delete(e.pointerId); if(e.pointerId===dragId) dragId=null; }
+    if(dragging==='pinch'){ if(touchList().length>=2)startPinch(); else {pinch=null;dragging=null;} return; }
     if(dragging==='grab')amGrabEnd();
+    if(dragging==='wallshape')wallEnd();
+    if(dragging==='volpaint')volCommit();
     if(dragging==='smpaint')smStrokeEnd();
     if(dragging==='paint'&&paintManual){amStrokeEnd();commitH();}
     if(dragging==='line')endLine();
-    dragging=null;dragId=null;
-  }
+    if(dragging==='rect'){const wr=wrap.getBoundingClientRect();selectRect(rectStart[0],rectStart[1],last[0]-wr.left,last[1]-wr.top);rubber.style.display='none';rectStart=null;}
+    dragging=null; dragId=null;}
   el.addEventListener('pointerup',endDrag);el.addEventListener('pointercancel',endDrag);
   el.addEventListener('contextmenu',e=>e.preventDefault());
   el.style.touchAction='none';
@@ -4189,14 +4216,27 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
 
   /* ---- toolbar ---- */
   // 421 (Eli, 03/10): "ניווט" changes the hand only — the side bar goes on showing what was open
-  function setMode(m){ if(mode!=='nav'&&m==='nav') amKeepMode=mode; else if(m!=='nav') amKeepMode=m; mode=m;
-    ['mNav','mAdd','mRem','mGrow'].forEach(id=>{const b=$(id);if(b)b.classList.remove('on');});
-    const _b=$({nav:'mNav',add:'mAdd',rem:'mRem',grow:'mGrow'}[m]);
-    if(_b)_b.classList.add('on');
+  function setMode(m){
+    // the wall's shaping ends when another tool is taken — also after a turn of the model (421)
+    if((mode==='wallshape'||(mode==='nav'&&amKeepMode==='wallshape'))&&m!=='wallshape'&&m!=='nav'&&typeof wallTeardown==='function') wallTeardown();
+    if(mode!=='nav'&&m==='nav') amKeepMode=mode; else if(m!=='nav') amKeepMode=m;
+    mode=m;
+    document.getElementById('mNav').classList.toggle('on',m==='nav');
+    document.getElementById('mAdd').classList.toggle('on',m==='add');
+    document.getElementById('mRem').classList.toggle('on',m==='rem');
+    // 256: an UNCLOSED ring survives leaving the tool. I had it discarded here, reasoning
+    // that a half-drawn ring should not outlive the mode — and that reasoning ignored how
+    // the ring is drawn: Eli, 18/09, "if I did not finish closing a polygon and I pressed
+    // navigate, all the points I marked reset; it matters that I can turn the model in
+    // order to choose the points well." Turning the model is PART of placing them. Escape
+    // is the way out, and it is the only one.
+    {const b=document.getElementById('mRegion'); if(b) b.classList.toggle('on',m==='region');}   // the editor's rectangle tool
+    document.getElementById('mGrow').classList.toggle('on',m==='grow');
     amSideWhat();
-    // 256: an UNCLOSED ring survives leaving the tool — turning the model is part of
-    // placing the points (Eli, 18/09). Escape is the way out, and the only one.
-  }
+    // leaving the tool takes its drawing with it: outside this mode the model is never
+    // read through a net of outlines (the reality meeting, 29/08)
+    invalidate();
+    el.style.cursor=m==='nav'?'grab':'crosshair';}
   $('mNav').onclick=()=>setMode('nav');
   $('mAdd').onclick=()=>setMode('add');
   $('mRem').onclick=()=>setMode('rem');
@@ -4243,19 +4283,27 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // The tolerance belongs to growing alone (Eli, 24/09) — hidden, not dimmed, in every
   // other mode; while growing the side bar's title says so.
   function amSideWhat(){
-    const growing=((mode==='nav'?amKeepMode:mode)==='grow'&&activeKind==='area');   // 421
-    const poly=(activeKind==='area'&&areaTool===AM_POLY&&!growing);
-    const smooth=(activeKind==='area'&&areaTool===AM_BRUSH&&!growing);   // 329 · 433: the brush carries the level wheel
-    const w=$('brushWhat'); if(w) w.textContent=AM_BRUSH_WHAT[activeKind]||'גודל המברשת';
-    const t=$('sideTool'); if(t) t.textContent=activeKind==='none'?'אין שכבה פתוחה':growing?'נביטה':poly?'שטח פוליגון':(AM_TOOL_NAME[activeKind]||'סימון');
-    const smw=$('smWrap'); if(smw) smw.style.display=smooth?'':'none';
-    const g=$('growWrap'); if(g) g.style.display=growing?'':'none';
+    const sm=(mode==='nav')?amKeepMode:mode;        // 421: what the bar is about, under navigation too
+    const growing=(sm==='grow'&&activeKind==='area');
+    const walling=(sm==='wallshape'&&!!wallEdit);
+    const poly=(activeKind==='area'&&areaTool===AM_POLY&&!growing&&!walling);
+    const smooth=(activeKind==='area'&&areaTool===AM_BRUSH&&!growing&&!walling);   // 329 · 433: the brush carries the level wheel
+    const w=document.getElementById('brushWhat'); if(w) w.textContent=AM_BRUSH_WHAT[activeKind]||'גודל המברשת';
+    const t=document.getElementById('sideTool');
+    if(t) t.textContent=activeKind==='none'?'אין שכבה פתוחה':walling?'עיצוב הקיר':growing?'נביטה':poly?'שטח פוליגון':(AM_TOOL_NAME[activeKind]||'סימון');
+    const smw=document.getElementById('smWrap'); if(smw) smw.style.display=(smooth||(activeKind==='vol'&&!walling))?'':'none';   // 430
+    const ws=document.getElementById('wallSide'); if(ws) ws.style.display=walling?'':'none';
+    // 421: under navigation the wall's shaping is taken up again by "סימון"
+    for(const id of ['mAdd','mRem']){const b=document.getElementById(id); if(b) b.style.display=(walling&&!(id==='mAdd'&&mode==='nav'))?'none':'';}
+    const g=document.getElementById('growWrap'); if(g) g.style.display=growing?'':'none';
     // 10: the tool pair belongs to an area layer; a polygon has no brush size
-    const aw=$('areaToolWrap'); if(aw) aw.style.display=(activeKind==='area')?'':'none';
-    const bw=$('brushWrap'); if(bw) bw.style.display=(poly||activeKind==='tag')?'none':'';
-    // 6: the shape belongs to the brush that paints faces
-    const sw=$('shapeWrap'); if(sw) sw.style.display=(activeKind==='area'&&!poly&&!growing)?'':'none';
-    const ab=$('aBrush'), apl=$('aPoly'), asm=$('aSmooth');
+    const aw=document.getElementById('areaToolWrap'); if(aw) aw.style.display=(activeKind==='area'&&!walling)?'':'none';
+    const bw=document.getElementById('brushWrap'); if(bw) bw.style.display=(poly||activeKind==='tag')?'none':'';
+    // 6: the shape belongs to the brushes that paint FACES — an area layer's brush and the
+    // volume brush; a tape, a counter and a ruler do not paint faces
+    const sw=document.getElementById('shapeWrap');
+    if(sw) sw.style.display=(!walling&&((activeKind==='area'&&!poly&&!growing)||activeKind==='vol'))?'':'none';
+    const ab=document.getElementById('aBrush'), apl=document.getElementById('aPoly'), asm=document.getElementById('aSmooth');
     if(ab) ab.classList.toggle('on',areaTool===AM_BRUSH); if(apl) apl.classList.toggle('on',areaTool===AM_POLY);
     if(asm) asm.classList.toggle('on',areaTool===AM_SMOOTH);
   }
@@ -4288,14 +4336,15 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // synced through the ONE path every activation crosses. Wiring it around the activate*
   // functions is what failed silently there (decision 87), and the same trap exists here.
   function amSyncDesign(){
-    const ds=$('design'), dv=$('designV');
+    const ds=document.getElementById('design'), dv=document.getElementById('designV');
     if(!ds) return;
     let v=null;
     if(activeKind==='cnt'){const T=cntTypes[activeC]; v=T?(T.design??0.6):null;}
     else if(activeKind==='len'){const T=lenTypes[activeL]; v=T?(T.design||0):null;}
     else if(activeKind==='area'){const T=types[activeT]; v=T?(T.design??0.6):null;}
     else if(activeKind==='rul'){const T=rulTypes[activeR]; v=T?(T.design||0):null;}
-    ds.disabled=(v===null);
+    else if(activeKind==='vol'){const L=volLayer(); v=L?volDesOf(L):null;}   // 448: a volume layer has a design again
+    ds.disabled=(v===null);                     // a tape layer has no design yet
     if(v!==null){ds.value=Math.round(v*100);dv.textContent=Math.round(v*100)+'%';}
   }
   if($('clear')) $('clear').oninput=e=>{
@@ -4432,56 +4481,63 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
               say:(T.area||0).toFixed(2)+' מ״ר'+(np?(' · '+np+' פוליגונים'):'')+(ns?(' · '+ns+' אזורים מוחלקים'):'')};}
     if(kind==='len'){const n=lines.filter(L=>L.t===T.id).length; return {n:n,say:n+' קווים'};}
     if(kind==='cnt'){const n=xmarks.filter(m=>m.t===T.id).length; return {n:n,say:n+' סמנים'};}
+    if(kind==='rul'){const n=rulPts.filter(q=>q.t===T.id).length; return {n:n,say:n+' נקודות'};}
     if(kind==='tag'){const n=tags.filter(g=>g.t===T.id).length; return {n:n,say:n+' תגיות'};}
-    const n=rulPts.filter(q=>q.t===T.id).length; return {n:n,say:n+' נקודות'};
+    const n=MEMBRANES.filter(M=>M.kind==='volume'&&M.layer===T.id).length; return {n:n,say:n+' נפחים'};
   }
-  function amLayerOut(snap){
+  function amLayerOut(snap){               // take the layer and everything on it off the screen
     const list=AM_KIND_LIST[snap.kind](), T=snap.T;
     if(snap.kind==='area'){
       if(curPoly&&curPoly.at===T.id) curPoly=null;
       snap.polys=polys.filter(P=>P.at===T.id);
       for(const P of snap.polys) polys.splice(polys.indexOf(P),1);
-      snap.smr=SMR.filter(r=>r.at===T.id);                     // 329
+      snap.smr=SMR.filter(r=>r.at===T.id);                       // 329
       for(const r of snap.smr) SMR.splice(SMR.indexOf(r),1);
       if(smSel&&smSel.at===T.id) smSel=null;
     } else if(snap.kind==='len'){snap.lines=lines.filter(L=>L.t===T.id); for(const L of snap.lines) delLine(L);}
     else if(snap.kind==='cnt'){snap.xs=xmarks.filter(m=>m.t===T.id); for(const m of snap.xs) delX(m);}
-    else if(snap.kind==='tag'){snap.gs=tags.filter(g=>g.t===T.id); for(const g of snap.gs) tags.splice(tags.indexOf(g),1);}
-    else {
+    else if(snap.kind==='rul'){
       if(rulLast!==null&&(rulPtById(rulLast)||{}).t===T.id) rulLast=null;
       snap.pts=rulPts.filter(q=>q.t===T.id); snap.segs=rulSegs.filter(g=>g.t===T.id);
       for(const q of snap.pts) rulPts.splice(rulPts.indexOf(q),1);
       for(const g of snap.segs) rulSegs.splice(rulSegs.indexOf(g),1);
-    }
+    } else if(snap.kind==='tag'){snap.gs=tags.filter(g=>g.t===T.id);
+      for(const g of snap.gs) tags.splice(tags.indexOf(g),1);
+    } else {snap.mems=MEMBRANES.filter(M=>M.kind==='volume'&&M.layer===T.id);
+      for(const M of snap.mems) MEMBRANES.splice(MEMBRANES.indexOf(M),1);}
     list.splice(snap.i,1);
-    if(snap.kind==='area'&&!types.length){            // never without an area layer — a parked one (357)
+    if(snap.kind==='area'&&!types.length){          // never without an area layer — a parked one (357)
       if(!snap.fill) snap.fill=mkType('','#38b000'); else types.push(snap.fill);
       snap.fill.park=true;
     }
-    amLayerAfter();
+    amLayerAfter(snap.kind);
   }
-  function amLayerIn(snap){
+  function amLayerIn(snap){                // and back, whole, in its own place
     const list=AM_KIND_LIST[snap.kind]();
     if(snap.fill){const k=types.indexOf(snap.fill); if(k>=0) types.splice(k,1);}
     list.splice(snap.i,0,snap.T);
     if(snap.kind==='area'){ for(const P of (snap.polys||[])) polys.push(P); for(const r of (snap.smr||[])) SMR.push(r); }
     else if(snap.kind==='len') for(const L of (snap.lines||[])) addLine(L);
     else if(snap.kind==='cnt') for(const m of (snap.xs||[])) addX(m);
+    else if(snap.kind==='rul'){for(const q of (snap.pts||[])) rulPts.push(q);
+                               for(const g of (snap.segs||[])) rulSegs.push(g);}
     else if(snap.kind==='tag') for(const g of (snap.gs||[])) tags.push(g);
-    else {for(const q of (snap.pts||[])) rulPts.push(q);
-          for(const g of (snap.segs||[])) rulSegs.push(g);}
-    amLayerAfter();
+    else for(const M of (snap.mems||[])) MEMBRANES.push(M);
+    amLayerAfter(snap.kind);
   }
-  function amLayerAfter(){
+  function amLayerAfter(kind){
     const clamp=(i,list)=>Math.max(-1,Math.min(i,list.length-1));
     activeT=Math.max(0,clamp(activeT,types)); activeL=clamp(activeL,lenTypes);
-    activeC=clamp(activeC,cntTypes); activeR=clamp(activeR,rulTypes); activeG=clamp(activeG,tagTypes);
+    activeC=clamp(activeC,cntTypes); activeR=clamp(activeR,rulTypes); if(typeof volLayers!=='undefined') activeV=clamp(activeV,volLayers);
+    activeG=clamp(activeG,tagTypes);
     if((activeKind==='len'&&activeL<0)||(activeKind==='cnt'&&activeC<0)
-       ||(activeKind==='rul'&&activeR<0)||(activeKind==='tag'&&activeG<0)) activeKind=amKindLeft();
+       ||(activeKind==='rul'&&activeR<0)||(activeKind==='vol'&&activeV<0)
+       ||(activeKind==='tag'&&activeG<0)) activeKind=amKindLeft();
     if(activeKind==='area'&&(!types[activeT]||types[activeT].park)){           // 357: never onto a parked layer
       const k=types.findIndex(T=>!T.park); if(k>=0) activeT=k; else activeKind='none';}
-    recolorAll(); polyRebuild(); rulRebuild(); tagRebuild(); syncKindUI(); buildChips(); updateArea();
-    markUnexported(true);
+    recolorAll(); polyRebuild(); rulRebuild(); tagRebuild();
+    if(typeof volRimBuild==='function'){ volRimBuild(); volChips(); volLayerChips(); }   // volume layers: the editor only
+     syncKindUI(); buildChips(); updateArea(); markUnexported(true); invalidate();
   }
   async function amLayerDelete(kind,i){
     const list=AM_KIND_LIST[kind](), T=list[i]; if(!T) return;
@@ -4742,7 +4798,8 @@ const amPal=(function(){
     else if(kind==='len'){ for(const L of lines) if(L.t===T.id&&L.obj){ scene.remove(L.obj); L.obj=lineObj(L); L.obj.visible=!T.hid; scene.add(L.obj); } }
     else if(kind==='rul') rulRebuild();
     else if(kind==='tag') tagRebuild();
-    buildChips(); markUnexported(true); }
+    else if(kind==='vol'){ volRimBuild(); volChips(); volLayerChips(); volColSync(); volSmSoon(); }
+    buildChips(); markUnexported(true); invalidate(); }
   // every layer's dot is its colour control (400: "תעשה שאפשר לשנות לכולם")
   function amPalSw(sw,kind,T){ sw.title='שינוי צבע השכבה'; sw.style.cursor='pointer';
     sw.onclick=ev=>{ ev.stopPropagation(); amPalOpen(sw,'recolor',T.hex,hex=>amRecolor(kind,T,hex)); }; }
