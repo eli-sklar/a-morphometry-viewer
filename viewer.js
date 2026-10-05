@@ -1601,8 +1601,8 @@ mat.onBeforeCompile=sh=>{
   }
   function amMarkLayers(){ return (typeof smLiveT!=='undefined'&&smLiveT)?types.concat([smLiveT]):types; }   // 325: no volume brush · 335: the smooth brush's line while it is down
   function recolorAll(){if(typeof smRecolor==='function') smRecolor();   // 335ב: the copies take the layer's colour too
-  for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();
-    amMarkDraw(); amMarkSoon(); }   // 324: the line follows whatever changed
+    for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();
+    if(typeof amMarkDraw==='function'){ amMarkDraw(); amMarkSoon(); }}   // 324: the line follows whatever changed
   // Design-only repaint (decision 93) — same words as the editor: the wheel touches
   // only aDes, and a full recolour per drag tick killed the GL context on a 168k-face
   // building. One attribute pass, coalesced to a frame.
@@ -1617,7 +1617,7 @@ mat.onBeforeCompile=sh=>{
       const d=(typeof T.design==='number')?T.design:0.6;
       dess[f*3]=d;dess[f*3+1]=d;dess[f*3+2]=d;
     }
-    desAttr.needsUpdate=true; amMarkDraw(); if(typeof smRecolor==='function') smRecolor();
+    desAttr.needsUpdate=true; amMarkDraw(); if(typeof smRecolor==='function') smRecolor(); invalidate();
   }
   function amDessSoon(){ if(_desReq) return; _desReq=true; requestAnimationFrame(amDessOnly); }
   function updateArea(){
@@ -3146,7 +3146,7 @@ float amStippleA(float a, float lvl){
       sp.userData.amTag={kind:'tag',g:g};
       tagGroup.add(keepOnScreen(sp,RUL_LAB_K));
     }
-    rescaleFixed();
+    rescaleFixed(); invalidate();
   }
   function tagHist(d){ undoStack.push(d); redoStack.length=0; markUnexported(true); updateHB(); buildChips(); }
   function tagApply(g,v){
@@ -3690,7 +3690,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   }
   function amSetShape(k){
     brushShape=(k==='flat')?'flat':'ball';
-    const b=$('sBall'), f=$('sFlat');
+    const b=document.getElementById('sBall'), f=document.getElementById('sFlat');
     if(b) b.classList.toggle('on',brushShape==='ball'); if(f) f.classList.toggle('on',brushShape==='flat');
   }
   if($('sBall')) $('sBall').onclick=()=>amSetShape('ball');
@@ -4362,8 +4362,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   }
 
   const amHidOf=(list,id)=>{const T=list.find(x=>x.id===id);return !!(T&&T.hid);};
-  function amShowLines(){for(const L of lines) if(L.obj) L.obj.visible=!amHidOf(lenTypes,L.t);}
-  function amShowCnts(){for(const m of xmarks) if(m.obj) m.obj.visible=!amHidOf(cntTypes,m.t);}
+  function amShowLines(){for(const L of lines) if(L.obj) L.obj.visible=!amHidOf(lenTypes,L.t); invalidate();}
+  function amShowCnts(){for(const m of xmarks) if(m.obj) m.obj.visible=!amHidOf(cntTypes,m.t); invalidate();}
   // 2 (24/09): deleting a layer, as in the measurement screen — a ✕ on every chip, a
   // question when marks go with it, and Ctrl+Z brings it back whole IN ITS PLACE (an area
   // stroke in the history names its layer by position). The last area layer leaves an
@@ -4703,7 +4703,8 @@ const amPal=(function(){
     const inp=document.querySelector('#chipsL .chip.on input');if(inp)inp.focus();};
 
   // the add buttons open the board (400); its wheel holds the browser's picker
-  function amPalAdd(B,id){ const I=$(id); amPalOpen(B,'add',I.value,hex=>{ I.value=hex; I.onchange({target:I}); }); }
+  function amPalAdd(B,id){ const I=document.getElementById(id);
+    amPalOpen(B,'add',I.value,hex=>{ I.value=hex; I.onchange({target:I}); }); }
   $('addType').onclick=e=>amPalAdd(e.currentTarget,'typeColor');
   $('addCnt').onclick=e=>amPalAdd(e.currentTarget,'cntColor');
   $('addLen').onclick=e=>amPalAdd(e.currentTarget,'lenColor');
