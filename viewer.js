@@ -4438,10 +4438,14 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     e.onclick=ev=>{ev.stopPropagation();amLayerDelete(kind,i);};
     return e;
   }
+  // 349: the layer bar — one chip per layer of every kind (area, counter, tape, ruler, tag), with the
+  // name field, the running total, the eye and the ✕. Shared by the editor and the iPad: the dirty
+  // flag is markUnexported(true) (the editor's one-line shim), the strips are looked up by id and
+  // a missing strip is skipped.
   function buildChips(){
-    const A=$('chipsA');if(!A)return;A.innerHTML='';
+    const A=document.getElementById('chipsA');if(!A)return;A.innerHTML='';
     types.forEach((T,i)=>{
-      if(T.park) return;                  // 357: held for the first new layer, not shown
+      if(T.park) return;                    // 357: held for the first new layer, not shown
       const c=document.createElement('span');c.className='chip'+(activeKind==='area'&&i===activeT?' on':'');c.style.setProperty('--c',T.hex);
       const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);amPalSw(sw,'area',T);
       const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם הסוג';
@@ -4449,14 +4453,14 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       c.appendChild(inp);
       const b=document.createElement('b');b.id='tA_'+T.id;b.textContent=(T.area||0).toFixed(2);c.appendChild(b);
       const u=document.createElement('span');u.className='u';u.textContent='מ״ר';c.appendChild(u);
-      // 256: the layer's measurement mode, on the layer — locked once it holds marks
-      // 10: no measurement-mode menu on the layer — the side bar picks the tool
+      // 10: no measurement-mode menu on the layer — a layer holds both, and the side bar
+      // picks the tool (the menu and its lock were 256's "the two cannot be mixed")
       if(T.hid) c.style.opacity='0.45';
       c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;recolorAll();polyRebuild();buildChips();markUnexported(true);}));
       c.appendChild(amDelX('area',i));
       c.onclick=()=>{activateT(i);if(mode==='nav')setMode('add');};
       A.appendChild(c);});
-    const C=$('chipsC');if(C){C.innerHTML='';
+    const C=document.getElementById('chipsC');if(C){C.innerHTML='';
     cntTypes.forEach((T,i)=>{
       const c=document.createElement('span');c.className='chip'+(activeKind==='cnt'&&i===activeC?' on':'');c.style.setProperty('--c',T.hex);
       const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);amPalSw(sw,'cnt',T);
@@ -4470,7 +4474,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       c.appendChild(amDelX('cnt',i));
       c.onclick=()=>activateC(i);
       C.appendChild(c);});}
-    const L=$('chipsL');if(!L)return;L.innerHTML='';
+    const L=document.getElementById('chipsL');if(!L)return;L.innerHTML='';
     lenTypes.forEach((T,i)=>{
       const c=document.createElement('span');c.className='chip'+(activeKind==='len'&&i===activeL?' on':'');c.style.setProperty('--c',T.hex);
       const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);amPalSw(sw,'len',T);
@@ -4484,7 +4488,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       c.appendChild(amDelX('len',i));
       c.onclick=()=>activateL(i);
       L.appendChild(c);});
-    const R=$('chipsR');
+    const R=document.getElementById('chipsR');
     if(R){
       R.innerHTML='';
       rulTypes.forEach((T,i)=>{
@@ -4493,9 +4497,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         c.style.setProperty('--c',T.hex);
         const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);amPalSw(sw,'rul',T);
         const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם הסרגל';
-        inp.onchange=()=>{T.name=inp.value;markUnexported(true);};
-        inp.onclick=e=>e.stopPropagation();
+        inp.onchange=()=>{T.name=inp.value;markUnexported(true);};inp.onclick=e=>e.stopPropagation();
         c.appendChild(inp);
+        // the layer's total: every run of it, summed — the same number the report prints
         const b=document.createElement('b');b.id='rA_'+T.id;
         let tot=0; for(const g of rulRuns(T.id)) tot+=g.len;
         b.textContent=tot.toFixed(2); c.appendChild(b);
@@ -4506,7 +4510,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         c.onclick=()=>activateR(i);
         R.appendChild(c);});
     }
-    const G=$('chipsG');
+    const G=document.getElementById('chipsG');
     if(G){
       G.innerHTML='';
       tagTypes.forEach((T,i)=>{
@@ -4515,8 +4519,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         c.style.setProperty('--c',T.hex);
         const sw=document.createElement('i');sw.className='sw';c.appendChild(sw);amPalSw(sw,'tag',T);
         const inp=document.createElement('input');inp.value=T.name;inp.placeholder='שם השכבה';
-        inp.onchange=()=>{T.name=inp.value;markUnexported(true);};
-        inp.onclick=e=>e.stopPropagation();
+        inp.onchange=()=>{T.name=inp.value;markUnexported(true);};inp.onclick=e=>e.stopPropagation();
         c.appendChild(inp);
         const b=document.createElement('b');b.textContent=String(tags.filter(g=>g.t===T.id).length);c.appendChild(b);
         const u=document.createElement('span');u.className='u';u.textContent='תגיות';c.appendChild(u);
@@ -4526,6 +4529,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         c.onclick=()=>activateG(i);
         G.appendChild(c);});
     }
+    // 430 (Eli, 02/10): the volume layers' row too, so one chip is lit in the whole bar
+    // (the measurement screen's; the iPad has no volume layers, and the catch swallows the missing names)
+    try{ volLayerChips(); volSmWheel(); }catch(_){}
     updateArea();}
 /*AM_PAL400_START*/
 // 400 (Eli, 01/10): one colour board wherever a colour is chosen. The six palettes Eli sent,
