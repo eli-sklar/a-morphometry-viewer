@@ -337,6 +337,50 @@ addEventListener('resize',resize); resize();
 (function tick(){requestAnimationFrame(tick);if(window.amMarkTick)window.amMarkTick();if(window.amRescaleFixed)window.amRescaleFixed();renderer.render(scene,camera);})();
 
 $('openBtn').onclick=()=>$('file').click();
+/* ---- 453 (Eli, 05/10: "the keyboard that opens on the iPad should be the big comfortable one, not the small
+   annoying one"). The diagnosis of 42 found it: every field of the test docked its keyboard; in the app all was
+   well "until making a tag and touching a text box in it — after that every keyboard comes out small, even where it
+   came out right before". A tag is placed with the pencil and its title was focused at once — to iPadOS the typing
+   began with the pencil, so it opened the pencil's writing mode and its small floating keyboard, and kept it for
+   every field of the app until it was closed; nothing a page does takes it out again. So the iPad never lets it
+   begin: no field is focused by the program, every text field is locked for writing until a FINGER touches it, and
+   the pencil on a text field leaves it closed and says how to write (Eli: "I do want a message") */
+const AM_TXT='input:not([type]),input[type=text],input[type=search],textarea';
+function amTxt(t){ return !!(t&&t.matches&&t.matches(AM_TXT)); }
+function amTxtLock(root){
+  const all=(root.matches&&root.matches(AM_TXT))?[root]:[];
+  if(root.querySelectorAll) all.push(...root.querySelectorAll(AM_TXT));
+  for(const t of all) if(!t.dataset.amRo&&!t.readOnly){ t.dataset.amRo='1'; t.readOnly=true; }   // a field read-only by design stays so
+}
+new MutationObserver(ms=>{ for(const m of ms) for(const n of m.addedNodes) if(n.nodeType===1) amTxtLock(n); })
+  .observe(document.documentElement,{childList:true,subtree:true});
+amTxtLock(document.documentElement);
+let amPenTipT=0;
+function amPenTip(t){
+  let d=document.getElementById('amPenTip');
+  if(!d){ d=document.createElement('div'); d.id='amPenTip'; d.textContent='לכתיבה — נגיעה באצבע';
+    d.style.cssText='position:fixed;z-index:2147483600;pointer-events:none;background:#232019;color:#f0e6d2;'
+      +'border:1px solid #b8934a;border-radius:2px;padding:6px 10px;font:14px system-ui,Arial,sans-serif;direction:rtl;'
+      +'box-shadow:0 2px 8px #0009;transition:opacity .25s'; document.body.appendChild(d); }
+  const r=t.getBoundingClientRect();
+  d.style.left=Math.max(6,Math.min(innerWidth-190,r.left))+'px';
+  d.style.top=((r.bottom+44<innerHeight)?r.bottom+6:Math.max(6,r.top-40))+'px';
+  d.style.opacity='1'; clearTimeout(amPenTipT); amPenTipT=setTimeout(()=>{d.style.opacity='0';},1600);
+}
+document.addEventListener('pointerdown',e=>{
+  const t=e.target; if(!amTxt(t)||!t.dataset.amRo) return;
+  if(e.pointerType==='pen'){                       // the pencil: the field stays closed
+    e.preventDefault(); t.readOnly=true; if(document.activeElement===t) t.blur(); amPenTip(t); return; }
+  t.readOnly=false;                                // a finger (or a mouse) opens it
+},true);
+document.addEventListener('focusout',e=>{ const t=e.target; if(amTxt(t)&&t.dataset.amRo) t.readOnly=true; },true);
+// where the program used to put the caret, it now shows where to write — the finger's touch opens it
+function amInvite(t){ if(!t) return; t.style.outline='2px solid #b8934a'; t.style.outlineOffset='1px';
+  setTimeout(()=>{ t.style.outline=''; t.style.outlineOffset=''; },2600); }
+// the tag card is the three screens' shared core, word for word (332) — its own focus() stays in the text, and on the
+// iPad a locked field asked for the caret by the program is shown instead (the measurement screen keeps its caret)
+for(const P of [HTMLInputElement.prototype,HTMLTextAreaElement.prototype]){ const f=P.focus;
+  P.focus=function(o){ if(this.dataset&&this.dataset.amRo&&this.readOnly){ amInvite(this); return; } return f.call(this,o); }; }
 $('mImport').onclick=()=>$('file').click();     // slice 2 (decision 42): the reverse button
 $('file').addEventListener('change',e=>{
   const f=e.target.files[0]; e.target.value='';
@@ -1668,7 +1712,10 @@ mat.onBeforeCompile=sh=>{
      so the core below is copied verbatim and a gate compares the two texts.
      The environment differences are kept OUT of the shared text, in these two shims. */
   function invalidate(){}                    // the iPad draws every frame already
-  function markDirty(){ if(window.amMarkDirty) window.amMarkDirty(); }
+  // 454: nothing ever defined window.amMarkDirty on the iPad (since 17/09) — a ring closed, a point dragged, a
+  // run or a ring erased by its tag, a smoothing change: no ⚠ on the export and no recovery copy. Here it is
+  // what every other change of the iPad does
+  function markDirty(){ markUnexported(true); }
   /* 25/09 · THE RULER'S LINE, WITH A WIDTH AND A DASH (Eli: "גם עיצוב (שיהפוך למקווקוו) וגם
      גלגלת רוחב קו, כמו לסרט המדידה"). WebGL draws a THREE.Line one pixel wide and ignores any
      other width, so each segment is drawn as a STRIP: four corners, which the vertex shader
@@ -4846,19 +4893,19 @@ const amPal=(function(){
     if(k>=0){const T=types[k]; T.park=false; T.name=name; T.hex=hex; T.color=hex2rgb(hex); recolorAll(); activateT(k);}
     else {mkType(name,hex);activateT(types.length-1);}
     setMode('add');markUnexported(true);
-    const inp=document.querySelector('#chipsA .chip.on input');if(inp)inp.focus();};
+    amInvite(document.querySelector('#chipsA .chip.on input'));};   // 453
   $('cntColor').onchange=e=>{const hex=e.target.value;
     mkCntType('',hex);activateC(cntTypes.length-1);markUnexported(true);
-    const inp=document.querySelector('#chipsC .chip.on input');if(inp)inp.focus();};
+    amInvite(document.querySelector('#chipsC .chip.on input'));};   // 453
   $('tagColor').onchange=e=>{const hex=e.target.value;
     mkTagType('',hex);activateG(tagTypes.length-1);markUnexported(true);
-    const inp=document.querySelector('#chipsG .chip.on input');if(inp)inp.focus();};
+    amInvite(document.querySelector('#chipsG .chip.on input'));};   // 453
   $('rulColor').onchange=e=>{const hex=e.target.value;
     mkRulType('',hex);activateR(rulTypes.length-1);markUnexported(true);
-    const inp=document.querySelector('#chipsR .chip.on input');if(inp)inp.focus();};
+    amInvite(document.querySelector('#chipsR .chip.on input'));};   // 453
   $('lenColor').onchange=e=>{const hex=e.target.value;
     mkLenType('',hex);activateL(lenTypes.length-1);markUnexported(true);
-    const inp=document.querySelector('#chipsL .chip.on input');if(inp)inp.focus();};
+    amInvite(document.querySelector('#chipsL .chip.on input'));};   // 453
 
   // the add buttons open the board (400); its wheel holds the browser's picker
   function amPalAdd(B,id){ const I=document.getElementById(id);
