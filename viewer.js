@@ -3254,7 +3254,7 @@ float amStippleA(float a, float lvl){
   function amSnapSoon(){
     if(!amSnapOn) return;
     clearTimeout(amSnapT);
-    amSnapT=setTimeout(()=>{ try{ snapPut(getSheet()); }catch(_){} },1500);
+    amSnapT=setTimeout(()=>{ try{ snapPut(getSheet(true)); }catch(_){} },1500);
   }
   function applyDiff(diff){const inv=[];
     for(let i=diff.length-1;i>=0;i--){const d=diff[i];
@@ -4120,83 +4120,117 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
             prob:T.hasProb?(()=>{const p=new Array(FO);
               for(let fo=0;fo<FO;fo++)p[fo]=Math.round(T.prob[OFF[fo]]*1000)/1000;return p;})():null};
   }
-  function getSheet(){
+  function getSheet(withDerived){
     smSyncNow();   // 433: the regions are the brush's marking as it is now
     const t0=typeState(types[0]);
-    // הזהה לעורך במילה: התחום שנוסע חזרה נגזר — מה שנצבע, בתוספת כל פאה
-    // שיש עליה סימון שטח; נסוג עם מחיקת הסימון, ואינו נשמר כצבע (החלטה 84)
-    const rp=[];for(let fo=0;fo<FO;fo++)if(roi[OFF[fo]])rp.push(fo);
+    const H=amSheetHost();   // 349: what the product gives the sheet — its layout counts, its volume layers, its identity
+    // The zone that travels back to the training stage is DERIVED: what the user painted,
+    // widened by every face carrying an area mark. A repair marked outside the zone must not
+    // depend on the user remembering to paint it — and because the widening is derived and
+    // not stored as paint, erasing that mark takes the implied orange back with it instead of
+    // leaving an orphan. Area marks only: tapes and counters live in world coordinates and
+    // consume neither features nor sub-face resolution (decision 84).
+    const rp=[];for(let fo=0;fo<FO;fo++)if(roi[OFF[fo]])rp.push(fo);   // painted, per original face
     const mkf=new Uint8Array(FO);
-    for(const T of types){const M=T.manual; for(let s2=0;s2<N;s2++) if(M[s2]===1) mkf[FACEOF[s2]]=1;}
+    for(const T of types){const M=T.manual; for(let s=0;s<N;s++) if(M[s]===1) mkf[FACEOF[s]]=1;}
     const rf=[];for(let fo=0;fo<FO;fo++)if(roi[OFF[fo]]||mkf[fo])rf.push(fo);
-    // 4 only when a ruler is actually there; a work without one still writes 3 and
-    // still opens in every reader that came before the tool (251)
-    const o={_sheet:1,sheetVersion:((rulPts.length||polys.length)?4:3),Fo:FO,Nsub:N,subdiv:SUBK,cnt:CNT?b64u8(CNT):null,
-      globalThreshold:types[0].thr,faceThr:t0.faceThr,manual:t0.manual,roiFaces:rf,roiPainted:rp,
-      subScheme:AM_SUB_SCHEME,
-      hasProb:t0.hasProb,prob:t0.prob,
-      types:types.map(typeState),
-      lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid,op:(typeof T.op==='number')?T.op:1})),
-      cntTypes:cntTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid,
-        size:Math.round((T.size||cntDefSize())*1000)/1000,
-        op:(typeof T.op==='number')?T.op:1})),
-      counters:cntTypes.map(T=>({t:T.id,
-        pts:[].concat(...xmarks.filter(m=>m.t===T.id).map(m=>m.p.map(v=>Math.round(v*1000)/1000)))})),
-      lengths:lines.map(L=>({t:L.t,fit:L.fit||undefined,len:Math.round(L.len*1000)/1000,
-        w:Math.round((L.w||0.008)*1000)/1000,
-        pts:L.pts.map(v=>Math.round(v*1000)/1000)})),
-      membranes:MEMBRANES, volLayers:VOL_LAYERS,
-      polygons:polys.map(P=>({id:P.id,at:P.at,
-        area:Math.round(P.area*10000)/10000,
-        pts:P.pts.map(q=>[Math.round(q[0]*1000)/1000,
-                          Math.round(q[1]*1000)/1000,
-                          Math.round(q[2]*1000)/1000])})),
-      rulTypes:rulTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid,
-        op:(typeof T.op==='number')?T.op:1,
-        // 25/09: the dash and the width travel, as on the desktop
-        design:Math.round(((typeof T.design==='number')?T.design:0)*100)/100,
-        w:amRulWOf(T)})),
-      rulerPts:rulPts.map(q=>({id:q.id,t:q.t,
-        p:[Math.round(q.x*1000)/1000,Math.round(q.y*1000)/1000,Math.round(q.z*1000)/1000]})),
-      rulerSegs:rulSegs.map(g=>({t:g.t,a:g.a,b:g.b})),
-      rulerRuns:[].concat(...rulTypes.map(T=>rulRuns(T.id).map(g=>({
-        t:T.id,n:g.n,len:Math.round(g.len*1000)/1000,
-        c:[Math.round(g.c.x*1000)/1000,Math.round(g.c.y*1000)/1000,
-           Math.round(g.c.z*1000)/1000]})))),
-      minReader:(SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1)))))),   // 329 · 332 · 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
-      tagTypes:tagTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid})),
-      tags:tags.map(g=>({id:g.id,t:g.t,p:g.p.slice(),nrm:g.nrm?g.nrm.slice():null,
-                         title:g.title,text:g.text,img:g.img||null})),
-      smooths:SMR.map(r=>Object.assign({id:r.id,at:r.at,level:r.level,faces:r.faces.slice(),
-        area:Math.round(r.area*10000)/10000},
-        // 335: a sub-face on the line, by its cut part — the report builds the copy from these
-        r.pc?{pieces:[...r.pc].map(([f,b])=>[f].concat(b))}:{})),
-      // 433: no smoothed marking apart from the brush's — the brush's marking and the layer's level (sm) are all
-      saved:new Date().toISOString(),
-      jobId:AM.jobId,exportedBy:'A-morphometry iPad'};
-    // 324: every layer with the parts of the sub-faces on its line — the report counts them
-    // as the screen does, and draws them as the screen does
-    const per=types.map((T,ti)=>smBrushLeft(T,amMarkDerived(T,ti)));   // 433: a smoothed layer reaches the report as its regions (smooths) and its specks
-    const unF=new Map();
-    per.forEach(d=>{ const fr=new Map(d.frac); for(const f of d.faces){ const v=fr.has(f)?fr.get(f):1; if(!(unF.get(f)>=v)) unF.set(f,v); } });
-    const rep=[...unF.keys()].sort((x,y)=>x-y); let un=0; for(const [f,v] of unF) un+=v*area[f];
-    let ar=0;
-    o.typeAreas=types.map((T,ti)=>{if(T.park) return null; const a=per[ti].a, fs=per[ti].faces;
-      ar+=a;
-      return {id:T.id,name:T.name,color:T.hex,areaM2:Math.round(a*1000)/1000,
-              op:(typeof T.op==='number')?Math.round(T.op*100)/100:0.75,
-              design:Math.round(((typeof T.design==='number')?T.design:0.6)*100)/100,faces:fs,
-              frac:per[ti].frac, pieces:per[ti].pieces};}).filter(Boolean);   // 357: not a parked layer
-    o.lenTotals=lenTypes.map(T=>{let s2=0;for(const L of lines)if(L.t===T.id)s2+=L.len;
-      return {id:T.id,name:T.name,color:T.hex,lenM:Math.round(s2*1000)/1000};});
-    o.cntTotals=cntTypes.map(T=>{let n2=0;for(const m of xmarks)if(m.t===T.id)n2++;
-      return {id:T.id,name:T.name,color:T.hex,n:n2};});
-    o.repairFaces=rep;o.areaM2=ar;o.unionM2=un;
-    amLabOut(o);                       // 355
+    // v4 only when the sheet actually carries a ruler. A work with no ruler still
+    // writes v3 and still opens in every reader that came before it — the version is
+    // a statement about the CONTENT, not about the build that wrote it.
+    const o={_sheet:1, sheetVersion:((rulPts.length||polys.length)?4:3), Fo:FO, Nsub:N, subdiv:SUBK, cnt:H.cnt,
+             // the child order the flat indices were written against; a reader that does not
+             // know this scheme refuses the file instead of guessing (decision 85)
+             subScheme:AM_SUB_SCHEME,
+             // one wheel for the whole work; additive field, so every older sheet still
+             // opens and simply falls back to the default (contract, decisions 18/19)
+             designLevel:Math.round((((types[0]||{}).design??0.6))*100)/100,
+             globalThreshold:types[0].thr, faceThr:t0.faceThr, manual:t0.manual, roiFaces:rf,
+             roiPainted:rp,
+             hasProb:t0.hasProb, prob:t0.prob,
+             types:types.map(typeState),
+             lenTypes:lenTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid,
+               design:Math.round((T.design||0)*100)/100,
+               op:(typeof T.op==='number')?T.op:1})),
+             cntTypes:cntTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid,
+               size:Math.round((T.size||cntDefSize())*1000)/1000,
+               design:Math.round(((typeof T.design==='number')?T.design:0.6)*100)/100,
+               op:(typeof T.op==='number')?T.op:1})),
+             counters:cntTypes.map(T=>({t:T.id,
+               pts:[].concat(...xmarks.filter(m=>m.t===T.id).map(m=>m.p.map(v=>Math.round(v*1000)/1000)))})),
+             // the ruler (251). Points and SEGMENTS travel, never the runs: the runs are
+             // derived from them, and a stored run would be a second copy of the truth that
+             // could disagree with it. `len` rides along per run for a reader that only
+             // wants the number, but loadSheet recomputes it and never trusts it.
+             // 253: polygons travel as their POINTS. `area` rides along as a reading,
+             // and loadSheet recomputes it — the points are the truth, the same rule
+             // the length pen has followed since 58.
+             polygons:polys.map(P=>({id:P.id,at:P.at,
+               area:Math.round(P.area*10000)/10000,
+               pts:P.pts.map(q=>[Math.round(q[0]*1000)/1000,
+                                 Math.round(q[1]*1000)/1000,
+                                 Math.round(q[2]*1000)/1000])})),
+             rulTypes:rulTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid,
+               op:(typeof T.op==='number')?T.op:1,
+               // 25/09: the dash and the width travel, so the report opens as measured
+               design:Math.round(((typeof T.design==='number')?T.design:0)*100)/100,
+               w:amRulWOf(T)})),
+             rulerPts:rulPts.map(q=>({id:q.id,t:q.t,
+               p:[Math.round(q.x*1000)/1000,Math.round(q.y*1000)/1000,Math.round(q.z*1000)/1000]})),
+             rulerSegs:rulSegs.map(g=>({t:g.t,a:g.a,b:g.b})),
+             rulerRuns:[].concat(...rulTypes.map(T=>rulRuns(T.id).map(g=>({
+               t:T.id,n:g.n,len:Math.round(g.len*1000)/1000,
+               c:[Math.round(g.c.x*1000)/1000,Math.round(g.c.y*1000)/1000,
+                  Math.round(g.c.z*1000)/1000]})))),
+             lengths:lines.map(L=>({t:L.t, fit:L.fit||undefined, len:Math.round(L.len*1000)/1000,
+               w:Math.round((L.w||0.008)*1000)/1000,
+               pts:L.pts.map(v=>Math.round(v*1000)/1000)})),
+             membranes:MEMBRANES, volLayers:H.volLayers,
+             // 251: a ruler demands reader 3. Not a formality — the iPad writes sheets
+             // too, and at reader 2 it would open a work with a ruler, ignore the three
+             // fields it does not know, and DROP THE RULER the moment it saved. Refusing
+             // out loud is the same choice membranes made when they took reader 2.
+             // 329: a sheet with smoothed regions needs a reader that knows them — an older
+             // one would drop them without a word and write the sheet back without them
+             // 332: a sheet with tags needs a reader that knows them — an older one would
+             // drop them without a word
+             minReader:(SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1)))))),   // 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
+             tagTypes:tagTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid})),
+             tags:tags.map(g=>({id:g.id,t:g.t,p:g.p.slice(),nrm:g.nrm?g.nrm.slice():null,
+                                title:g.title,text:g.text,img:g.img||null})),
+             ...((typeof TAG_PENDING!=='undefined'&&TAG_PENDING.size)?{tagImgs:Object.fromEntries(TAG_PENDING)}:{}),   // the editor: photos waiting for the server; the iPad adds its own at export
+             smooths:SMR.map(r=>Object.assign({id:r.id,at:r.at,level:r.level,faces:r.faces.slice(),
+               area:Math.round(r.area*10000)/10000},
+               // 335: a sub-face on the line, by its cut part — the report builds the copy from these
+               r.pc?{pieces:[...r.pc].map(([f,b])=>[f].concat(b))}:{})),
+             // 433: no smoothed marking apart from the brush's — the brush's marking and the layer's level (sm) are all
+             saved:new Date().toISOString(),
+             jobId:H.jobId, exportedBy:H.exportedBy};   // the iPad's identity fields, now on every sheet
+    if(withDerived){
+      // 324: every layer with the parts of the sub-faces on its line — the report counts them
+      // as the screen does, and draws them as the screen does
+      const per=types.map((T,ti)=>smBrushLeft(T,amMarkDerived(T,ti)));   // 433: a smoothed layer reaches the report as its regions (smooths) and its specks
+      const un=new Map();
+      per.forEach(d=>{ const fr=new Map(d.frac); for(const f of d.faces){ const v=fr.has(f)?fr.get(f):1; if(!(un.get(f)>=v)) un.set(f,v); } });
+      const rep=[...un.keys()].sort((x,y)=>x-y); let unM=0; for(const [f,v] of un) unM+=v*area[f];
+      let ar=0; for(const d of per) ar+=d.a;
+      o.repairFaces=rep; o.areaM2=ar; o.unionM2=unM;
+      o.typeAreas=types.map((T,ti)=>{if(T.park) return null; const a=per[ti].a, fs=per[ti].faces;
+        // 7 (24/09): the layer's opacity rides to the report screen with its design
+        return {id:T.id,name:T.name,color:T.hex,areaM2:Math.round(a*1000)/1000,
+                op:(typeof T.op==='number')?Math.round(T.op*100)/100:0.75,
+                design:Math.round(((typeof T.design==='number')?T.design:0.6)*100)/100,faces:fs,
+                frac:per[ti].frac, pieces:per[ti].pieces};}).filter(Boolean);   // 357: not a parked layer
+      o.lenTotals=lenTypes.map(T=>{let s=0;for(const L of lines)if(L.t===T.id)s+=L.len;
+        return {id:T.id,name:T.name,color:T.hex,lenM:Math.round(s*1000)/1000};});
+      o.cntTotals=cntTypes.map(T=>{let n=0;for(const m of xmarks)if(m.t===T.id)n++;
+        return {id:T.id,name:T.name,color:T.hex,n:n};});
+    }
+    amLabOut(o);                         // 355
     return o;
   }
+  function amSheetHost(){ return {cnt:CNT?b64u8(CNT):null, volLayers:VOL_LAYERS, jobId:AM.jobId, exportedBy:'A-morphometry iPad'}; }   // 349: the product's own fields for the shared getSheet
   $('mExport').onclick=async()=>{
-    const sheet=getSheet();
+    const sheet=getSheet(true);
     // 332: the photos go out INSIDE the sheet — the computer has no other way to receive them
     const imgs={};
     for(const g of tags) if(g.img&&!imgs[g.img]){ const v=await tagSrc(g); if(v) imgs[g.img]=v; }
@@ -5079,7 +5113,7 @@ const amPal=(function(){
     try{
       if(!sn||!sn.sheet) return;
       const bare=o=>{ const c=Object.assign({},o); delete c.saved; return JSON.stringify(c); };
-      let same=false; try{ same=bare(sn.sheet)===bare(getSheet()); }catch(_){}
+      let same=false; try{ same=bare(sn.sheet)===bare(getSheet(true)); }catch(_){}
       if(same) return;
       const when=new Date(sn.t).toLocaleString('he-IL');
       if(await amAsk('נמצא עותק של העבודה הזאת מהביקור הקודם, עם שינויים שלא יוצאו לגיליון (נשמר '+when+').',
