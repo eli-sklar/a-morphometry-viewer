@@ -976,8 +976,9 @@ mat.onBeforeCompile=sh=>{
   // as in the measurement screen. `T.am` stays as the tool last used on the layer.
   const AM_BRUSH='brush', AM_POLY='poly';
   let areaTool=AM_BRUSH;
-  function mkType(name,hex){const T={design:0.6,designU:{value:0.6},id:'t'+(tSeq++),name:name,hex:hex,color:hex2rgb(hex),
-    manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,area:0,
+  function mkType(name,hex){const T={id:'t'+(tSeq++),name:name,hex:hex,color:hex2rgb(hex),
+    manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,design:0.6,
+    designU:{value:0.6},area:0,
     am:AM_BRUSH};
     types.push(T);return T;}
   const T0=mkType('שטח 1','#38b000'); T0.prob=prob;
@@ -988,12 +989,14 @@ mat.onBeforeCompile=sh=>{
     if(polys.some(P=>P.at===T.id)||(typeof SMR!=='undefined'&&SMR.some(r=>r.at===T.id))) return true;
     for(let f=0;f<N;f++) if(T.manual[f]!==0||isType(ti,f)) return true;
     return false;}
-  function amParkIdle(){ for(const T of types) T.park=false;
+  function amParkIdle(){                   // on opening and on every sheet: nothing open
+    for(const T of types) T.park=false;
     if(types.length&&!amAreaFilled(0)) types[0].park=true;
-    activeKind='none'; }
+    activeKind='none';
+  }
   function amKindLeft(){ return types.some(T=>!T.park)?'area':'none'; }
-  function amAreaName(){ let n=0;
-    for(const T of types){const m=/^שטח (\d+)$/.exec(T.name||''); if(m&&!T.park) n=Math.max(n,+m[1]);}
+  function amAreaName(){                   // the next free "שטח N"
+    let n=0; for(const T of types){const m=/^שטח (\d+)$/.exec(T.name||''); if(m&&!T.park) n=Math.max(n,+m[1]);}
     return 'שטח '+(n+1);}
   const effThr=(ti,f)=>{const T=types[ti];const t=T.faceThr?T.faceThr[f]:NaN;return isNaN(t)?T.thr:t;};
   function isType(ti,f){const T=types[ti],m=T.manual[f]; if(m===1)return true; if(m===-1)return false;
@@ -1808,9 +1811,10 @@ mat.onBeforeCompile=sh=>{
       if(o.material){if(o.material.map)o.material.map.dispose();o.material.dispose();}
     }
     for(const T of rulTypes){
-      if(T.hid) continue;                       // 9: hidden — measured, not drawn
+      if(T.hid) continue;                         // 9: hidden — measured, not drawn
       const col=new THREE.Color(T.hex||'#b8934a');
-      // the ruler layer's opacity, as in the other three screens; the length tag stays
+      // the ruler layer's opacity, as in the viewer and the report screen (302); the tag
+      // with the length stays opaque
       const _op=(typeof T.op==='number')?T.op:1;
       // ALWAYS in the transparent pass, even at 100% (24/09): an opaque overlay is drawn in the
       // opaque pass, BEFORE the transparent model and layers, which then paint over it — the
@@ -2880,7 +2884,9 @@ float amStippleA(float a, float lvl){
     const draw=(P,open)=>{
       const T=types.find(t=>t.id===P.at)||types[0];
       const col=new THREE.Color((T&&T.hex)||'#38b000');
-      // the whole layer fades, outline and corners included (Eli, 24/09); the tag stays
+      // The layer's opacity is the WHOLE layer's (Eli, 24/09: "השקיפות צריכה לעבוד על כל
+      // השכבה, גם על קווי המתאר") — the outline and its corners fade with the fill. The
+      // number tag stays opaque: it is read, not seen through.
       const _op=(T&&typeof T.op==='number')?T.op:0.75;
       // ALWAYS in the transparent pass, even at 100% (24/09): an opaque overlay is drawn in the
       // opaque pass, BEFORE the transparent model and layers, which then paint over it — the
@@ -2920,7 +2926,7 @@ float amStippleA(float a, float lvl){
     };
     for(const P of polys) if(!amHidOf(types,P.at)) draw(P,false);
     if(curPoly&&curPoly.pts.length) draw(curPoly,true);
-    smRebuild();                    // 329: the smoothed copies follow the layers too
+    smRebuild();                      // 329: the smoothed copies follow the layers too
     rescaleFixed(); invalidate();
   }
   function polyAt(e){
@@ -3053,12 +3059,13 @@ float amStippleA(float a, float lvl){
   // per-layer diamond DIAMETER in true metres + per-layer opacity (12/08) — mirror of
   // the desktop editor, and both ride in the sheet so devices render identically
   const cntDefSize=()=>Math.max(0.024,bs.radius*0.018);
-  function mkCntType(name,hex){const T={design:0.6,designU:{value:0.6},id:'c'+(cSeq++),name:name,hex:hex,size:cntDefSize(),op:1.0};cntTypes.push(T);return T;}
+  function mkCntType(name,hex){const T={id:'c'+(cSeq++),name:name,hex:hex,size:cntDefSize(),op:1.0,
+    design:0.6,designU:{value:0.6}};cntTypes.push(T);return T;}
   function xObj(m){const T=cntTypes.find(x=>x.id===m.t);
     const dm=new THREE.Mesh(AM_MK.geometry(((T&&T.size)||cntDefSize())/2),
       AM_MK.material(T?T.hex:'#c71f37', T?(T.op!==undefined?T.op:1):1, amDesignU, m.n||1));
     dm.position.set(m.p[0],m.p[1],m.p[2]); dm.renderOrder=3; return dm;}
-  function resizeCnt(T){for(const m of xmarks)if(m.t===T.id&&m.obj){
+  function resizeCnt(T){for(const m of [...xmarks])if(m.t===T.id&&m.obj){
     scene.remove(m.obj);m.obj=xObj(m);m.obj.visible=!T.hid;scene.add(m.obj);}}
   // 449 (Eli, 05/10: "all the counters came out with the number 1"): numbered within their layer, in marking
   // order, as the measurement screen numbers them — the iPad never had it
@@ -3199,8 +3206,8 @@ float amStippleA(float a, float lvl){
   }
   function addLine(L){if(!L.obj)L.obj=lineObj(L); L.obj.visible=!amHidOf(lenTypes,L.t); scene.add(L.obj); if(!lines.includes(L))lines.push(L);}
   function delLine(L){if(L.obj)scene.remove(L.obj); const i=lines.indexOf(L); if(i>=0)lines.splice(i,1);}
-  function lineLen(pts){let s2=0;for(let i=3;i<pts.length;i+=3)
-    s2+=Math.hypot(pts[i]-pts[i-3],pts[i+1]-pts[i-2],pts[i+2]-pts[i-1]);return s2;}
+  function lineLen(pts){let s=0;for(let i=3;i<pts.length;i+=3){
+    s+=Math.hypot(pts[i]-pts[i-3],pts[i+1]-pts[i-2],pts[i+2]-pts[i-1]);}return s;}
 
   /* ---- undo/redo + op-log hookup (type-aware; lines ride the same stack) ---- */
   const undoStack=[],redoStack=[]; let curDiff=null,curT=null;
@@ -3627,7 +3634,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       const g=mesh.geometry, n=g.attributes.position.count;
       if(!AMID.mat||AMID.n!==n){
         const a=new Uint8Array(n*3);
-        for(let i=0;i<n;i++){ const f=((i/3)|0)+1;
+        for(let i=0;i<n;i++){ const f=((i/3)|0)+1;         // 0 is "nothing"
           a[i*3]=f&255; a[i*3+1]=(f>>8)&255; a[i*3+2]=(f>>16)&255; }
         g.setAttribute('aFid', new THREE.BufferAttribute(a,3,true));
         if(!AMID.mat) AMID.mat=new THREE.ShaderMaterial({
@@ -3661,6 +3668,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(brushShape!=='flat'||!amIdRender()) return null;
     const r=el.getBoundingClientRect();
     const X=((e.clientX-r.left)/r.width)*AMID.W, Y=(1-(e.clientY-r.top)/r.height)*AMID.H;
+    // the ball's outline on screen, at its NEAR side: a face in the ball that is nearer the
+    // camera than p projects farther from the centre than p's own radius would say
     const right=new THREE.Vector3(); camera.getWorldDirection(right);
     right.cross(camera.up); if(right.lengthSq()<1e-12) right.set(1,0,0); right.normalize();
     const a=p.clone().project(camera), b=p.clone().addScaledVector(right,brushR).project(camera);
@@ -4748,17 +4757,17 @@ const amPal=(function(){
     }
     return {ok:true,same:false,oOFF:oOFF};
   }
-  function amFaceOf(m,s){
+  function amFaceOf(m,s){       // which original face an OLD flat index belongs to
     const o=m.oOFF; let lo=0,hi=FO-1;
     if(s<0||s>=o[FO]) return -1;
     while(lo<hi){const mid=(lo+hi+1)>>1; if(o[mid]<=s)lo=mid; else hi=mid-1;}
     return lo;
   }
-  function amEach(m,s,fn){
+  function amEach(m,s,fn){      // every NEW sub-face that carries old index s
     const fo=amFaceOf(m,s); if(fo<0) return false;
     const oc=m.oOFF[fo+1]-m.oOFF[fo], nc=OFF[fo+1]-OFF[fo];
     if(nc===oc){ fn(OFF[fo]+(s-m.oOFF[fo])); return true; }
-    for(let t=OFF[fo];t<OFF[fo+1];t++) fn(t);
+    for(let t=OFF[fo];t<OFF[fo+1];t++) fn(t);   // 1 -> k^2: the whole face was marked
     return true;
   }
   function amFracOld(pairs,m){
