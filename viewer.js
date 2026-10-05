@@ -3429,37 +3429,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
                                         -((e.clientY-r.top)/r.height)*2+1),camera);
     return ray.intersectObject(mesh,false).length>0;
   }
-  /* ---- 451 (Eli, 05/10: "the polygon does not draw on the iPad — this is something real; find the problem"):
-     a log of what the pencil does, copied from the device by "העתק יומן". Data only: what it records changes
-     nothing that happens — an exception it sees is written down and thrown on, as it would have been */
-  const AMLOG=[];
-  function amLog(s){ AMLOG.push((performance.now()/1000).toFixed(2)+' '+s); if(AMLOG.length>500) AMLOG.splice(0,AMLOG.length-500); }
-  window.addEventListener('error',e=>amLog('ERROR '+(e.message||'')+' @'+(e.lineno||'')+':'+(e.colno||'')));
-  window.addEventListener('unhandledrejection',e=>amLog('REJECT '+String((e.reason&&e.reason.message)||e.reason)));
-  function amLogThrow(what,err){ amLog('  '+what+' THREW '+(err&&err.message)+' | '+String((err&&err.stack)||'').split('\n').slice(0,4).join(' | ')); }
-  function amLogPoly(e){
-    const n0=curPoly?curPoly.pts.length:0, on=amOnSurface(e);
-    try{ polyAt(e); }catch(err){ amLogThrow('polyAt',err); throw err; }
-    amLog('  poly hit='+on+' pts '+n0+'->'+(curPoly?curPoly.pts.length:0)+' rings='+polys.length+' drawn='+polyGroup.children.length);
-  }
-  function amLogRul(e){
-    const n0=rulPts.length;
-    try{ rulAt(e); }catch(err){ amLogThrow('rulAt',err); throw err; }
-    amLog('  ruler pts '+n0+'->'+rulPts.length+' drawn='+rulGroup.children.length);
-  }
-  function amLogText(){
-    const r=el.getBoundingClientRect(), T=types[activeT];
-    let gpu='?'; try{ const gl=renderer.getContext(), ext=gl.getExtension('WEBGL_debug_renderer_info');
-      gpu=(ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER))+' · webgl'+(renderer.capabilities.isWebGL2?2:1); }catch(_){}
-    const head=['A-morphometry iPad · '+((document.getElementById('ver')||{}).textContent||''),
-      navigator.userAgent, 'screen '+Math.round(r.width)+'x'+Math.round(r.height)+' dpr '+devicePixelRatio+' · '+gpu,
-      'mode='+mode+' kind='+activeKind+' tool='+areaTool+' layer='+(T?(T.id+' "'+T.name+'" op='+T.op+' am='+T.am+' sm='+(T.sm||0)):'-'),
-      'rings='+polys.length+' cur='+(curPoly?curPoly.pts.length:0)+' ruler pts='+rulPts.length+' layers='+types.map(t=>t.id+':'+(t.am||'b')).join(','),
-      '----'];
-    return head.concat(AMLOG).join('\n');
-  }
   el.addEventListener('pointerdown',e=>{
-    amLog('down '+e.pointerType+' mode='+mode+' kind='+activeKind+' tool='+areaTool+' at '+Math.round(e.clientX)+','+Math.round(e.clientY));   // 451
     if(e.pointerType==='pen'){
       for(const [id,p] of [...ptrs]) if(p.type==='touch'){try{el.releasePointerCapture(id);}catch(_){}ptrs.delete(id);}
       if(dragging==='pinch'||dragging==='rot'){pinch=null;dragging=null;dragId=null;}
@@ -3493,10 +3463,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     // 329: the smoothed surface — a tag chooses the region the wheel acts on; else the brush
     else if(activeKind==='area'&&areaTool===AM_SMOOTH){dragging='smpaint';smStroke=new Set();smPaintAt(e);}
     else if(activeKind==='area'&&areaTool===AM_POLY&&mode==='add'){
-      amLogPoly(e);dragging=null;}   // 451: polyAt, logged
+      polyAt(e);dragging=null;}
     else if(activeKind==='area'&&areaTool===AM_POLY&&mode==='rem'){
       polyEraseAt(e);dragging=null;}
-    else if(activeKind==='rul'&&mode==='add'){amLogRul(e);dragging=null;}   // 451: rulAt, logged
+    else if(activeKind==='rul'&&mode==='add'){rulAt(e);dragging=null;}
     else if(activeKind==='rul'&&mode==='rem'){rulEraseAt(e);dragging=null;}
     else if(activeKind==='len'&&mode==='add'){dragging='line';curLine=null;lineAt(e);}
     else if(activeKind==='len'&&mode==='rem'){dragging='lerase';lineEraseAt(e);}
@@ -3504,7 +3474,6 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     else if(activeKind==='tag'){if(mode==='add')tagAt(e);dragging=null;}
     else if(activeKind==='cnt'&&mode==='rem'){dragging='xerase';eraseXAt(e);}
     else {dragging='paint';paintManual=true;beginH();amStrokeBegin();paintAt(e);}
-    amLog('  -> '+(dragging||'done'));   // 451: which way the press went
   });
   el.addEventListener('pointermove',e=>{
     if(!ptrs.has(e.pointerId)) return;                    // hovering pencil guard
@@ -3555,6 +3524,55 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(!(t.closest&&t.closest('input,button,select,textarea,label'))) e.preventDefault();
   },{passive:false});
   document.addEventListener('dblclick',e=>e.preventDefault());
+  /* ---- 452 (Eli, 05/10: "dragging the top bar stutters — sometimes it works, sometimes only from very specific
+     points, sometimes it moves the whole bar aside and leaves a black gap on the left; and widen the area for the
+     sideways drag, a little upward, where there are no buttons"): the layer row is dragged by our own hand, not
+     by the browser's scroll. The guard above lets the browser scroll only from a button, a label or a field, so a
+     drag begun on a layer went nowhere, one begun on its name both scrolled and edited it, and at the row's end
+     the scroll ran on into the bar itself. A sideways drag from anywhere in the row — or from the bar's empty
+     parts above it, off its buttons, sliders and labels — moves the row; a press that does not travel stays a tap */
+  (function amLayerDrag(){
+    const row=$('layerRow'), bar=$('bar');
+    if(!row||!bar||bar.dataset.amDrag) return; bar.dataset.amDrag='1';
+    const AM_DRAG_PX=8;
+    let d=null, eat=false, glide=0;
+    function inBand(t,y){
+      if(row.contains(t)) return true;
+      if(!bar.contains(t)||t.closest('button,input,select,textarea,label,.slot')) return false;
+      return y<row.getBoundingClientRect().top;
+    }
+    bar.addEventListener('pointerdown',e=>{
+      d=null;                                            // a new press starts afresh, whatever became of the last
+      if(!inBand(e.target,e.clientY)) return;
+      cancelAnimationFrame(glide);
+      d={id:e.pointerId,x:e.clientX,y:e.clientY,s:row.scrollLeft,on:false,lx:e.clientX,lt:e.timeStamp,v:0};
+    });
+    bar.addEventListener('pointermove',e=>{
+      if(!d||e.pointerId!==d.id) return;
+      const dx=e.clientX-d.x;
+      if(!d.on){
+        if(Math.abs(dx)<AM_DRAG_PX) return;
+        if(Math.abs(e.clientY-d.y)>Math.abs(dx)){ d=null; return; }     // up or down: not ours
+        d.on=true; try{bar.setPointerCapture(e.pointerId);}catch(_){}
+      }
+      row.scrollLeft=d.s-dx;
+      const dt=Math.max(1,e.timeStamp-d.lt); d.v=0.7*d.v+0.3*(e.clientX-d.lx)/dt; d.lx=e.clientX; d.lt=e.timeStamp;
+      e.preventDefault();
+    });
+    function up(e){
+      if(!d||e.pointerId!==d.id) return;
+      const was=d; d=null;
+      if(!was.on) return;
+      eat=true; setTimeout(()=>{eat=false;},350);       // the click that ends a drag is not a tap
+      const a=document.activeElement; if(a&&a.tagName==='INPUT'&&row.contains(a)) a.blur();
+      let v=(e.timeStamp-was.lt>80)?0:was.v, t0=performance.now();
+      const step=now=>{ const dt=now-t0; t0=now; row.scrollLeft-=v*dt; v*=Math.pow(0.92,dt/16);
+        if(Math.abs(v)>0.02) glide=requestAnimationFrame(step); };
+      if(Math.abs(v)>0.05) glide=requestAnimationFrame(step);
+    }
+    bar.addEventListener('pointerup',up); bar.addEventListener('pointercancel',up);
+    bar.addEventListener('click',e=>{ if(eat){ eat=false; e.stopPropagation(); e.preventDefault(); } },true);
+  })();
 
   /* ---- region growing (flood by brightness / probability) ---- */
   let growTol=14;
@@ -4151,10 +4169,6 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // there. On this shell the buttons are the whole story. Gestures for undo/redo were
   // proposed and dropped in the same breath — two fingers are already the pinch.
   $('undo').onclick=()=>{undo();};
-  // 451: the log, to the clipboard and on the screen — Eli pastes it to the chat
-  if($('amLogBtn')) $('amLogBtn').onclick=()=>{ const t=amLogText();
-    try{ if(navigator.clipboard) navigator.clipboard.writeText(t).catch(()=>{}); }catch(_){}
-    amTell('היומן הועתק — הדבק אותו בצ\'אט.\n\n'+t,'סגור'); };
   $('redo').onclick=()=>{redo();};
   addEventListener('keydown',ev=>{
     if(!(ev.ctrlKey||ev.metaKey)) return;
