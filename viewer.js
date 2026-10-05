@@ -3161,15 +3161,17 @@ float amStippleA(float a, float lvl){
     const hs=castAt(e); if(!hs.length) return; const h=hs[0];
     const T=tagTypes[activeG];
     const n=(h.face?h.face.normal.clone():new THREE.Vector3(0,0,1)).transformDirection(mesh.matrixWorld);
-    if(n.dot(camera.position.clone().sub(h.point))<0) n.negate();
+    if(n.dot(camera.position.clone().sub(h.point))<0) n.negate();       // toward the one who placed it
     const r3=v=>Math.round(v*1000)/1000;
     const g={id:amTagId(),t:T.id,p:[r3(h.point.x),r3(h.point.y),r3(h.point.z)],
              nrm:[r3(n.x),r3(n.y),r3(n.z)],title:'',text:'',img:null};
+    // the point shows while the card is open, so it is clear what is being tagged — drawn
+    // apart from the tags, so a save that lands meanwhile never writes a tag with no title
     const ghost=new THREE.Mesh(_tagPinGeo,new THREE.MeshBasicMaterial({color:T.hex,depthTest:false}));
     ghost.position.set(g.p[0],g.p[1],g.p[2]); ghost.renderOrder=1000;
-    tagGroup.add(keepOnScreen(ghost,RUL_PT_K)); rescaleFixed();
+    tagGroup.add(keepOnScreen(ghost,RUL_PT_K)); rescaleFixed(); invalidate();
     const v=await amTagCard({});
-    forgetOnScreen(ghost); tagGroup.remove(ghost); ghost.material.dispose();
+    forgetOnScreen(ghost); tagGroup.remove(ghost); ghost.material.dispose(); invalidate();
     if(!v) return;
     tagApply(g,v); tags.push(g); tagRebuild(); tagHist([['G+',g]]);
   }
@@ -3591,13 +3593,12 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   function growAt(e){
     const hit=castAt(e); if(!hit.length)return;
     const seed=hit[0].faceIndex; if(seed==null)return;
-    const seedVal=lum[FACEOF[seed]];
-    const visited=new Uint8Array(N); const q=[seed]; visited[seed]=1;
-    let head=0,added=0; const CAP=80000;
+    const seedVal = lum[FACEOF[seed]];
+    const visited=new Uint8Array(N); const q=[seed]; visited[seed]=1; let head=0, added=0; const CAP=80000;
     const M=types[activeT].manual;
     beginH();
-    const gop={t:'faces', m:new Map()};        // 324: the grow, as an act in the layer's order
-    while(head<q.length&&added<CAP){const s=q[head++];
+    const gop={t:'faces', m:new Map()};          // 324: the grow, as an act in the layer's order
+    while(head<q.length && added<CAP){const s=q[head++];
       gop.m.set(s,1);
       if(M[s]!==1){recH(activeT,s);M[s]=1;amSUpd(activeT,s);recolorFace(s);} added++;
       const cx=cen[s*3],cy=cen[s*3+1],cz=cen[s*3+2];
@@ -3606,16 +3607,15 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       const iz0=Math.floor((cz-RG)/CELL),iz1=Math.floor((cz+RG)/CELL);
       for(let ix=ix0;ix<=ix1;ix++)for(let iy=iy0;iy<=iy1;iy++)for(let iz=iz0;iz<=iz1;iz++){
         const a=grid.get(ckey(ix,iy,iz)); if(!a)continue;
-        for(let n=0;n<a.length;n++){const g2=a[n]; if(visited[g2])continue;
-          const dx=cen[g2*3]-cx,dy=cen[g2*3+1]-cy,dz=cen[g2*3+2]-cz;
-          if(dx*dx+dy*dy+dz*dz>RG2)continue;
-          const ok=Math.abs(lum[FACEOF[g2]]-seedVal)<=growTol;
-          visited[g2]=1; if(ok)q.push(g2);
+        for(let n=0;n<a.length;n++){const g=a[n]; if(visited[g])continue;
+          const dx=cen[g*3]-cx,dy=cen[g*3+1]-cy,dz=cen[g*3+2]-cz; if(dx*dx+dy*dy+dz*dz>RG2)continue;
+          const ok = Math.abs(lum[FACEOF[g]]-seedVal) <= growTol;
+          if(ok){visited[g]=1; q.push(g);} else visited[g]=1;
         }}
     }
     { const T=types[activeT]; if(!T.ops) T.ops=[];
       if(gop.m.size){ T.ops.push(gop); if(curDiff) curDiff.push(['OP',activeT,gop]); if(amHasBalls(T)) amMarkAt(T,gop); } }
-    colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();amMarkDraw();commitH();
+    colAttr.needsUpdate=true; flatAttr.needsUpdate=true;desAttr.needsUpdate=true; updateArea(); amMarkDraw(); commitH();
   }
 
   /* ---- brush paint ---- */
@@ -3695,8 +3695,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const hit=castAt(e); if(!hit.length)return;
     const p=hit[0].point,r2=brushR*brushR;let ch=false;
     const val=(mode==='add')?1:-1;
-    amStrokeDab(p); if(val<0&&smLevelOf(types[activeT])>0) smLiveHide(types[activeT].id,p,brushR);   // 433                             // 324: the stroke's balls
-    const seen=amSeenUnder(e,p);                // 6: null = the ball; a set = the flat cut
+    amStrokeDab(p); if(val<0&&smLevelOf(types[activeT])>0) smLiveHide(types[activeT].id,p,brushR);   // 433                               // 324: the stroke's balls
+    const seen=amSeenUnder(e,p);                  // 6: null = the ball; a set = the flat cut
     const ix0=Math.floor((p.x-brushR)/CELL),ix1=Math.floor((p.x+brushR)/CELL);
     const iy0=Math.floor((p.y-brushR)/CELL),iy1=Math.floor((p.y+brushR)/CELL);
     const iz0=Math.floor((p.z-brushR)/CELL),iz1=Math.floor((p.z+brushR)/CELL);
@@ -3705,26 +3705,26 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       for(let n=0;n<a.length;n++){const f=a[n];
         const dx=cen[f*3]-p.x,dy=cen[f*3+1]-p.y,dz=cen[f*3+2]-p.z;
         if(dx*dx+dy*dy+dz*dz<=r2&&(!seen||seen.has(f))){
-          const M=types[activeT].manual;
-          if(M[f]!==val){recH(activeT,f);M[f]=val;amSUpd(activeT,f);recolorFace(f);ch=true;}
+          { const M=types[activeT].manual;
+            if(M[f]!==val){recH(activeT,f);M[f]=val;amSUpd(activeT,f);recolorFace(f);ch=true;} }
         }}}
-    if(ch){colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();}
-  }
+    if(ch){colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();}}
 
   /* ---- length stroke: sample the pencil path into a surface polyline ---- */
-  function lineEraseAt(e){const hit=castAt(e);if(hit.length)eraseLineAt(hit[0].point);}
-  function lineAt(e){
-    if(activeL<0)return;
+  function lineEraseAt(e){const hit=castAt(e); if(!hit.length)return;
+    eraseLineAt(hit[0].point); invalidate();
+  }
+  function lineAt(e){if(activeL<0)return;
     const hit=castAt(e); if(!hit.length)return;
     const h=hit[0]; const nrm=h.face?h.face.normal:null; const lift=Math.max(0.004,lineW*0.8);
     const px=h.point.x+(nrm?nrm.x*lift:0), py=h.point.y+(nrm?nrm.y*lift:0), pz=h.point.z+(nrm?nrm.z*lift:0);
     if(!curLine){curLine={t:lenTypes[activeL].id,pts:[px,py,pz],len:0,w:lineW,obj:null};return;}
-    const p=curLine.pts, n2=p.length;
-    const d=Math.hypot(px-p[n2-3],py-p[n2-2],pz-p[n2-1]);
+    const p=curLine.pts, n=p.length;
+    const d=Math.hypot(px-p[n-3],py-p[n-2],pz-p[n-1]);
     if(d<MIN_SEG)return;
     p.push(px,py,pz); curLine.len+=d;
     if(curLine.obj)scene.remove(curLine.obj);
-    curLine.obj=lineObj(curLine); scene.add(curLine.obj);
+    curLine.obj=lineObj(curLine); scene.add(curLine.obj); invalidate();
   }
   // ---- the tape's skin (decision 74, slice 3) --------------------------------------------
   // A flat world-space band from the STORED stations+normals: lifted 4 mm along the smoothed
