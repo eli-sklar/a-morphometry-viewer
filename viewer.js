@@ -4259,20 +4259,25 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(ab) ab.classList.toggle('on',areaTool===AM_BRUSH); if(apl) apl.classList.toggle('on',areaTool===AM_POLY);
     if(asm) asm.classList.toggle('on',areaTool===AM_SMOOTH);
   }
-  function applyBrush(){amSideWhat();const v=+$('brush').value;
-    if(activeKind==='len'){lineW=0.002+(v-2)/38*0.028;$('brushV').textContent=(lineW*1000).toFixed(0)+' \u05de"\u05de';}
+  function applyBrush(){const v=+document.getElementById('brush').value;
+    // 432 (Eli, 02/10): the slider runs 1–100 cm for every brush; a tape's width keeps its own
+    // 2–30 mm, read off the slider's ends (as the way back below has always done)
+    if(activeKind==='len'){const br=document.getElementById('brush');
+      lineW=0.002+(v-(+br.min))/((+br.max)-(+br.min))*0.028;
+      document.getElementById('brushV').textContent=(lineW*1000).toFixed(0)+' מ"מ';}
     else if(activeKind==='cnt'){
-      // the slider is the diamond DIAMETER in true metres (12/08); resizes live
+      // on a counter layer the slider is the diamond DIAMETER, in true metres on the
+      // model (user 12/08): slider 2..40 -> 2..40cm; existing diamonds resize live
       const T=cntTypes[activeC];
-      $('brushV').textContent=v.toFixed(0)+' ס"מ';
-      if(T&&Math.abs((T.size||0)-v/100)>1e-9){T.size=v/100;resizeCnt(T);markUnexported(true);}}
-    // 25/09: on a ruler layer the slider is the LINE'S WIDTH, in screen pixels (Eli's choice
-    // ב) — the layer's own, like a counter's diameter, and it redraws live
-    else if(activeKind==='rul'){const T=rulTypes[activeR], br=$('brush');
+      document.getElementById('brushV').textContent=v.toFixed(0)+' ס"מ';
+      if(T&&Math.abs(T.size-v/100)>1e-9){T.size=v/100;resizeCnt(T);markUnexported(true);invalidate();}}
+  // 25/09: on a ruler layer the slider is the LINE'S WIDTH, in screen pixels (Eli's choice
+  // ב) — the layer's own, like a counter's diameter, and it redraws live
+    else if(activeKind==='rul'){const T=rulTypes[activeR], br=document.getElementById('brush');
       const w=amRulWFromSlider(v,+br.min,+br.max);
-      $('brushV').textContent=w+(w===1?' פיקסל':' פיקסלים');
+      document.getElementById('brushV').textContent=w+(w===1?' פיקסל':' פיקסלים');
       if(T&&amRulWOf(T)!==w){T.w=w;rulRebuild();markUnexported(true);}}
-    else {brushR=v/100;$('brushV').textContent=(brushR*100).toFixed(0)+' ס"מ';}}
+    else {brushR=v/100;document.getElementById('brushV').textContent=(brushR*100).toFixed(0)+' ס"מ';}}
   $('brush').oninput=applyBrush;
   $('grtol').oninput=e=>{growTol=+e.target.value;$('grtolV').textContent=e.target.value;};
   $('thr').oninput=e=>{const v=e.target.value/1000;$('thrV').textContent=v.toFixed(3);
@@ -4318,7 +4323,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     return null;
   }
   function amSyncOp(){
-    const r=$('repop'), rv=$('repopV'); if(!r) return;
+    const r=document.getElementById('repop'), rv=document.getElementById('repopV'); if(!r) return;
     const T=amActiveLayer();
     r.disabled=!T;
     if(T){const o=(typeof T.op==='number')?T.op:(activeKind==='area'?0.75:1);
@@ -4336,31 +4341,45 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     else if(activeKind==='rul') rulRebuild();
     markUnexported(true);
   };
-  function syncKindUI(){amSyncDesign();amSyncOp();const other=activeKind!=='area';
-    if($('repop')) $('repop').disabled=(activeKind==='tag');   // 332: a tag has no opacity
-    $('auto').disabled=other; $('thr').disabled=other;
-    // grow floods FACES by similarity — meaningless for lines and counters (12/08)
-    $('mGrow').disabled=other; $('grtol').disabled=other;
+  function syncKindUI(){
+    // The design wheel follows the active layer. It used to be wired by wrapping
+    // activateT/C/L through `window[...]` (14/08) — but this whole script runs inside an
+    // IIFE, so those names were never on `window` and the wrapper silently did nothing.
+    // The wheel then kept showing the PREVIOUS layer's value: opening a tape layer, whose
+    // design is 0, displayed 60% — and the first nudge applied the lie (user 15/08).
+    // Every activate* call passes through here, so this is the one place that cannot be
+    // bypassed. A control that misreports state is worse than one that is missing.
+    amSyncDesign();
+    amSyncOp();   // 306: the opacity slider follows the active layer from here too — every activate* crosses this
+    const other=activeKind!=='area';
+    {const ro=document.getElementById('repop'); if(ro) ro.disabled=(activeKind==='tag');}
+    document.getElementById('auto').disabled=other;
+    document.getElementById('thr').disabled=other;
+    // grow floods FACES by similarity — meaningless for lines and counters (user, 12/08)
+    document.getElementById('mGrow').disabled=other;
+    document.getElementById('grtol').disabled=other;
+    if(typeof amVolGo==='function') amVolGo();   // volume layers: the editor only
+    amSideWhat();
     // 25/09: ONE slider, and each kind's own value in it. A ruler's width and a counter's
     // diameter are the layer's; the area and volume brush's radius and the tape's width are
     // the hand's. Without this the slider kept the last kind's position, and the next kind
     // read it as its own — a ruler at 10 pixels came back to the area brush as 60 cm.
-    {const br=$('brush');
+    {const br=document.getElementById('brush');
      if(activeKind==='area'||activeKind==='vol') br.value=Math.round(brushR*100);
      else if(activeKind==='len') br.value=Math.round(+br.min+(lineW-0.002)/0.028*(+br.max-(+br.min)));}
     applyBrush();}
   function activateC(i){activeKind='cnt';activeC=i;
     const T=cntTypes[i];
-    if(T)$('brush').value=Math.round((T.size||cntDefSize())*100);
+    if(T)document.getElementById('brush').value=Math.round((T.size||cntDefSize())*100);
     syncKindUI();buildChips();
     if(mode!=='add'&&mode!=='rem')setMode('add');}
   function activateT(i){activeKind='area';activeT=i;const T=types[i];
     areaTool=(T&&(T.am===AM_POLY))?T.am:AM_BRUSH;   // 10: the tool last used on this layer
-    $('thr').value=Math.round(T.thr*1000);$('thrV').textContent=T.thr.toFixed(3);
+    document.getElementById('thr').value=Math.round(T.thr*1000);document.getElementById('thrV').textContent=T.thr.toFixed(3);
     syncKindUI();buildChips();}
   function activateR(i){activeKind='rul';activeR=i;rulEnd();
     const T=rulTypes[i];                                    // 25/09: the layer's width
-    if(T){const br=$('brush'); br.value=amRulWToSlider(amRulWOf(T),+br.min,+br.max);}
+    if(T){const br=document.getElementById('brush'); br.value=amRulWToSlider(amRulWOf(T),+br.min,+br.max);}
     syncKindUI();buildChips();
     if(mode!=='add'&&mode!=='rem')setMode('add');}
   function activateL(i){activeKind='len';activeL=i;syncKindUI();buildChips();
