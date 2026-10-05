@@ -964,6 +964,7 @@ mat.onBeforeCompile=sh=>{
   let brushR=0.10, mode='nav', amKeepMode='nav';   // 421: the mode "ניווט" was pressed over
   const roi=new Uint8Array(N); let roiCount=0;
   const AM_PROB_ARMED_ONLY=true;    // 349: the baked field stays dormant until a training or a loaded sheet arms it (hasProb) — read by the shared isType/amStartOf
+  const AM_UNDO_WORD='בכפתור הביטול', AM_TAP_WORD='נגיעה';   // 349: the words the shared layer-bar texts say (amLayerDelete, amDelX, amEye) — a finger and no keyboard here
   if(roi0) for(let f=0;f<N;f++){ if(roi0[FACEOF[f]]){roi[f]=1;roiCount++;} }
   /* marking TYPES (decision 58) — field-for-field the desktop model: every colour is
      a category with its own marks, threshold and probability field; overlap allowed,
@@ -4475,8 +4476,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // and marking on it does not show it again (Eli's ruling).
   function amEye(shown,toggle){
     const e=document.createElement('i'); e.className='eye'+(shown?'':' off'); e.textContent='👁';
-    e.title=shown?'השכבה מוצגת · נגיעה מסתירה אותה (תצוגה בלבד — המדידה נשארת)'
-                 :'השכבה מוסתרת · נגיעה מציגה אותה';
+    e.title=shown?'השכבה מוצגת · '+AM_TAP_WORD+' מסתירה אותה (תצוגה בלבד — המדידה נשארת)'
+                 :'השכבה מוסתרת · '+AM_TAP_WORD+' מציגה אותה';
     e.onclick=ev=>{ev.stopPropagation();toggle();};
     return e;
   }
@@ -4580,7 +4581,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const list=AM_KIND_LIST[kind](), T=list[i]; if(!T) return;
     const held=amLayerHeld(kind,T);
     if(held.n&&!(await amAsk('למחוק את השכבה "'+(T.name||'ללא שם')+'"?\n\nיימחקו איתה: '+held.say
-                        +'.\nאפשר להחזיר אותה בכפתור הביטול.',
+                        +'.\nאפשר להחזיר אותה '+AM_UNDO_WORD+'.',
                         [{t:'למחוק את השכבה',v:true,primary:true},{t:'ביטול',v:false}],false))) return;
     const snap={kind:kind,i:i,T:T};
     amLayerOut(snap);
@@ -4588,7 +4589,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   }
   function amDelX(kind,i){
     const e=document.createElement('i'); e.className='del'; e.textContent='✕';
-    e.title='מחיקת השכבה · אפשר להחזיר בכפתור הביטול';
+    e.title='מחיקת השכבה · אפשר להחזיר '+AM_UNDO_WORD;
     e.onclick=ev=>{ev.stopPropagation();amLayerDelete(kind,i);};
     return e;
   }
