@@ -2002,15 +2002,16 @@ mat.onBeforeCompile=sh=>{
            ()=>rulDropPoints(run.pts.map(x=>x.id)),
            ()=>rulDropPoints([q.id]));
   }
-  function keepOnScreen(obj,k){SCREEN_FIXED.push({obj:obj,k:k});return obj;}
+  function keepOnScreen(obj,k,tag){SCREEN_FIXED.push({obj:obj,k:k,tag:!!tag});return obj;}
   function forgetOnScreen(obj){for(let i=SCREEN_FIXED.length-1;i>=0;i--)
     if(SCREEN_FIXED[i].obj===obj) SCREEN_FIXED.splice(i,1);}
   function rescaleFixed(){
+    if(typeof tagRescale==='function') tagRescale();   // 332: the tags keep their own list
     for(const f of SCREEN_FIXED){
-      if(!f.obj.parent) continue;
+      if(!f.obj.parent) continue;            // cleared by clearMeasure
       const d=camera.position.distanceTo(f.obj.position);
-      const s=Math.max(1e-6,d*f.k);
-      if(f.obj.isSprite) f.obj.scale.set(s*f.obj.userData.aspect||s*2.6,s,1);
+      const s=Math.max(1e-6,d*f.k*(f.tag?TAGW.scale:1));
+      if(f.obj.isSprite) f.obj.scale.set(f.tag?s*2.37:(s*f.obj.userData.aspect||s*2.37),s,1);   // a tag-wheel label keeps the report's fixed shape; any other label its own
       else f.obj.scale.setScalar(s);
     }
   }
@@ -2882,8 +2883,10 @@ float amStippleA(float a, float lvl){
      tiny-area threshold decides and which this screen therefore cannot know. The number is
      computed, never stored. */
   function amMeasNo(at,kind,i){
-    if(kind!=='s') return i+1;
-    return polys.filter(q=>q.at===at).length+((curPoly&&curPoly.at===at&&curPoly.pts.length)?1:0)+i+1;
+    const np=polys.filter(q=>q.at===at).length+((typeof curPoly!=='undefined'&&curPoly&&curPoly.at===at&&curPoly.pts.length)?1:0);   // the ring being drawn counts where there is one
+    if(kind==='p') return i+1;
+    if(kind==='s') return np+i+1;
+    return np+SMR.filter(q=>q.at===at).length+i+1;          // 'b': the i-th patch of the brush (336)
   }
   function amMeasText(at,kind,i){
     if(kind==='s'){ const r=SMR.filter(q=>q.at===at)[i];
