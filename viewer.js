@@ -963,6 +963,7 @@ mat.onBeforeCompile=sh=>{
   /* ---- state ---- */
   let brushR=0.10, mode='nav', amKeepMode='nav';   // 421: the mode "ניווט" was pressed over
   const roi=new Uint8Array(N); let roiCount=0;
+  const AM_PROB_ARMED_ONLY=true;    // 349: the baked field stays dormant until a training or a loaded sheet arms it (hasProb) — read by the shared isType/amStartOf
   if(roi0) for(let f=0;f<N;f++){ if(roi0[FACEOF[f]]){roi[f]=1;roiCount++;} }
   /* marking TYPES (decision 58) — field-for-field the desktop model: every colour is
      a category with its own marks, threshold and probability field; overlap allowed,
@@ -1000,8 +1001,13 @@ mat.onBeforeCompile=sh=>{
     return 'שטח '+(n+1);}
   const effThr=(ti,f)=>{const T=types[ti];const t=T.faceThr?T.faceThr[f]:NaN;return isNaN(t)?T.thr:t;};
   function isType(ti,f){const T=types[ti],m=T.manual[f]; if(m===1)return true; if(m===-1)return false;
-    if(!T.hasProb||!T.prob)return false;
-    if(roiCount>0&&!roi[f])return false;
+    if(!T.prob) return false;                 // an unlearned extra type is manual-only
+    if(AM_PROB_ARMED_ONLY&&!T.hasProb) return false;   // 349: the iPad keeps the baked field dormant until a training or a sheet arms it
+    // No orange zone at all used to mean "the whole model is a candidate", and the model
+    // came up looking marked everywhere. It now means the opposite — nothing is a candidate
+    // and the automatic detection does not run at all (user decision 13/08, finding 2).
+    // Manual marks are unaffected: they return above, before this line.
+    if(!roi[f]) return false;                 // outside orange zone: assume no repair
     return T.prob[f]>effThr(ti,f);}
   function isRepair(f){for(let ti=0;ti<types.length;ti++)if(isType(ti,f))return true;return false;}
   const ROIC=[1.000,0.667,0.000];
@@ -1382,8 +1388,7 @@ mat.onBeforeCompile=sh=>{
   let amMarkDue=false, amMarkHold=0, amMarkTimer=0, amLive=null, amLiveT=-1, amWatch=null;
   const amSeen=new WeakMap();                // a stroke -> how many of its dabs the line has asked
   // where a sub-face starts: inside when the automatic detection marks it (no manual mark)
-  function amStartOf(T,ti){ return f=>{ if(!T.hasProb||!T.prob) return false; if(roiCount>0&&!roi[f]) return false;
-    return T.prob[f]>effThr(ti,f); }; }                  // the iPad's isType, without the manual mark
+  function amStartOf(T,ti){ return f=>{ if(!T.prob||(AM_PROB_ARMED_ONLY&&!T.hasProb)||!roi[f]) return false; return T.prob[f]>effThr(ti,f); }; }                  // the iPad's isType, without the manual mark
   function amEnOf(T){ return {faces:null, S:T.S, ops:T.ops, inv:false, cur:-1, st:amStartOf(T,types.indexOf(T))}; }
   function amSOf(T){ const ti=types.indexOf(T); if(!T.S||T.S.length!==N) T.S=new Uint8Array(N);
     for(let f=0;f<N;f++) T.S[f]=isType(ti,f)?1:0; }
@@ -2608,7 +2613,8 @@ float amStippleA(float a, float lvl){
 `;
   function amShellMesh(P, hex, op, des){
     const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(P,3));
-    const o=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:hex, side:THREE.DoubleSide, transparent:true, opacity:op}));
+    const o=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:hex, side:THREE.DoubleSide,
+      transparent:op<0.999||des>0.001, opacity:op, depthWrite:op>=0.999&&!(des>0.001)}));
     amSynthShell(o, P, P.length/9); amShellDes(o, des); amShellLines(o);
     return o;
   }
@@ -3062,8 +3068,10 @@ float amStippleA(float a, float lvl){
   function mkCntType(name,hex){const T={id:'c'+(cSeq++),name:name,hex:hex,size:cntDefSize(),op:1.0,
     design:0.6,designU:{value:0.6}};cntTypes.push(T);return T;}
   function xObj(m){const T=cntTypes.find(x=>x.id===m.t);
+    // a standing diamond with VOLUME (round 4): a flat sprite sank into scan bumps.
+    // OctahedronGeometry takes a RADIUS; T.size is the true diameter on the model.
     const dm=new THREE.Mesh(AM_MK.geometry(((T&&T.size)||cntDefSize())/2),
-      AM_MK.material(T?T.hex:'#c71f37', T?(T.op!==undefined?T.op:1):1, amDesignU, m.n||1));
+      AM_MK.material(T?T.hex:'#c71f37', T?(T.op!==undefined?T.op:1):1, (T&&T.designU)||amDesignU, m.n||1));
     dm.position.set(m.p[0],m.p[1],m.p[2]); dm.renderOrder=3; return dm;}
   function resizeCnt(T){for(const m of [...xmarks])if(m.t===T.id&&m.obj){
     scene.remove(m.obj);m.obj=xObj(m);m.obj.visible=!T.hid;scene.add(m.obj);}}
@@ -3083,12 +3091,13 @@ float amStippleA(float a, float lvl){
   function delX(m){if(m.obj)scene.remove(m.obj); const i=xmarks.indexOf(m); if(i>=0)xmarks.splice(i,1); amRenumberCnt();}
   function placeXAt(e){if(activeC<0)return;
     const hit=castAt(e); if(!hit.length)return;
-    const h=hit[0],nrm=h.face?h.face.normal:null;
-    const T0=cntTypes[activeC];
-    const lift=((T0&&T0.size)||cntDefSize())/2;   // lift tracks the diamond's actual radius
+    const h=hit[0];
+    const T=cntTypes[activeC];
+    const lift=((T&&T.size)||cntDefSize())/2;      // lift tracks the diamond's actual radius
+    const toCam=camera.position.clone().sub(h.point).normalize();   // always toward the viewer
     const m={t:cntTypes[activeC].id,
-      p:[h.point.x+(nrm?nrm.x*lift:0),h.point.y+(nrm?nrm.y*lift:0),h.point.z+(nrm?nrm.z*lift:0)],obj:null};
-    addX(m); undoStack.push([['X+',m]]); redoStack.length=0; markUnexported(true); updateHB(); updateArea();}
+      p:[h.point.x+toCam.x*lift,h.point.y+toCam.y*lift,h.point.z+toCam.z*lift],obj:null};
+    addX(m); undoStack.push([['X+',m]]); redoStack.length=0; markUnexported(true); updateHB(); updateArea(); invalidate();}
   // Erase what you AIM AT (12/08, mirror of the desktop fix): the ray hits the diamonds
   // themselves. A diamond is lifted half its diameter off the surface, so it blocks the
   // ray and a mesh-based test measured from a point BEHIND it; and the brush slider is
@@ -3961,14 +3970,45 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   function endLine(){
     if(!curLine)return;
     if(curLine.pts.length>=6){
-      // same chain as the desktop, same characters, same numbers (slice 4)
+      // Continue-a-line (user 14/08): a stroke that begins or ends within 3 cm of an
+      // endpoint of an existing line OF THE SAME LAYER is welded to it — one line, one
+      // repair number — so the user can stop, orbit, zoom, and keep drawing. The match is
+      // made against the endpoints the user SEES (the fit stations when they exist).
+      const WELD2=0.03*0.03, _p=curLine.pts;
+      const _ends=L=>{const s=(L.fit&&L.fit.stations)||L.pts;
+        return [[s[0],s[1],s[2]],[s[s.length-3],s[s.length-2],s[s.length-1]]];};
+      const _d2=(a,b)=>{const dx=a[0]-b[0],dy=a[1]-b[1],dz=a[2]-b[2];return dx*dx+dy*dy+dz*dz;};
+      const _S=[_p[0],_p[1],_p[2]], _E=[_p[_p.length-3],_p[_p.length-2],_p[_p.length-1]];
+      let _host=null,_mode=0,_bd=WELD2;
+      for(const L of lines){
+        if(L.t!==curLine.t) continue;
+        const he=_ends(L);
+        const cand=[[_d2(_S,he[1]),1],[_d2(_S,he[0]),2],[_d2(_E,he[1]),3],[_d2(_E,he[0]),4]];
+        for(const c of cand) if(c[0]<_bd){_bd=c[0];_host=L;_mode=c[1];}
+      }
+      if(_host){
+        const _rev=a=>{const o=[];for(let i=a.length-3;i>=0;i-=3)o.push(a[i],a[i+1],a[i+2]);return o;};
+        let merged;
+        if(_mode===1) merged=_host.pts.concat(_p);            // new starts at host's end
+        else if(_mode===2) merged=_rev(_host.pts).concat(_p); // new starts at host's start
+        else if(_mode===3) merged=_host.pts.concat(_rev(_p)); // new ends at host's end
+        else merged=_p.concat(_host.pts);                     // new ends at host's start
+        if(curLine.obj) scene.remove(curLine.obj);
+        delLine(_host);
+        curLine={t:curLine.t, pts:merged, len:0, w:_host.w||curLine.w, obj:null};
+        const mf=amMeasureStroke(curLine.pts, curLine.w);
+        if(mf){curLine.fit=mf;curLine.len=mf.length_m;} else curLine.len=lineLen(curLine.pts);
+        addLine(curLine);
+        undoStack.push([['L-',_host],['L+',curLine]]);
+        redoStack.length=0;markUnexported(true);updateHB();updateArea();
+        curLine=null; invalidate(); return;
+      }
+      // the stations become the stroke's truth; without a BVH the stroke stays raw
       const fit=amMeasureStroke(curLine.pts, curLine.w);
       if(fit){ curLine.fit=fit; curLine.len=fit.length_m;
         if(curLine.obj){scene.remove(curLine.obj);curLine.obj=null;} }
       addLine(curLine);
-      undoStack.push([['L+',curLine]]);redoStack.length=0;updateHB();updateArea();
-      const lt=lenTypes.find(x=>x.id===curLine.t);
-      markUnexported(true);}
+      undoStack.push([['L+',curLine]]);redoStack.length=0;markUnexported(true);updateHB();updateArea();}
     else if(curLine.obj)scene.remove(curLine.obj);
     curLine=null;
   }
@@ -4039,17 +4079,19 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   let VOL_LAYERS=[];
   /* ---- sheet export: field-for-field the desktop getSheet(withDerived=true) --- */
   function typeState(T){
-    const m=[],ov=[];
+    const m=[], ov=[];
     for(let f=0;f<N;f++){
-      if(T.manual[f]!==0)m.push([f,T.manual[f]]);
-      if(T.faceThr&&!isNaN(T.faceThr[f]))ov.push([f,Math.round(T.faceThr[f]*1000)/1000]);
+      if(T.manual[f]!==0) m.push([f,T.manual[f]]);
+      if(T.faceThr && !isNaN(T.faceThr[f])) ov.push([f,Math.round(T.faceThr[f]*1000)/1000]);
     }
-    return {id:T.id,name:T.name,color:T.hex,thr:T.thr,op:T.op,hid:!!T.hid,repHid:!!T.repHid,am:(T.am||AM_BRUSH),manual:m,faceThr:ov,
-      ops:amOpsOut(T),     // 324: the strokes' balls and the grows, in their order
-          ...(smLevelOf(T)?{sm:smLevelOf(T)}:{}),   // 433: the layer's smoothing level
-      hasProb:T.hasProb,
-      prob:T.hasProb?(()=>{const p=new Array(FO);
-        for(let fo=0;fo<FO;fo++)p[fo]=Math.round(T.prob[OFF[fo]]*1000)/1000;return p;})():null};
+    return {id:T.id, name:T.name, color:T.hex, thr:T.thr, op:T.op, hid:!!T.hid, repHid:!!T.repHid,
+            am:(T.am||AM_BRUSH),   // 256: the layer's measurement mode travels with it
+            design:Math.round(((typeof T.design==='number')?T.design:0.6)*100)/100, manual:m, faceThr:ov,
+            ops:amOpsOut(T),     // 324: the strokes' balls and the grows, in their order
+            ...(smLevelOf(T)?{sm:smLevelOf(T)}:{}),   // 433: the layer's smoothing level
+            hasProb:T.hasProb,
+            prob:T.hasProb?(()=>{const p=new Array(FO);
+              for(let fo=0;fo<FO;fo++)p[fo]=Math.round(T.prob[OFF[fo]]*1000)/1000;return p;})():null};
   }
   function getSheet(){
     smSyncNow();   // 433: the regions are the brush's marking as it is now
@@ -4739,6 +4781,7 @@ const amPal=(function(){
   const AM_SUB_SCHEME = 1;      // core.subdiv_weights, face-major child order
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
+  function dec(b64){const bin=atob(b64),len=bin.length,u=new Uint8Array(len);for(let i=0;i<len;i++)u[i]=bin.charCodeAt(i);return u.buffer;}   // 349: the shared amRemap reads the sheet layout with it
   function amRemap(j){
     const sch=(typeof j.subScheme==='number')?j.subScheme:AM_SUB_SCHEME;
     if(sch!==AM_SUB_SCHEME) return {ok:false,why:'סדר תת-הפאות בקובץ (סכימה '+sch+') אינו מוכר לתוכנה הזאת.'};
@@ -4746,19 +4789,36 @@ const amPal=(function(){
     if(oldK!==SUBK) return {ok:false,why:'דקוּת הסימון בקובץ ('+oldK+') שונה מזו של המודל הפתוח ('+SUBK+').'};
     const oSPF=oldK*oldK;
     let oCnt=null;
-    try{ oCnt=j.cnt?amB64u8(j.cnt):null; }catch(e){ return {ok:false,why:'פריסת הגיליון פגומה.'}; }
-    if(oCnt&&oCnt.length!==FO) return {ok:false,why:'פריסת הגיליון אינה תואמת למספר הפאות.'};
+    try{ oCnt=j.cnt?new Uint8Array(dec(j.cnt)):null; }catch(e){ return {ok:false,why:'פריסת הגיליון פגומה.'}; }
+    let oFo=(typeof j.Fo==='number')?j.Fo:FO;
+    if(oCnt&&oCnt.length!==oFo) return {ok:false,why:'פריסת הגיליון אינה תואמת למספר הפאות.'};
+    // A DELETED membrane makes the mesh shorter than the sheet that was written
+    // over it. The scanned faces are still a prefix, so the marks on them are still
+    // valid; what was marked on the patch goes with the patch. Truncate, and count
+    // what fell off so it can be said out loud rather than vanish.
+    let cutSub=0;
+    if(oFo>FO){
+      for(let fo=FO;fo<oFo;fo++) cutSub+=(oCnt?oCnt[fo]:oSPF);
+      oFo=FO;
+    }
+    // Faces the sheet never knew about are the membranes appended since (decision
+    // 132). They carry no marks, and they take the CURRENT layout so the translator
+    // maps them to themselves.
     const oOFF=new Uint32Array(FO+1);
-    for(let fo=0;fo<FO;fo++) oOFF[fo+1]=oOFF[fo]+(oCnt?oCnt[fo]:oSPF);
+    for(let fo=0;fo<FO;fo++)
+      oOFF[fo+1]=oOFF[fo]+(fo>=oFo ? (OFF[fo+1]-OFF[fo]) : (oCnt?oCnt[fo]:oSPF));
     let same=true;
     for(let fo=0;fo<=FO;fo++) if(oOFF[fo]!==OFF[fo]){same=false;break;}
-    if(same) return {ok:true,same:true,oOFF:oOFF};
+    if(same) return {ok:true,same:true,oOFF:oOFF,oFo:oFo,cutSub:cutSub};
     for(let fo=0;fo<FO;fo++){
       const oc=oOFF[fo+1]-oOFF[fo], nc=OFF[fo+1]-OFF[fo];
+      // growth only, by the user's decision for this version: a face may gain children, never
+      // lose them. Folding k^2 back into one would have to decide all-or-nothing, and that
+      // changes the measured area — refused out loud instead.
       if(nc<oc) return {ok:false,why:'הפריסה החדשה גסה מזו של הגיליון — סימון היה נאלץ להתקפל.'};
       if(nc!==oc&&oc!==1) return {ok:false,why:'פאה שינתה רזולוציה שלא בהתפצלות של שלם.'};
     }
-    return {ok:true,same:false,oOFF:oOFF};
+    return {ok:true,same:false,oOFF:oOFF,oFo:oFo,cutSub:cutSub};
   }
   function amFaceOf(m,s){       // which original face an OLD flat index belongs to
     const o=m.oOFF; let lo=0,hi=FO-1;
