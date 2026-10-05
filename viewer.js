@@ -1900,12 +1900,12 @@ mat.onBeforeCompile=sh=>{
       b.style.cssText='background:'+(primary?'#b8934a':'#232019')+';color:'
         +(primary?'#161310':'#d8cdb8')+';border:1px solid #6b5a33;border-radius:2px;'
         +'padding:8px 14px;font-size:14px;cursor:pointer';
-      b.onclick=()=>{close();fn&&fn();};
+      b.onclick=()=>{askClose();fn&&fn();};
       return b;};
-    function close(){window.removeEventListener('keydown',esc,true);wrap.remove();}
-    function esc(e){if((e.key||'')==='Escape'){e.preventDefault();e.stopPropagation();close();}}
-    window.addEventListener('keydown',esc,true);
-    wrap.onclick=e=>{if(e.target===wrap)close();};      // clicking away backs out too
+    function askClose(){window.removeEventListener('keydown',askEsc,true);wrap.remove();}
+    function askEsc(e){if((e.key||'')==='Escape'){e.preventDefault();e.stopPropagation();askClose();}}
+    window.addEventListener('keydown',askEsc,true);
+    wrap.onclick=e=>{if(e.target===wrap)askClose();};      // clicking away backs out too
     row.appendChild(mk('הנקודה בלבד',onPoint,true));
     row.appendChild(mk('הרצף כולו',onRun,false));
     row.appendChild(mk('ביטול',null,false));
