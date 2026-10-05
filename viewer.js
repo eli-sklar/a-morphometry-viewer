@@ -3095,16 +3095,18 @@ float amStippleA(float a, float lvl){
   // the diamond diameter here, not a radius. On a finger-driven device this matters more.
   function eraseXAt(e){
     const r=el.getBoundingClientRect();
-    const ndc=new THREE.Vector2(((e.clientX-r.left)/Math.max(1,r.width))*2-1,
-                                -((e.clientY-r.top)/Math.max(1,r.height))*2+1);
+    const ndc=new THREE.Vector2(((e.clientX-r.left)/Math.max(1,r.width))*2-1,-((e.clientY-r.top)/Math.max(1,r.height))*2+1);
     ray.setFromCamera(ndc,camera);
     const diff=[];
     const objs=xmarks.filter(m=>m.obj).map(m=>m.obj);
     const hits=objs.length?ray.intersectObjects(objs,false):[];
     if(hits.length){
+      // a direct aim removes exactly the diamond under the cursor — nothing else
       const target=xmarks.find(m=>m.obj===hits[0].object);
       if(target){diff.push(['X-',target]);delX(target);}
     } else {
+      // fallback: no direct hit, so accept a near miss — measured against the diamond's
+      // own centre, with a tolerance scaled to ITS size (never the brush slider)
       const hitM=ray.intersectObject(mesh,false);
       if(hitM.length){
         const p=hitM[0].point;
@@ -3115,7 +3117,7 @@ float amStippleA(float a, float lvl){
           if(dx*dx+dy*dy+dz*dz<=tol*tol){diff.push(['X-',m]);delX(m);}}
       }
     }
-    if(diff.length){undoStack.push(diff);redoStack.length=0;markUnexported(true);updateHB();updateArea();}}
+    if(diff.length){undoStack.push(diff);redoStack.length=0;markUnexported(true);updateHB();updateArea();invalidate();}}
 
   // ---- 332: tag layers — a title, a text and a photo on a point of the model ----
   // As in the measurement screen, with one difference: the iPad has no link to the
@@ -3186,7 +3188,7 @@ float amStippleA(float a, float lvl){
     if(mode!=='add'&&mode!=='rem')setMode('add');}
 
   function eraseLineAt(p){
-    const r2=Math.max(0.02,lineW*2)**2;
+    const r2=Math.max(0.02,lineW*2)**2;   // eraser reach: at least 2cm around the pass
     for(const L of [...lines]){
       const keep=[]; let touched=false;
       for(let i=0;i<L.pts.length;i+=3){
@@ -3215,13 +3217,7 @@ float amStippleA(float a, float lvl){
   // null-safe: a paint outside an open stroke still mutates, just without history
   const recH=(ti,f)=>{const k=ti*N+f;
     if(curT&&!curT.has(k)){curT.add(k);curDiff.push([ti,f,types[ti].manual[f]]);}};
-  function commitH(){
-    if(curDiff&&curDiff.length){
-      undoStack.push(curDiff);redoStack.length=0;
-      markUnexported(true);
-    }
-    curDiff=null;curT=null;updateHB();
-  }
+  function commitH(){if(curDiff&&curDiff.length){undoStack.push(curDiff);redoStack.length=0;markUnexported(true);}curDiff=null;curT=null;updateHB();}
   // export-reminder anchor (decision 19): unexported marks must be VISIBLE —
   // with non-technical users the export is the step that gets forgotten
   function markUnexported(on){
@@ -3279,7 +3275,7 @@ float amStippleA(float a, float lvl){
   }
   const undo=()=>{if(undoStack.length){redoStack.push(applyDiff(undoStack.pop()));updateHB();}};
   const redo=()=>{if(redoStack.length){undoStack.push(applyDiff(redoStack.pop()));updateHB();}};
-  function updateHB(){$('undo').disabled=!undoStack.length;$('redo').disabled=!redoStack.length;
+  function updateHB(){document.getElementById('undo').disabled=!undoStack.length;document.getElementById('redo').disabled=!redoStack.length;
     amSnapSoon();}                     // 327: every step of the history is a change of the work
   function findOrMkType(hex,name){
     let T=types.find(t=>t.hex===hex); if(!T){T=mkType(name||'',hex||'#38b000');buildChips();}
@@ -4168,7 +4164,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     areaTool=(k===AM_POLY)?k:AM_BRUSH;   // 433: the smoothed tool is the brush, at the layer's level
     const T=types[activeT]; if(T&&T.am!==areaTool){T.am=areaTool; markUnexported(true);}
     if(mode!=='add'&&mode!=='rem') setMode('add'); else amSideWhat();
-    applyBrush();
+    applyBrush(); invalidate();
   }
   $('aBrush').onclick=()=>amSetAreaTool(AM_BRUSH);
   $('aPoly').onclick=()=>amSetAreaTool(AM_POLY);
