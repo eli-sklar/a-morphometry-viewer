@@ -1105,7 +1105,29 @@ mat.onBeforeCompile=sh=>{
       const d=[x-c[0],y-c[1],z-c[2]]; let m=-Infinity;
       for(let j=0;j<3;j++){ const v=d[0]*R[0][j]+d[1]*R[1][j]+d[2]*R[2][j]; const e=Math.abs(v)-h[j]; if(e>m)m=e; }
       return m; }
+    if(op.t==='poly') return amPolyField(op,x,y,z);       // 470: the crop polygon, flat or deep
     return Infinity;
+  }
+  function amPolyField(op,x,y,z){
+    // the op's field, negative inside: the signed distance to the outline in the frame (u,v) —
+    // DEEP, as it is (a prism along n); FLAT, the larger of that and the distance from the plane
+    // beyond the band. Every step in crop_clip.op_field's order, so the two agree to the bit
+    let Q=op._q;
+    if(!Q){ const p=op.p, c=op.c, u=op.u, v=op.v, m=(p.length/3)|0; Q=new Float64Array(2*m);
+      for(let i=0;i<m;i++){ const dx=p[i*3]-c[0], dy=p[i*3+1]-c[1], dz=p[i*3+2]-c[2];
+        Q[2*i]=dx*u[0]+dy*u[1]+dz*u[2]; Q[2*i+1]=dx*v[0]+dy*v[1]+dz*v[2]; }
+      Object.defineProperty(op,'_q',{value:Q}); }              // not enumerable: never sent to the server
+    const c=op.c, u=op.u, v=op.v, dx=x-c[0], dy=y-c[1], dz=z-c[2];
+    const qx=dx*u[0]+dy*u[1]+dz*u[2], qy=dx*v[0]+dy*v[1]+dz*v[2], m=Q.length>>1;
+    let d2=Infinity, ins=false;
+    for(let i=0,j=m-1;i<m;j=i++){ const ax=Q[2*j], ay=Q[2*j+1], bx=Q[2*i], by=Q[2*i+1];
+      const ex=bx-ax, ey=by-ay, wx=qx-ax, wy=qy-ay, L=ex*ex+ey*ey;
+      let t=L>0?(wx*ex+wy*ey)/L:0; t=t<0?0:(t>1?1:t);
+      const px=wx-t*ex, py=wy-t*ey, e=px*px+py*py; if(e<d2) d2=e;
+      if(((ay>qy)!==(by>qy))&&(qx<ax+(qy-ay)*ex/ey)) ins=!ins; }
+    const d=Math.sqrt(d2); let f=ins?-d:d;
+    if(op.m!=='deep'){ const n=op.n, w=dx*n[0]+dy*n[1]+dz*n[2]; f=Math.max(f,Math.abs(w)-op.b); }
+    return f;
   }
   function ccIndex(ops){
     let rmax=0, farPos=Infinity, n=0;
@@ -1163,7 +1185,12 @@ mat.onBeforeCompile=sh=>{
       if(op.t==='balls'){ for(let i=0;i+2<op.c.length;i+=3) for(let k=0;k<3;k++){
           lo[k]=Math.min(lo[k],op.c[i+k]-op.r); hi[k]=Math.max(hi[k],op.c[i+k]+op.r);} }
       else if(op.t==='box'){ const rad=Math.hypot(op.h[0],op.h[1],op.h[2]);
-        for(let k=0;k<3;k++){ lo[k]=Math.min(lo[k],op.c[k]-rad); hi[k]=Math.max(hi[k],op.c[k]+rad);} } }
+        for(let k=0;k<3;k++){ lo[k]=Math.min(lo[k],op.c[k]-rad); hi[k]=Math.max(hi[k],op.c[k]+rad);} }
+      // 470: a flat polygon reaches its points and twice its band around them (a point of the plane
+      // inside the outline is within the band of a point of it); a deep one runs through the model
+      else if(op.t==='poly'){ if(op.m==='deep') return [[-Infinity,-Infinity,-Infinity],[Infinity,Infinity,Infinity]];
+        for(let i=0;i+2<op.p.length;i+=3) for(let k=0;k<3;k++){
+          lo[k]=Math.min(lo[k],op.p[i+k]-2*op.b); hi[k]=Math.max(hi[k],op.p[i+k]+2*op.b);} } }
     return [lo,hi]; }
   function ccEdgeZero(Pi,Pj,fi,fj,en){
     const less=(a,b)=>a[0]!==b[0]?a[0]<b[0]:(a[1]!==b[1]?a[1]<b[1]:a[2]<b[2]);
@@ -2998,22 +3025,32 @@ float amStippleA(float a, float lvl){
     smRebuild();                      // 329: the smoothed copies follow the layers too
     rescaleFixed(); invalidate();
   }
-  function polyAt(e){
+  function amPolyPick(e,el,cam,ray,pts,cast){
+    // one click of a polygon: back on the first point (14 px, three points or more) closes it;
+    // otherwise the ray's hit is the next point; nothing under the cursor, nothing
     const r=el.getBoundingClientRect(), px=e.clientX-r.left, py=e.clientY-r.top;
-    if(curPoly&&curPoly.pts.length>=3){
-      const v=new THREE.Vector3(...curPoly.pts[0]).project(camera);
+    if(pts&&pts.length>=3){
+      const v=new THREE.Vector3(...pts[0]).project(cam);
       const d=Math.hypot((v.x+1)*(r.width/2)-px,(1-v.y)*(r.height/2)-py);
-      if(d<14){                                  // back on the first point: close it
-        const P={id:++pSeq,at:(types[activeT]||types[0]).id,pts:curPoly.pts.slice(),area:0};
-        polyRecompute(P); polys.push(P); curPoly=null; polyRebuild(); markDirty(); return;
-      }
+      if(d<14) return {close:true};
     }
     const ndc=new THREE.Vector2((px/r.width)*2-1,-(py/r.height)*2+1);
-    ray.setFromCamera(ndc,camera);
-    const hit=ray.intersectObject(mesh,false);
-    if(!hit.length) return;
+    ray.setFromCamera(ndc,cam);
+    const hit=cast(ray);
+    if(!hit.length) return null;
+    return {p:[hit[0].point.x,hit[0].point.y,hit[0].point.z]};
+  }
+  function polyAt(e){
+    // 470: the click itself — the close on the first point, the ray's point — is amPolyPick, shared
+    // with the training screen's crop polygon
+    const k=amPolyPick(e,el,camera,ray,curPoly&&curPoly.pts,r=>r.intersectObject(mesh,false));
+    if(!k) return;
+    if(k.close){                                 // back on the first point: close it
+      const P={id:++pSeq,at:(types[activeT]||types[0]).id,pts:curPoly.pts.slice(),area:0};
+      polyRecompute(P); polys.push(P); curPoly=null; polyRebuild(); markDirty(); return;
+    }
     if(!curPoly) curPoly={at:(types[activeT]||types[0]).id,pts:[],area:0};
-    curPoly.pts.push([hit[0].point.x,hit[0].point.y,hit[0].point.z]);
+    curPoly.pts.push(k.p);
     polyRebuild();
   }
   function polyCancel(){ if(curPoly){ curPoly=null; polyRebuild(); } }
