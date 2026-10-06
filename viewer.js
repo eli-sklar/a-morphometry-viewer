@@ -3718,13 +3718,32 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const w=x1-x0+1, h=y1-y0+1; if(w<1||h<1) return new Set();
     const buf=new Uint8Array(4*w*h);
     renderer.readRenderTargetPixels(AMID.rt,x0,y0,w,h,buf);
-    const out=new Set(), r2=rp*rp;
+    const out=new Set(), r2=rp*rp, ids=new Int32Array(w*h);
     for(let j=0;j<h;j++) for(let i=0;i<w;i++){
-      const dx=x0+i-X, dy=y0+j-Y; if(dx*dx+dy*dy>r2) continue;
       const k=4*(j*w+i), f=(buf[k]|(buf[k+1]<<8)|(buf[k+2]<<16))-1;
+      ids[j*w+i]=(f>=0&&f<N)?f:-1;
+      const dx=x0+i-X, dy=y0+j-Y; if(dx*dx+dy*dy>r2) continue;
       if(f>=0&&f<N) out.add(f);
     }
-    return out;
+    // 458 (Eli, 06/10: "a thin strip of marking — the eraser only moves it"; "and the flat brush marks with many
+    // holes"): a pixel is owned by the one sub-face at its centre, so a sub-face smaller than a pixel — most of
+    // them on a thin strip, at a grazing angle or zoomed out — owned none and was never "seen", never painted and
+    // never erased, while the screen's antialiasing still showed it as a dot. It is seen when the pixel it falls
+    // on, or one around it, is owned by a sub-face on the same surface: no farther from it than two and a half pixels at its depth, or one and a half of
+    // the longer edge of the two. A sub-face behind a wall falls on the wall's pixel, far more than that from it
+    const edge=f=>{ const o=f*9; let m=0;
+      for(let c=0;c<3;c++){ const q=(c+1)%3; m=Math.max(m,Math.hypot(pos[o+c*3]-pos[o+q*3],pos[o+c*3+1]-pos[o+q*3+1],pos[o+c*3+2]-pos[o+q*3+2])); }
+      return m; };
+    const v=new THREE.Vector3(), kp=2.5*2*Math.tan(camera.fov*Math.PI/360)/AMID.H;   // 2.5 pixels, in metres per metre of depth
+    return {has:f=>{
+      if(out.has(f)) return true;
+      v.set(cen[f*3],cen[f*3+1],cen[f*3+2]).project(camera); if(v.z<-1||v.z>1) return false;
+      const pi=Math.floor((v.x+1)*0.5*AMID.W)-x0, pj=Math.floor((v.y+1)*0.5*AMID.H)-y0, ef=edge(f);
+      for(let dj=-1;dj<=1;dj++) for(let di=-1;di<=1;di++){ const i=pi+di, j=pj+dj;
+        if(i<0||j<0||i>=w||j>=h) continue; const g=ids[j*w+i]; if(g<0) continue;
+        const t=Math.max(1.5*Math.max(ef,edge(g)), kp*camera.position.distanceTo(v.set(cen[f*3],cen[f*3+1],cen[f*3+2]))), dx=cen[g*3]-cen[f*3], dy=cen[g*3+1]-cen[f*3+1], dz=cen[g*3+2]-cen[f*3+2];
+        if(dx*dx+dy*dy+dz*dz<=t*t){ out.add(f); return true; } }
+      return false; }};
   }
   function amSetShape(k){
     brushShape=(k==='flat')?'flat':'ball';
