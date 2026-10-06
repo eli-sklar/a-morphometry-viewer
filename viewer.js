@@ -3811,21 +3811,105 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     // holes"): a pixel is owned by the one sub-face at its centre, so a sub-face smaller than a pixel — most of
     // them on a thin strip, at a grazing angle or zoomed out — owned none and was never "seen", never painted and
     // never erased, while the screen's antialiasing still showed it as a dot. It is seen when the pixel it falls
-    // on, or one around it, is owned by a sub-face on the same surface: no farther from it than two and a half pixels at its depth, or one and a half of
-    // the longer edge of the two. A sub-face behind a wall falls on the wall's pixel, far more than that from it
+    // on, or one around it, is owned by a sub-face on the same surface: no farther from it than two and a half
+    // pixels at its depth, or one and a half of the longer edge of the two.
+    // 473/4 (Eli, 06/10: "אני רוצה שתהיה יותר שטוחה (כמו קודם) אבל בלי כל החורים; אולי להגדיר את הקרבה בין הפאות לפי
+    // מסלול על המשטח ולא מרחק אווירי"): "no farther" is measured ALONG THE SURFACE — face to face through shared
+    // corners, centroid to centroid (amSurfNet) — not through the air. Through the air the tolerance jumped the gap
+    // of a folded wall (two sheets a centimetre apart, joined somewhere): on the map's overview, cells of ~43 cm, a
+    // reach of ~65 cm took the inside sheet through the outside one. Along the surface the way round the fold is
+    // long, so the sheet behind stays; the sub-faces of the sheet in front are a few faces from their pixels' owners
     const edge=f=>{ const o=f*9; let m=0;
       for(let c=0;c<3;c++){ const q=(c+1)%3; m=Math.max(m,Math.hypot(pos[o+c*3]-pos[o+q*3],pos[o+c*3+1]-pos[o+q*3+1],pos[o+c*3+2]-pos[o+q*3+2])); }
       return m; };
     const v=new THREE.Vector3(), kp=2.5*2*Math.tan(camera.fov*Math.PI/360)/AMID.H;   // 2.5 pixels, in metres per metre of depth
+    const tol=(f,g)=>Math.max(1.5*Math.max(edge(f),edge(g)), kp*camera.position.distanceTo(v.set(cen[f*3],cen[f*3+1],cen[f*3+2])));
+    // the surface net, built once in the dab and only when a face that owns no pixel is asked: every face within the
+    // reach of the ball, the owners of the window's pixels as its sources, as far as the largest tolerance there
+    let net=null;
+    const mkNet=()=>{ const seeds=new Set(); let E=0;
+      for(let k=0;k<ids.length;k++){ const g=ids[k]; if(g>=0&&!seeds.has(g)){ seeds.add(g); E=Math.max(E,edge(g)); } }
+      const T=Math.max(1.5*E, kp*(d+brushR));
+      return amSurfNet(p,brushR+T,seeds,T); };
     return {has:f=>{
       if(out.has(f)) return true;
       v.set(cen[f*3],cen[f*3+1],cen[f*3+2]).project(camera); if(v.z<-1||v.z>1) return false;
-      const pi=Math.floor((v.x+1)*0.5*AMID.W)-x0, pj=Math.floor((v.y+1)*0.5*AMID.H)-y0, ef=edge(f);
+      const pi=Math.floor((v.x+1)*0.5*AMID.W)-x0, pj=Math.floor((v.y+1)*0.5*AMID.H)-y0, O=[];
       for(let dj=-1;dj<=1;dj++) for(let di=-1;di<=1;di++){ const i=pi+di, j=pj+dj;
-        if(i<0||j<0||i>=w||j>=h) continue; const g=ids[j*w+i]; if(g<0) continue;
-        const t=Math.max(1.5*Math.max(ef,edge(g)), kp*camera.position.distanceTo(v.set(cen[f*3],cen[f*3+1],cen[f*3+2]))), dx=cen[g*3]-cen[f*3], dy=cen[g*3+1]-cen[f*3+1], dz=cen[g*3+2]-cen[f*3+2];
-        if(dx*dx+dy*dy+dz*dz<=t*t){ out.add(f); return true; } }
+        if(i<0||j<0||i>=w||j>=h) continue; const g=ids[j*w+i]; if(g>=0&&O.indexOf(g)<0) O.push(g); }
+      if(!O.length) return false;
+      if(O.indexOf(f)>=0){ out.add(f); return true; }
+      if(!net) net=mkNet();
+      const i=net.loc.get(f); if(i===undefined) return false;
+      // the nearest owner along the surface is, almost always, one of the pixels around it: then the answer is read off
+      const g=net.lab[i];
+      if(g>=0&&O.indexOf(g)>=0&&net.D[i]<=tol(f,g)){ out.add(f); return true; }
+      // otherwise (the edge of a wall, a fold) a search of its own toward the owners around it, within their tolerance
+      let tm=0; for(const q of O) tm=Math.max(tm,tol(f,q));
+      if(net.D[i]>tm&&tm<=net.T) return false;
+      if(net.reach(i,O,q=>tol(f,q),tm)){ out.add(f); return true; }
       return false; }};
+  }
+  // 473/4: the surface around a dab of the flat brush, as a net of faces — the faces whose centroid is within R of p
+  // (the screen's amBallFaces), joined where they share a corner (by position, to 10 µm: the screens' faces are
+  // unindexed, and their shared corners are the same numbers — measured on the payloads, the map's overview and the
+  // package's subdivision), each step the distance between the two centroids. D: the distance along it from every
+  // face to the nearest seed (the faces that own a pixel), up to T, and lab: which seed; reach(i,O,tolOf,tm): whether
+  // face i reaches one of the faces O within that face's tolerance — a search of its own, at most 20,000 steps
+  function amSurfNet(p,R,seed,T){
+    const L=[], loc=new Map();
+    amBallFaces(p,R,f=>{ if(!loc.has(f)){ loc.set(f,L.length); L.push(f); } });
+    const M=L.length;
+    let cap=16; while(cap<6*M) cap<<=1; const mask=cap-1;
+    const slot=new Int32Array(cap).fill(-1), K=new Float64Array(9*M+3), vid=new Int32Array(3*M); let nv=0;
+    for(let i=0;i<M;i++){ const o=L[i]*9;
+      for(let c=0;c<3;c++){ const kx=Math.round(pos[o+c*3]*1e5), ky=Math.round(pos[o+c*3+1]*1e5), kz=Math.round(pos[o+c*3+2]*1e5);
+        let hh=(Math.imul(kx|0,73856093)^Math.imul(ky|0,19349663)^Math.imul(kz|0,83492791))&mask;
+        for(;;){ const s=slot[hh];
+          if(s<0){ slot[hh]=nv; K[nv*3]=kx; K[nv*3+1]=ky; K[nv*3+2]=kz; vid[i*3+c]=nv++; break; }
+          if(K[s*3]===kx&&K[s*3+1]===ky&&K[s*3+2]===kz){ vid[i*3+c]=s; break; }
+          hh=(hh+1)&mask; } } }
+    const st=new Int32Array(nv+1); for(let k=0;k<3*M;k++) st[vid[k]+1]++;
+    for(let k=0;k<nv;k++) st[k+1]+=st[k];
+    const at=st.slice(0,nv), fv=new Int32Array(3*M); for(let k=0;k<3*M;k++) fv[at[vid[k]]++]=(k/3)|0;
+    const C=new Float64Array(3*M); for(let i=0;i<M;i++){ const a=L[i]*3; C[i*3]=cen[a]; C[i*3+1]=cen[a+1]; C[i*3+2]=cen[a+2]; }
+    const step=(i,j)=>{ const x=C[i*3]-C[j*3], y=C[i*3+1]-C[j*3+1], z=C[i*3+2]-C[j*3+2]; return Math.sqrt(x*x+y*y+z*z); };
+    // a binary heap of (distance, face)
+    const heap=()=>{ const hv=[], hi=[];
+      return {n:()=>hv.length,
+        push(x,i){ let k=hv.length; hv.push(x); hi.push(i);
+          while(k>0){ const u=(k-1)>>1; if(hv[u]<=x) break; hv[k]=hv[u]; hi[k]=hi[u]; k=u; } hv[k]=x; hi[k]=i; },
+        pop(){ const ti=hi[0], lx=hv.pop(), li=hi.pop(), n=hv.length;
+          if(n){ let k=0; for(;;){ let c=2*k+1; if(c>=n) break; if(c+1<n&&hv[c+1]<hv[c]) c++; if(hv[c]>=lx) break; hv[k]=hv[c]; hi[k]=hi[c]; k=c; }
+            hv[k]=lx; hi[k]=li; }
+          return ti; },
+        top:()=>hv[0]}; };
+    const D=new Float64Array(M).fill(Infinity), lab=new Int32Array(M).fill(-1), Q=heap();
+    for(let i=0;i<M;i++) if(seed.has(L[i])){ D[i]=0; lab[i]=L[i]; Q.push(0,i); }
+    while(Q.n()){ const x=Q.top(), i=Q.pop(); if(x>D[i]) continue;
+      for(let c=0;c<3;c++){ const vv=vid[i*3+c];
+        for(let k=st[vv];k<st[vv+1];k++){ const j=fv[k]; if(j===i) continue;
+          const nd=x+step(i,j); if(nd<D[j]&&nd<=T){ D[j]=nd; lab[j]=lab[i]; Q.push(nd,j); } } } }
+    function reach(i0,O,tolOf,tm){
+      const dd=new Map([[i0,0]]), H=heap(); H.push(0,i0); let n=0;
+      while(H.n()&&n<20000){ const x=H.top(), i=H.pop(); if(x>dd.get(i)) continue; n++;
+        if(O.indexOf(L[i])>=0&&x<=tolOf(L[i])) return true;
+        for(let c=0;c<3;c++){ const vv=vid[i*3+c];
+          for(let k=st[vv];k<st[vv+1];k++){ const j=fv[k]; if(j===i) continue;
+            const nd=x+step(i,j); if(nd<=tm&&!(dd.get(j)<=nd)){ dd.set(j,nd); H.push(nd,j); } } } }
+      return false;
+    }
+    return {loc:loc, D:D, lab:lab, T:T, reach:reach, M:M};
+  }
+  // 473/4: every face whose centroid is within R of p — for amSurfNet, on the measurement screen's and the iPad's
+  // grid of cells (the map has its own, on the brush's cells)
+  function amBallFaces(p,R,fn){
+    const R2=R*R, i0=Math.floor((p.x-R)/CELL), i1=Math.floor((p.x+R)/CELL), j0=Math.floor((p.y-R)/CELL), j1=Math.floor((p.y+R)/CELL),
+          k0=Math.floor((p.z-R)/CELL), k1=Math.floor((p.z+R)/CELL);
+    for(let ix=i0;ix<=i1;ix++) for(let iy=j0;iy<=j1;iy++) for(let iz=k0;iz<=k1;iz++){
+      const a=grid.get(ckey(ix,iy,iz)); if(!a) continue;
+      for(let n=0;n<a.length;n++){ const f=a[n], dx=cen[f*3]-p.x, dy=cen[f*3+1]-p.y, dz=cen[f*3+2]-p.z;
+        if(dx*dx+dy*dy+dz*dz<=R2) fn(f); } }
   }
   function amSetShape(k){
     brushShape=(k==='flat')?'flat':'ball';
