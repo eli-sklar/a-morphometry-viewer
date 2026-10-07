@@ -318,6 +318,72 @@ function amCopyBox(text,str){
     p.then(res);
   });
 }
+// 496: the start screen's title is the About button — the polar planimeter explained, the viewing core's one text;
+// the version line is the one on the start screen. Wired before the renderer, so it opens whatever the device does
+function amAboutHtml(){
+  // the version line is FETCHED or read from the file's stamp, never typed: it used to be a hand-typed "1.0" while
+  // APP_VERSION said 1.1 — two claims, both unverifiable (01/09). Until it is filled it reads "A-morphometry".
+  return '\n  <div class="box">'
+    +'\n    <button class="x" id="infoClose" title="סגור">✕</button>'
+    +'\n    <p>הפלנימטר הקוטבי הומצא ב־1854 בידי המתמטיקאי השוויצרי יאקוב אמסלר (אך הרעיון קדם לו: הפלנימטר הראשון תוכנן כבר ב־1814 בידי המודד הבווארי יוהאן מרטין הרמן, במנגנון של גלגל המתגלגל על חרוט, ואמסלר הוא שפישט אותו לצורה הקוטבית המעשית בת שתי הזרועות).</p>'
+    +'\n    <p>זהו מכשיר מכני קטן שמודד את שטחה של כל צורה — סדירה או אמורפית — פשוט על ידי הובלת חוד המעקב לאורך קו המתאר שלה. הקסם הוא גלגל מדידה יחיד: הוא מתגלגל רק כשהוא נע בניצב לצירו, ומחליק כשהוא נע במקביל אליו — וכך הוא מבצע אינטגרציה מכנית: סיבובו המצטבר פרופורציוני לאינטגרל <span class="math">∮<sub>C</sub> (x&thinsp;dy − y&thinsp;dx)</span> על היקף הצורה.</p>'
+    +'\n    <p>בתום הקפה מלאה (נגד כיוון השעון), על פי משפט גרין, <span class="math">∮<sub>C</sub> (x&thinsp;dy − y&thinsp;dx) = ∬<sub>S</sub> 2&thinsp;dx&thinsp;dy = 2S</span> — האינטגרל לאורך גבולה של הצורה נותן פעמיים את שטחה. כיול המכשיר מגלם את קבוע הפרופורציה, כך שהקריאה מוסרת את השטח עצמו.</p>'
+    +'\n    <p>תוכנה זו פועלת באופן שונה מהפלנימטר אך מטרתה זהה.</p>'
+    +'\n    <p id="verLine" style="color:var(--dim,#8a8272);font-size:12px;margin-top:10px">A-morphometry</p>'
+    +'\n  </div>\n';
+}
+function amAboutCss(){
+  // the main screen's rules, as they were there (the page keeps its own .modalWrap rules that shared them)
+  return '#infoModal{position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:60;display:none;align-items:center;justify-content:center;padding:24px}'
+    +'#infoModal .box{background:var(--panel,#141210);border:2px solid #6b5a33;border-radius:2px;max-width:660px;max-height:82vh;overflow-y:auto;padding:28px 32px;line-height:1.8;color:var(--txt,#d8cdb8);font-size:15px;direction:rtl;text-align:right;'
+    +'box-shadow:inset 0 0 0 3px var(--panel,#141210), inset 0 0 0 4px rgba(184,147,74,.45), 0 24px 70px #000c}'
+    +'#infoModal .box p{margin:0 0 14px}'
+    +'#infoModal .box p:last-child{margin:0}'
+    +'#infoModal .x{position:sticky;top:-4px;float:left;background:none;border:0;color:var(--dim,#8a8272);font-size:20px;cursor:pointer;line-height:1;margin:-6px -6px 0 0}'
+    +'#infoModal .x:hover{color:var(--txt,#d8cdb8)}'
+    +'#infoModal .math{color:var(--amber,#b8934a);font-style:italic;white-space:nowrap;font-size:14.5px;'
+    +'direction:ltr;unicode-bidi:isolate;display:inline-block;vertical-align:middle}'
+    +'#infoModal .box p b{font-family:var(--serif,"Frank Ruehl CLM","FrankRuehl","David","Narkisim","Times New Roman",serif)}';
+}
+function amAboutVer(v){
+  // the main screen's line, word for word; `what` names a screen that is not the desktop app (the iPad), and a stamp
+  // without a commit (the iPad's) says none
+  return 'A-morphometry'+(v.what?' · '+v.what:'')+' · גרסה '+(v.version||'?')
+    +('sha' in v?' · commit '+(v.sha||'?'):'')+(v.dirty?' (עץ מלוכלך)':'')
+    +(v.build_time?(' · נבנה '+v.build_time):'')
+    +(v.source==='source'?' · מהמקור':'');
+}
+function amAboutStamp(){
+  // a delivered file carries the stamp of the build that wrote it; a page whose slot was never filled has none
+  try{ const s=JSON.parse(document.getElementById('amStamp').textContent); return s&&typeof s==='object'?s:null; }
+  catch(e){ return null; }
+}
+function amAboutMount(btn,ver){
+  // ver: a function returning a promise of the stamp (a served page asks /api/version on the first opening, and asks
+  // again next time if that failed), the stamp itself, or null (the line stays "A-morphometry")
+  if(!btn) return null;
+  if(!document.getElementById('amAboutCss')){
+    const st=document.createElement('style'); st.id='amAboutCss'; st.textContent=amAboutCss(); document.head.appendChild(st);
+  }
+  let M=document.getElementById('infoModal');
+  if(!M){ M=document.createElement('div'); M.id='infoModal'; document.body.appendChild(M); }
+  if(!M.firstElementChild) M.innerHTML=amAboutHtml();
+  const close=()=>{M.style.display='none';};
+  btn.onclick=()=>{
+    M.style.display='flex';
+    const el=document.getElementById('verLine'); if(!el||el.dataset.done||!ver) return;
+    const put=v=>{ el.dataset.done='1'; el.textContent=amAboutVer(v); };
+    if(typeof ver!=='function'){ put(ver); return; }
+    try{ ver().then(put).catch(()=>{}); }catch(e){}
+  };
+  // a title that is not a button (the iPad's) opens it from the keyboard too
+  if(btn.tagName!=='BUTTON') btn.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); btn.onclick(); } });
+  document.getElementById('infoClose').onclick=close;
+  M.onclick=e=>{if(e.target===M)close();};
+  window.addEventListener('keydown',e=>{if(e.key==='Escape')close();});
+  return M;
+}
+amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:(($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?'});
 const cv=$('cv');
 const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
   // a lost GL context is HEARD, not a silent white canvas (field report 25/08);
