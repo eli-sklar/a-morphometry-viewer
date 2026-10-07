@@ -1111,7 +1111,9 @@ mat.onBeforeCompile=sh=>{
   function amPolyField(op,x,y,z){
     // the op's field, negative inside: the signed distance to the outline in the frame (u,v) —
     // DEEP, as it is (a prism along n); FLAT, the larger of that and the distance from the plane
-    // beyond the band. Every step in crop_clip.op_field's order, so the two agree to the bit
+    // beyond the band. Every step in crop_clip.op_field's order, so the two agree to the bit.
+    // 479: a polygon drawn on the screen of a locked view ('proj') has its own (amPolyProjField)
+    if(op.m==='proj') return amPolyProjField(op,x,y,z);
     let Q=op._q;
     if(!Q){ const p=op.p, c=op.c, u=op.u, v=op.v, m=(p.length/3)|0; Q=new Float64Array(2*m);
       for(let i=0;i<m;i++){ const dx=p[i*3]-c[0], dy=p[i*3+1]-c[1], dz=p[i*3+2]-c[2];
@@ -1128,6 +1130,32 @@ mat.onBeforeCompile=sh=>{
     const d=Math.sqrt(d2); let f=ins?-d:d;
     if(op.m!=='deep'){ const n=op.n, w=dx*n[0]+dy*n[1]+dz*n[2]; f=Math.max(f,Math.abs(w)-op.b); }
     return f;
+  }
+  // 479: the field of a 'proj' op — negative inside the funnel. Its sign is the projection's own (in front of the eye and
+  // inside the outline by M, as amPolyInProj); its size the true distance to the funnel's surface — to the nearest of
+  // its sides (the plane through the eye and two neighbouring rays, within the wedge between them) or of its edges (a
+  // ray from the eye) — so it is a distance in metres like every other shape's field, which the cut's tests of the line's
+  // reach read. The twin of crop_clip.proj_field step by step, so the two agree to the bit
+  function amPolyProjField(op,x,y,z){
+    const M=op.M, Q=op.q, m=Q.length>>1, e=op.e, R=op.r;
+    const cw=M[3]*x+M[7]*y+M[11]*z+M[15];
+    let ins=false;
+    if(cw>0){ const qx=(M[0]*x+M[4]*y+M[8]*z+M[12])/cw, qy=(M[1]*x+M[5]*y+M[9]*z+M[13])/cw;
+      for(let i=0,j=m-1;i<m;j=i++){ const ax=Q[2*j], ay=Q[2*j+1], bx=Q[2*i], by=Q[2*i+1], ex=bx-ax, ey=by-ay;
+        if(((ay>qy)!==(by>qy))&&(qx<ax+(qy-ay)*ex/ey)) ins=!ins; } }
+    const Yx=x-e[0], Yy=y-e[1], Yz=z-e[2]; let d2=Infinity;
+    for(let i=0,j=m-1;i<m;j=i++){
+      const ax=R[3*j], ay=R[3*j+1], az=R[3*j+2], bx=R[3*i], by=R[3*i+1], bz=R[3*i+2];
+      let nx=ay*bz-az*by, ny=az*bx-ax*bz, nz=ax*by-ay*bx; const nl=Math.sqrt(nx*nx+ny*ny+nz*nz);
+      if(nl>1e-12){ nx=nx/nl; ny=ny/nl; nz=nz/nl;
+        const s=Yx*nx+Yy*ny+Yz*nz, Px=Yx-s*nx, Py=Yy-s*ny, Pz=Yz-s*nz;
+        const c1=(ay*Pz-az*Py)*nx+(az*Px-ax*Pz)*ny+(ax*Py-ay*Px)*nz, c2=(Py*bz-Pz*by)*nx+(Pz*bx-Px*bz)*ny+(Px*by-Py*bx)*nz;
+        if(c1>=0&&c2>=0){ const s2=s*s; if(s2<d2) d2=s2; } }
+      let t=Yx*bx+Yy*by+Yz*bz; if(t<0) t=0;
+      const px=Yx-t*bx, py=Yy-t*by, pz=Yz-t*bz, g=px*px+py*py+pz*pz; if(g<d2) d2=g;
+    }
+    const d=Math.sqrt(d2);
+    return ins?-d:d;
   }
   function ccIndex(ops){
     let rmax=0, farPos=Infinity, n=0;
@@ -1188,7 +1216,8 @@ mat.onBeforeCompile=sh=>{
         for(let k=0;k<3;k++){ lo[k]=Math.min(lo[k],op.c[k]-rad); hi[k]=Math.max(hi[k],op.c[k]+rad);} }
       // 470: a flat polygon reaches its points and twice its band around them (a point of the plane
       // inside the outline is within the band of a point of it); a deep one runs through the model
-      else if(op.t==='poly'){ if(op.m==='deep') return [[-Infinity,-Infinity,-Infinity],[Infinity,Infinity,Infinity]];
+      // 479: a polygon on the screen of a locked view ('proj') — the funnel from the eye — is as unbounded
+      else if(op.t==='poly'){ if(op.m==='deep'||op.m==='proj') return [[-Infinity,-Infinity,-Infinity],[Infinity,Infinity,Infinity]];
         for(let i=0;i+2<op.p.length;i+=3) for(let k=0;k<3;k++){
           lo[k]=Math.min(lo[k],op.p[i+k]-2*op.b); hi[k]=Math.max(hi[k],op.p[i+k]+2*op.b);} } }
     return [lo,hi]; }
