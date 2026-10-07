@@ -3496,7 +3496,9 @@ float amStippleA(float a, float lvl){
   function amSnapSoon(){
     if(!amSnapOn) return;
     clearTimeout(amSnapT);
-    amSnapT=setTimeout(()=>{ try{ snapPut(getSheet(true)); }catch(_){} },1500);
+    // 494 (3): the copy is the sheet WITHOUT the report's derived fields (typeAreas, repairFaces, the totals) — the
+    // restore (applySheet) reads none of them, and they were half of the copy's work after every change
+    amSnapT=setTimeout(()=>{ try{ snapPut(getSheet(false)); }catch(_){} },1500);
   }
   function applyDiff(diff){const inv=[];
     for(let i=diff.length-1;i>=0;i--){const d=diff[i];
@@ -5459,8 +5461,9 @@ const amPal=(function(){
   dbReady.then(snapRead).then(async sn=>{
     try{
       if(!sn||!sn.sheet) return;
-      const bare=o=>{ const c=Object.assign({},o); delete c.saved; return JSON.stringify(c); };
-      let same=false; try{ same=bare(sn.sheet)===bare(getSheet(true)); }catch(_){}
+      // 494 (3): compared without the derived fields too — a copy written before 494 carries them, and is the same work
+      const bare=o=>{ const c=Object.assign({},o); for(const k of ['saved','repairFaces','areaM2','unionM2','typeAreas','lenTotals','cntTotals']) delete c[k]; return JSON.stringify(c); };
+      let same=false; try{ same=bare(sn.sheet)===bare(getSheet(false)); }catch(_){}
       if(same) return;
       const when=new Date(sn.t).toLocaleString('he-IL');
       if(await amAsk('נמצא עותק של העבודה הזאת מהביקור הקודם, עם שינויים שלא יוצאו לגיליון (נשמר '+when+').',
