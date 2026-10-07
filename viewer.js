@@ -334,7 +334,8 @@ scene.background=new THREE.Color(0x15171a);   // dark working background, as on 
 const camera=new THREE.PerspectiveCamera(50,innerWidth/Math.max(1,innerHeight),0.01,1000);
 function resize(){renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/Math.max(1,innerHeight);camera.updateProjectionMatrix();}
 addEventListener('resize',resize); resize();
-(function tick(){requestAnimationFrame(tick);if(window.amMarkTick)window.amMarkTick();if(window.amRescaleFixed)window.amRescaleFixed();renderer.render(scene,camera);})();
+(function tick(){requestAnimationFrame(tick);if(window.amMarkTick)window.amMarkTick();if(window.amRescaleFixed)window.amRescaleFixed();
+  if(window.amColFlush)window.amColFlush();renderer.render(scene,camera);})();   // 494: the recoloured sub-faces by their ranges
 
 $('openBtn').onclick=()=>$('file').click();
 /* ---- 453 (Eli, 05/10: "the keyboard that opens on the iPad should be the big comfortable one, not the small
@@ -523,6 +524,7 @@ function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
   const flatAttr=new THREE.BufferAttribute(flats,1); geo.setAttribute('aFlat',flatAttr);
   // the stipple level per sub-face, so every layer carries its own (slice 4)
   const dess=new Float32Array(N*3).fill(0.6);
+  let amCF=null;   // 494: the sub-faces recoloured since the last frame (amColMark/amColFlush)
   const desAttr=new THREE.BufferAttribute(dess,1);
   geo.setAttribute('aDes',desAttr);
   // ---- which sub-faces are reconstructed surface (decision 166) ------------------
@@ -1584,8 +1586,7 @@ mat.onBeforeCompile=sh=>{
   function amMarkTick(){
     const t0=performance.now(); if(t0<amMarkHold) return;
     amMarkDue=false;
-    if(amLive&&types[amLiveT]){ amMarkNear(types[amLiveT]);
-      colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true; amMarkDraw(); }
+    if(amLive&&types[amLiveT]){ amMarkNear(types[amLiveT]); amMarkDraw(); }   // 494: its sub-faces go up by their ranges (amColFlush)
     const dt=performance.now()-t0; amMarkHold=dt>25?performance.now()+16:0;
   }
   // the marked parts, drawn over the sub-faces they cut with the layer's colour, opacity and
@@ -1666,7 +1667,7 @@ mat.onBeforeCompile=sh=>{
         if(curDiff) curDiff=curDiff.filter(d=>d[2]!==op);
         amWatch=null; amMarkAt(T,op); } }
     amLive=null; amWatch=null;
-    colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true; updateArea(); amMarkDraw();
+    updateArea(); amMarkDraw();   // 494: the area counted once, at the end; the colours by their ranges
   }
   // undo and redo: an op leaves or comes back, and the line is asked again where it was
   function amOpOut(ti,op){ const T=types[ti]; if(!T||!T.ops) return;
@@ -1692,6 +1693,7 @@ mat.onBeforeCompile=sh=>{
   // the iPad draws every frame; the frame asks the line first (317)
   window.amMarkTick=()=>{ if(amMarkDue) amMarkTick(); };
   function recolorFace(f){
+    amColMark(f);   // 494: what goes to the graphics card at the frame — this sub-face's colour, cover and design
     let r=null, a=0, d=0; _vis.length=0;
     // 329: the smoothed-surface brush, while it is down — the sub-faces it has taken
     if(typeof smLive!=='undefined'&&smLive&&smLive[f]&&mode!=='rem'&&!(typeof smLiveT!=='undefined'&&smLiveT&&smLiveT.band.has(f))){   // 389: an erasure is drawn by its own red (smRed), not face by face
@@ -1715,6 +1717,38 @@ mat.onBeforeCompile=sh=>{
     const o=f*9;
     for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;dess[f*3+c]=d;}
   }
+  function amColMark(f){
+    if(!amCF||amCF.df.length!==N){ const c={df:new Uint8Array(N), dl:[], all:false, gpu:[-1,-1,-1], mine:[-1,-1,-1], cb:null};
+      c.cb=[0,1,2].map(i=>function(){ c.gpu[i]=this.version; }); amCF=c; }   // the version the card holds — three's own call after each upload
+    if(f<0||amCF.all||amCF.df[f]) return;
+    amCF.df[f]=1; amCF.dl.push(f); if(amCF.dl.length>(N>>3)) amCF.all=true;
+  }
+  function amColFlush(){
+    if(!amCF||amCF.df.length!==N) amColMark(-1);
+    const A=[colAttr,flatAttr,desAttr], W=[9,3,3], L=amCF.dl;
+    let R=null;
+    if(L.length&&!amCF.all){ L.sort((a,b)=>a-b); R=[]; let a=L[0], b=a;
+      for(let k=1;k<L.length;k++){ const f=L[k]; if(f-b<=32) b=f; else { R.push(a,b); a=b=f; } }
+      R.push(a,b); if(R.length>512) R=null; }
+    for(let i=0;i<3;i++){ const at=A[i];
+      if(at.onUploadCallback!==amCF.cb[i]){ at.onUploadCallback=amCF.cb[i]; amCF.gpu[i]=-1; }
+      // what waits for the card: nothing, or this function's own ranges — the new ones join them. Anything
+      // else (a needsUpdate from elsewhere, a new model, the first frame) is a whole upload, which holds them.
+      const own=at.version===amCF.gpu[i]||(at.version===amCF.mine[i]&&at.updateRanges.length>0);
+      if(!own){ at.clearUpdateRanges(); continue; }
+      if(!L.length&&!amCF.all) continue;
+      if(R) for(let k=0;k<R.length;k+=2) at.addUpdateRange(R[k]*W[i],(R[k+1]-R[k]+1)*W[i]);
+      else at.clearUpdateRanges();
+      at.needsUpdate=true; amCF.mine[i]=R?at.version:-1; }
+    for(const f of L) amCF.df[f]=0; L.length=0; amCF.all=false;
+  }
+  function amLenCntShow(){
+    for(const lt of lenTypes){let s=0;for(const ln of lines)if(ln.t===lt.id)s+=ln.len;
+      const e3=document.getElementById('lA_'+lt.id); if(e3)e3.textContent=s.toFixed(2);}
+    for(const ct of cntTypes){let n=0;for(const m of xmarks)if(m.t===ct.id)n++;
+      const e4=document.getElementById('cA_'+ct.id); if(e4)e4.textContent=String(n);}
+  }
+  window.amColFlush=()=>amColFlush();   // 494: the frame sends this model's recoloured sub-faces
   const roiOp=1.0, selMask=new Uint8Array(0);   // 349: the editor's orange-zone opacity wheel and rectangle selection — fixed and empty here; the shared recolorFace reads them
   function amMarkLayers(){ const L=(typeof volMarkT!=='undefined'&&volMarkT)?types.concat([volMarkT]):types;
     return (typeof smLiveT!=='undefined'&&smLiveT)?L.concat([smLiveT]):L; }   // 325: no volume brush · 335: the smooth brush's line while it is down
@@ -1751,10 +1785,7 @@ mat.onBeforeCompile=sh=>{
       const e2=document.getElementById('tA_'+T.id); if(e2)e2.textContent=a.toFixed(2);}
     $('area').textContent='';
     if(typeof smSyncSoon==='function') smSyncSoon();   // 433: the regions follow the brush
-    for(const lt of lenTypes){let s2=0;for(const ln of lines)if(ln.t===lt.id)s2+=ln.len;
-      const e3=document.getElementById('lA_'+lt.id); if(e3)e3.textContent=s2.toFixed(2);}
-    for(const ct of cntTypes){let n2=0;for(const m of xmarks)if(m.t===ct.id)n2++;
-      const e4=document.getElementById('cA_'+ct.id); if(e4)e4.textContent=String(n2);}
+    amLenCntShow();
   }
   /* length pens (decision 58): continuous stroke -> sampled polyline; no learning */
   const lenTypes=[]; let activeL=-1, lSeq=0;
@@ -3226,7 +3257,7 @@ float amStippleA(float a, float lvl){
     const toCam=camera.position.clone().sub(h.point).normalize();   // always toward the viewer
     const m={t:cntTypes[activeC].id,
       p:[h.point.x+toCam.x*lift,h.point.y+toCam.y*lift,h.point.z+toCam.z*lift],obj:null};
-    addX(m); undoStack.push([['X+',m]]); redoStack.length=0; markUnexported(true); updateHB(); updateArea(); invalidate();}
+    addX(m); undoStack.push([['X+',m]]); redoStack.length=0; markUnexported(true); updateHB(); amLenCntShow(); invalidate();}
   // Erase what you AIM AT (12/08, mirror of the desktop fix): the ray hits the diamonds
   // themselves. A diamond is lifted half its diameter off the surface, so it blocks the
   // ray and a mesh-based test measured from a point BEHIND it; and the brush slider is
@@ -3255,7 +3286,7 @@ float amStippleA(float a, float lvl){
           if(dx*dx+dy*dy+dz*dz<=tol*tol){diff.push(['X-',m]);delX(m);}}
       }
     }
-    if(diff.length){undoStack.push(diff);redoStack.length=0;markUnexported(true);updateHB();updateArea();invalidate();}}
+    if(diff.length){undoStack.push(diff);redoStack.length=0;markUnexported(true);updateHB();amLenCntShow();invalidate();}}
 
   // ---- 332: tag layers — a title, a text and a photo on a point of the model ----
   // As in the measurement screen, with one difference: the iPad has no link to the
@@ -3344,7 +3375,7 @@ float amStippleA(float a, float lvl){
       for(const run of runs){const NL={t:L.t,pts:run,len:lineLen(run),w:L.w,obj:null};addLine(NL);diff.push(['L+',NL]);}
       undoStack.push(diff);redoStack.length=0;markUnexported(true);updateHB();
     }
-    updateArea();
+    amLenCntShow();   // 494: a tape changed — its length, not every area layer
   }
   function addLine(L){if(!L.obj)L.obj=lineObj(L); L.obj.visible=!amHidOf(lenTypes,L.t); scene.add(L.obj); if(!lines.includes(L))lines.push(L);}
   function delLine(L){if(L.obj)scene.remove(L.obj); const i=lines.indexOf(L); if(i>=0)lines.splice(i,1);}
@@ -3964,7 +3995,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
           { const M=types[activeT].manual;
             if(M[f]!==val){recH(activeT,f);M[f]=val;amSUpd(activeT,f);recolorFace(f);ch=true;} }
         }}}
-    if(ch){colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();}}
+    // 494: the sub-faces it recoloured go up at the frame (amColFlush); the area is counted once the stroke ends
+    // (amStrokeEnd), by the same full count — a touch with no stroke (no ball line) still counts it here
+    if(ch&&!amLive) updateArea();}
 
   /* ---- length stroke: sample the pencil path into a surface polyline ---- */
   function lineEraseAt(e){const hit=castAt(e); if(!hit.length)return;
@@ -4247,7 +4280,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         if(mf){curLine.fit=mf;curLine.len=mf.length_m;} else curLine.len=lineLen(curLine.pts);
         addLine(curLine);
         undoStack.push([['L-',_host],['L+',curLine]]);
-        redoStack.length=0;markUnexported(true);updateHB();updateArea();
+        redoStack.length=0;markUnexported(true);updateHB();amLenCntShow();   // 494: the tape's length only
         curLine=null; invalidate(); return;
       }
       // the stations become the stroke's truth; without a BVH the stroke stays raw
@@ -4255,7 +4288,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       if(fit){ curLine.fit=fit; curLine.len=fit.length_m;
         if(curLine.obj){scene.remove(curLine.obj);curLine.obj=null;} }
       addLine(curLine);
-      undoStack.push([['L+',curLine]]);redoStack.length=0;markUnexported(true);updateHB();updateArea();}
+      undoStack.push([['L+',curLine]]);redoStack.length=0;markUnexported(true);updateHB();amLenCntShow();}
     else if(curLine.obj)scene.remove(curLine.obj);
     curLine=null;
   }
