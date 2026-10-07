@@ -2477,25 +2477,25 @@ mat.onBeforeCompile=sh=>{
     const box=f=>{ const o=f*9, lo=[Infinity,Infinity,Infinity], hi=[-Infinity,-Infinity,-Infinity];
       for(let c=0;c<3;c++) for(let k=0;k<3;k++){ lo[k]=Math.min(lo[k],P[o+c*3+k]); hi[k]=Math.max(hi[k],P[o+c*3+k]); } return {f:f,lo:lo,hi:hi}; };
     const store=(out,long,pof,byId,seq)=>{ K.smPrev={P:P, F:Int32Array.from(fs), pc:new Map(pc), out:out, long:long, pof:pof, byId:byId, seq:seq}; return out.map(p=>p.slice()); };
-    const full=()=>{ K.smPrevFull=(K.smPrevFull||0)+1;
+    const full=why=>{ K.smPrevFull=(K.smPrevFull||0)+1; K.smWhy=why||'';
       const out=fs.length?smPieces(P,fs,pc,memoFor?memoFor(fs,pc):null):[];   // as before 494: its mesh kept in the screen's memo (an undo finds it)
       const long=[]; for(const f of fs) if(edge(f)>LC) long.push(box(f));
       const pof=new Int32Array(NFp).fill(-1), byId=new Map(); let seq=0;
       for(const p of out){ const id=seq++; byId.set(id,p); for(const f of p) pof[f]=id; }
       return store(out,long,pof,byId,seq); };
-    if(!q||q.P!==P||q.pof.length!==NFp||!fs.length||typeof grid==='undefined'||typeof cen==='undefined') return full();
+    if(!q||q.P!==P||q.pof.length!==NFp||!fs.length||typeof grid==='undefined'||typeof cen==='undefined') return full('first');
     const same=(a,b)=>{ if(!a||!b) return !a&&!b; if(a.length!==b.length) return false; for(let k=0;k<a.length;k++) if(a[k]!==b[k]) return false; return true; };
     const F0=q.F, D=[]; let i=0, j=0;
     while(i<F0.length||j<fs.length){ const a=i<F0.length?F0[i]:Infinity, b=j<fs.length?fs[j]:Infinity;
       if(a<b){ D.push(a); i++; } else if(b<a){ D.push(b); j++; }
       else { if((q.pc.has(a)||pc.has(a))&&!same(q.pc.get(a),pc.get(a))) D.push(a); i++; j++; } }
     if(!D.length){ K.smPrevKept=(K.smPrevKept||0)+1; return store(q.out,q.long,q.pof,q.byId,q.seq); }
-    if(D.length*3>fs.length||q.long.length>2000) return full();
-    for(const f of D) if(edge(f)>LC) return full();                 // a long sub-face came, went or changed
+    if(D.length*3>fs.length||q.long.length>2000) return full(D.length*3>fs.length?'third':'long faces');
+    for(const f of D) if(edge(f)>LC) return full('long change');     // a long sub-face came, went or changed
     // every changed sub-face must be in the screen's grid, in its own cell — the grid is what finds what is near
-    for(const f of D){ const G=grid.get(ckey(Math.floor(cen[f*3]/CELL),Math.floor(cen[f*3+1]/CELL),Math.floor(cen[f*3+2]/CELL))); if(!G||G.indexOf(f)<0) return full(); }
+    for(const f of D){ const G=grid.get(ckey(Math.floor(cen[f*3]/CELL),Math.floor(cen[f*3+1]/CELL),Math.floor(cen[f*3+2]/CELL))); if(!G||G.indexOf(f)<0) return full('grid'); }
     const R=4*LC+SM_MERGE+1e-3, ns=Math.ceil(R/CELL)+1;
-    if(ns>12) return full();
+    if(ns>12) return full('reach');
     const inNew=new Uint8Array(NFp); for(const f of fs) inNew[f]=1;
     // a long sub-face whose box is within the reach of a change: smPieces on all of it
     if(q.long.length){ const dl=[Infinity,Infinity,Infinity], dh=[-Infinity,-Infinity,-Infinity];
@@ -2503,7 +2503,7 @@ mat.onBeforeCompile=sh=>{
       for(const g of q.long){ if(!inNew[g.f]) continue;
         if(g.hi[0]+R<dl[0]||g.lo[0]-R>dh[0]||g.hi[1]+R<dl[1]||g.lo[1]-R>dh[1]||g.hi[2]+R<dl[2]||g.lo[2]-R>dh[2]) continue;
         for(const f of D){ const x=cen[f*3], y=cen[f*3+1], z=cen[f*3+2];
-          if(x>=g.lo[0]-R&&x<=g.hi[0]+R&&y>=g.lo[1]-R&&y<=g.hi[1]+R&&z>=g.lo[2]-R&&z<=g.hi[2]+R) return full(); } } }
+          if(x>=g.lo[0]-R&&x<=g.hi[0]+R&&y>=g.lo[1]-R&&y<=g.hi[1]+R&&z>=g.lo[2]-R&&z<=g.hi[2]+R) return full('long near'); } } }
     const hit=new Set(), seen=new Set();
     for(const f of D){ const ix=Math.floor(cen[f*3]/CELL), iy=Math.floor(cen[f*3+1]/CELL), iz=Math.floor(cen[f*3+2]/CELL);
       for(let a=-ns;a<=ns;a++) for(let b=-ns;b<=ns;b++) for(let c=-ns;c<=ns;c++){
@@ -2513,7 +2513,7 @@ mat.onBeforeCompile=sh=>{
     // what is asked again: the pieces near a change, as they are now, and the sub-faces that came
     const A=[]; for(const id of hit) for(const f of q.byId.get(id)) if(inNew[f]) A.push(f);
     for(const f of D) if(inNew[f]&&q.pof[f]<0) A.push(f);
-    if(A.length*5>fs.length*3) return full();
+    if(A.length*5>fs.length*3) return full('most');
     A.sort((a,b)=>a-b);
     const pcA=new Map(); for(const f of A) if(pc.has(f)) pcA.set(f,pc.get(f));
     const fresh=A.length?smPieces(P,A,pcA,null):[];
