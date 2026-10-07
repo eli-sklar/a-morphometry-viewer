@@ -347,15 +347,20 @@ function amAboutCss(){
 }
 function amAboutVer(v){
   // the main screen's line, word for word; `what` names a screen that is not the desktop app (the iPad), and a stamp
-  // without a commit (the iPad's) says none
+  // without a commit (the iPad's, a delivered file's — amAboutStamp) says none
   return 'A-morphometry'+(v.what?' · '+v.what:'')+' · גרסה '+(v.version||'?')
     +('sha' in v?' · commit '+(v.sha||'?'):'')+(v.dirty?' (עץ מלוכלך)':'')
     +(v.build_time?(' · נבנה '+v.build_time):'')
     +(v.source==='source'?' · מהמקור':'');
 }
 function amAboutStamp(){
-  // a delivered file carries the stamp of the build that wrote it; a page whose slot was never filled has none
-  try{ const s=JSON.parse(document.getElementById('amStamp').textContent); return s&&typeof s==='object'?s:null; }
+  // a delivered file carries the stamp of the build that wrote it; a page whose slot was never filled has none. Its line
+  // is the version and the build date ONLY — no commit, no tree state, no "from source" (Eli, 07/10: "מאושר"; the app
+  // itself, through /api/version, keeps the full line): only those two are taken, whatever the stamp holds
+  try{
+    const s=JSON.parse(document.getElementById('amStamp').textContent);
+    return s&&typeof s==='object'?{version:s.version,build_time:s.build_time}:null;
+  }
   catch(e){ return null; }
 }
 function amAboutMount(btn,ver){
@@ -380,7 +385,13 @@ function amAboutMount(btn,ver){
   if(btn.tagName!=='BUTTON') btn.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); btn.onclick(); } });
   document.getElementById('infoClose').onclick=close;
   M.onclick=e=>{if(e.target===M)close();};
-  window.addEventListener('keydown',e=>{if(e.key==='Escape')close();});
+  // while the box is open Esc is SWALLOWED: it closes the box and reaches none of the page's other Esc handlers (the cut
+  // screen's polygon and frame, …) — caught first, on the window in the capture phase (Eli, 07/10: "מאושר"). Closed, the
+  // key passes untouched
+  window.addEventListener('keydown',e=>{
+    if(e.key!=='Escape'||M.style.display!=='flex') return;
+    e.preventDefault(); e.stopImmediatePropagation(); close();
+  },true);
   return M;
 }
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:(($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?'});
