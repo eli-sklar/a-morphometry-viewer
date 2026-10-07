@@ -707,8 +707,8 @@ vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
 
   // 374: a volume body's shell drawn as a built surface — its own shade, contours and corner lines.
   // The colour stays the material's (the layer's, or 391's gold when the volume is selected)
-  function amSynthShell(o, P, nf){
-    const D=amSynthDecor(P, nf);
+  function amSynthShell(o, P, nf, D0){
+    const D=D0||amSynthDecor(P, nf);
     o.geometry.setAttribute('aPN',new THREE.BufferAttribute(D.pn,3));
     o.geometry.setAttribute('aBand',new THREE.BufferAttribute(D.band,1));
     const shM=o.material;
@@ -2285,6 +2285,7 @@ mat.onBeforeCompile=sh=>{
      a shared corner, or 8 cm between their edges. 382 (Eli, 30/09): levels 11-20 go on from
      level 10 to the soap film on its rim, reached at 20. */
   const SM_LAMBDA=0.5, SM_MU=-0.5, SM_PASSES=10, SM_WELD=1e-4, SM_CELL=1e-4, SM_MAXLEVEL=20, SM_SOFT=10, SM_MERGE=0.08;
+  const SM_INC_EDGE=0.12;   // 494 (2): the longest edge smPiecesInc's reach is counted in; a longer sub-face is asked apart
   const SM_FILM_ROUNDS=8, SM_CG_MAX=20000, SM_CG_TOL=1e-20, SM_EPS=1e-8, SM_WMIN=1e-3, SM_FILM_STOP=1e-7;   // 434: converged — the server solves it
   // 335: a sub-face on the line comes in by its cut part — triangles given in the sub-face's own
   // barycentrics (b1,b2 per corner, rounded as the sheet carries them); the rest come in whole
@@ -2458,6 +2459,72 @@ mat.onBeforeCompile=sh=>{
     const by=new Map(); for(let a=0;a<n;a++){ const r=find(a); if(!by.has(r)) by.set(r,[]); by.get(r).push(fs[a]); }
     return [...by.values()];
   }
+  // 494 (2) — Eli: "the brushes that work on the whole layer at every stroke". The layer's pieces (smPieces: a shared
+  // corner, or 8 cm between edges) were found again from ALL its marking after every stroke: on «קטע טוב» half a second
+  // for 86,000 sub-faces a stroke did not reach. K keeps the last answer (K.smPrev). What changed — a sub-face in one
+  // marking and not the other, or its cut part not the same — can join or split only the pieces near it: a sub-face
+  // whose corners or rim change shares a corner with a changed one, and what it may then meet shares a corner with it
+  // or is within 8 cm. With every edge on that chain no longer than SM_INC_EDGE, all of it lies within four such edges
+  // and 8 cm of a changed sub-face — a piece with nothing there is the same piece, and is kept; the rest, with the new
+  // sub-faces, go through smPieces itself, and the pieces come back in its order (by their first sub-face). A longer
+  // sub-face (a patch's, a large scan face) is asked apart, by its box, as the red's long faces are (ccLongFaces): one
+  // near a change, or a change that is one, and it is smPieces on all of it, as before. So too a reach of more than
+  // 12 cells, a third of the marking changed, more than 2,000 long sub-faces, or no last answer.
+  function smPiecesInc(K,P,faces,pc,memoFor){
+    const fs=Array.from(faces).sort((a,b)=>a-b), q=K.smPrev, NFp=(P.length/9)|0, LC=SM_INC_EDGE;
+    const edge=f=>{ const o=f*9; return Math.max(Math.hypot(P[o+3]-P[o],P[o+4]-P[o+1],P[o+5]-P[o+2]),
+      Math.hypot(P[o+6]-P[o+3],P[o+7]-P[o+4],P[o+8]-P[o+5]),Math.hypot(P[o]-P[o+6],P[o+1]-P[o+7],P[o+2]-P[o+8])); };
+    const box=f=>{ const o=f*9, lo=[Infinity,Infinity,Infinity], hi=[-Infinity,-Infinity,-Infinity];
+      for(let c=0;c<3;c++) for(let k=0;k<3;k++){ lo[k]=Math.min(lo[k],P[o+c*3+k]); hi[k]=Math.max(hi[k],P[o+c*3+k]); } return {f:f,lo:lo,hi:hi}; };
+    const store=(out,long,pof,byId,seq)=>{ K.smPrev={P:P, F:Int32Array.from(fs), pc:new Map(pc), out:out, long:long, pof:pof, byId:byId, seq:seq}; return out.map(p=>p.slice()); };
+    const full=()=>{ K.smPrevFull=(K.smPrevFull||0)+1;
+      const out=fs.length?smPieces(P,fs,pc,memoFor?memoFor(fs,pc):null):[];   // as before 494: its mesh kept in the screen's memo (an undo finds it)
+      const long=[]; for(const f of fs) if(edge(f)>LC) long.push(box(f));
+      const pof=new Int32Array(NFp).fill(-1), byId=new Map(); let seq=0;
+      for(const p of out){ const id=seq++; byId.set(id,p); for(const f of p) pof[f]=id; }
+      return store(out,long,pof,byId,seq); };
+    if(!q||q.P!==P||q.pof.length!==NFp||!fs.length||typeof grid==='undefined'||typeof cen==='undefined') return full();
+    const same=(a,b)=>{ if(!a||!b) return !a&&!b; if(a.length!==b.length) return false; for(let k=0;k<a.length;k++) if(a[k]!==b[k]) return false; return true; };
+    const F0=q.F, D=[]; let i=0, j=0;
+    while(i<F0.length||j<fs.length){ const a=i<F0.length?F0[i]:Infinity, b=j<fs.length?fs[j]:Infinity;
+      if(a<b){ D.push(a); i++; } else if(b<a){ D.push(b); j++; }
+      else { if((q.pc.has(a)||pc.has(a))&&!same(q.pc.get(a),pc.get(a))) D.push(a); i++; j++; } }
+    if(!D.length){ K.smPrevKept=(K.smPrevKept||0)+1; return store(q.out,q.long,q.pof,q.byId,q.seq); }
+    if(D.length*3>fs.length||q.long.length>2000) return full();
+    for(const f of D) if(edge(f)>LC) return full();                 // a long sub-face came, went or changed
+    // every changed sub-face must be in the screen's grid, in its own cell — the grid is what finds what is near
+    for(const f of D){ const G=grid.get(ckey(Math.floor(cen[f*3]/CELL),Math.floor(cen[f*3+1]/CELL),Math.floor(cen[f*3+2]/CELL))); if(!G||G.indexOf(f)<0) return full(); }
+    const R=4*LC+SM_MERGE+1e-3, ns=Math.ceil(R/CELL)+1;
+    if(ns>12) return full();
+    const inNew=new Uint8Array(NFp); for(const f of fs) inNew[f]=1;
+    // a long sub-face whose box is within the reach of a change: smPieces on all of it
+    if(q.long.length){ const dl=[Infinity,Infinity,Infinity], dh=[-Infinity,-Infinity,-Infinity];
+      for(const f of D) for(let k=0;k<3;k++){ dl[k]=Math.min(dl[k],cen[f*3+k]); dh[k]=Math.max(dh[k],cen[f*3+k]); }
+      for(const g of q.long){ if(!inNew[g.f]) continue;
+        if(g.hi[0]+R<dl[0]||g.lo[0]-R>dh[0]||g.hi[1]+R<dl[1]||g.lo[1]-R>dh[1]||g.hi[2]+R<dl[2]||g.lo[2]-R>dh[2]) continue;
+        for(const f of D){ const x=cen[f*3], y=cen[f*3+1], z=cen[f*3+2];
+          if(x>=g.lo[0]-R&&x<=g.hi[0]+R&&y>=g.lo[1]-R&&y<=g.hi[1]+R&&z>=g.lo[2]-R&&z<=g.hi[2]+R) return full(); } } }
+    const hit=new Set(), seen=new Set();
+    for(const f of D){ const ix=Math.floor(cen[f*3]/CELL), iy=Math.floor(cen[f*3+1]/CELL), iz=Math.floor(cen[f*3+2]/CELL);
+      for(let a=-ns;a<=ns;a++) for(let b=-ns;b<=ns;b++) for(let c=-ns;c<=ns;c++){
+        const key=ckey(ix+a,iy+b,iz+c); if(seen.has(key)) continue; seen.add(key);
+        const G=grid.get(key); if(!G) continue;
+        for(const g of G){ const id=q.pof[g]; if(id>=0) hit.add(id); } } }
+    // what is asked again: the pieces near a change, as they are now, and the sub-faces that came
+    const A=[]; for(const id of hit) for(const f of q.byId.get(id)) if(inNew[f]) A.push(f);
+    for(const f of D) if(inNew[f]&&q.pof[f]<0) A.push(f);
+    if(A.length*5>fs.length*3) return full();
+    A.sort((a,b)=>a-b);
+    const pcA=new Map(); for(const f of A) if(pc.has(f)) pcA.set(f,pc.get(f));
+    const fresh=A.length?smPieces(P,A,pcA,null):[];
+    const pof=q.pof, byId=q.byId; let seq=q.seq;
+    for(const id of hit){ for(const f of byId.get(id)) pof[f]=-1; byId.delete(id); }
+    for(const f of D) pof[f]=-1;
+    for(const p of fresh){ const id=seq++; byId.set(id,p); for(const f of p) pof[f]=id; }
+    const out=[...byId.values()].sort((a,b)=>a[0]-b[0]);
+    K.smPrevLocal=(K.smPrevLocal||0)+1; K.smPrevAsked=A.length;
+    return store(out,q.long.filter(g=>inNew[g.f]),pof,byId,seq);
+  }   // 494 (2)
   /* ---- end 329 core ---------------------------------------------------------------------- */
   // 329: the regions, their copies on the screen, and the brush that marks them
   const AM_SMOOTH='smooth';
@@ -2489,8 +2556,23 @@ mat.onBeforeCompile=sh=>{
     return {faces:fs, pc:pc}; }
   // 382: the copy's mesh, its level 10 and its film, kept per marking — the wheel turns over them
   const smMemoC=new Map();
-  function smMemoFor(faces,pc){ const k=faces.join(',')+'|'+(pc&&pc.size?JSON.stringify([...pc]):'');
-    let m=smMemoC.get(k); if(!m){ if(smMemoC.size>=48) smMemoC.clear(); m={}; smMemoC.set(k,m); } return m; }
+  function smMemoFor(faces,pc){ const k=smMemoKey(faces,pc);
+    let m=smMemoC.get(k.k); if(m&&!smMemoSame(m.key,k)) m=null;
+    if(!m){ if(smMemoC.size>=48) smMemoC.clear(); m={key:k}; smMemoC.set(k.k,m); } return m; }
+  // 494 (2): the memo's key — the faces in their order and the cut parts in theirs, as the text of them all joined
+  // was (a string of every face number, built at every call), hashed; the entry keeps the sequence, so a hit is checked
+  function smMemoKey(faces,pc){
+    let h=2166136261>>>0; const mix=v=>{ h=Math.imul(h^(v|0),16777619)>>>0; };
+    const F=Int32Array.from(faces); for(let i=0;i<F.length;i++) mix(F[i]);
+    const C=[]; if(pc&&pc.size) for(const [f,bb] of pc){ mix(f); C.push(f,bb.length); for(const b of bb){ mix(Math.round(b*1e4)); C.push(b); } }
+    return {k:h+':'+F.length+':'+C.length, F:F, C:C};
+  }
+  function smMemoSame(a,b){
+    if(!a||a.F.length!==b.F.length||a.C.length!==b.C.length) return false;
+    for(let i=0;i<a.F.length;i++) if(a.F[i]!==b.F[i]) return false;
+    for(let i=0;i<a.C.length;i++) if(a.C[i]!==b.C[i]) return false;
+    return true;
+  }
   function smMemoOf(r){ return smMemoFor(r.faces,r.pc); }
   /* 385 (Eli, 30/09, option א): the film of a large region is built in the background — the screen
      does not stop; until it is ready the region shows level 10 and the bar says "בונה משטח מוחלק…".
@@ -2596,7 +2678,7 @@ mat.onBeforeCompile=sh=>{
     // a region whose faces, cuts and level did not change keeps the copy it has (373 ב)
     const keep=new Map(); for(const r of SMR) if(r.at===T.id&&r.X) keep.set(smSig(r),r);
     for(let i=SMR.length-1;i>=0;i--) if(SMR[i].at===T.id) SMR.splice(i,1);
-    if(lv&&M.faces.length) for(const piece of smPieces(pos,M.faces,M.pc,smMemoFor(M.faces,M.pc))){
+    if(lv&&M.faces.length) for(const piece of smPiecesInc(T,pos,M.faces,M.pc,smMemoFor)){   // 494 (2): only near what the stroke changed
       const pc=new Map(); for(const f of piece) if(M.pc.has(f)) pc.set(f,M.pc.get(f));
       // a speck under SM_TINY stays the brush's — the report's own threshold puts it with the small patches
       let pa=0; for(const f of piece){ const bb=pc.get(f); pa+=bb?area[f]*Math.min(1,smFrac(bb)):area[f]; } if(pa<SM_TINY) continue;
@@ -2759,11 +2841,11 @@ float amStippleA(float a, float lvl){
   return mix(a,(a>t)?1.0:0.0,lvl);
 }
 `;
-  function amShellMesh(P, hex, op, des){
+  function amShellMesh(P, hex, op, des, D){
     const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(P,3));
     const o=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:hex, side:THREE.DoubleSide,
       transparent:op<0.999||des>0.001, opacity:op, depthWrite:op>=0.999&&!(des>0.001)}));
-    amSynthShell(o, P, P.length/9); amShellDes(o, des); amShellLines(o);
+    amSynthShell(o, P, P.length/9, D); amShellDes(o, des); amShellLines(o);   // 494 (2): D — its shading, when it is known
     return o;
   }
   function amShellDes(o, des){
@@ -2787,6 +2869,17 @@ float amStippleA(float a, float lvl){
     return L;
   }
   // the layer's colour, opacity and design on its copies, in place (the design wheel, 93)
+  const smDrawC=new WeakMap();   // 494 (2): a copy's drawing, kept with its corners (smDrawOf)
+  // 494 (2): a region's copy, as it is drawn — kept with its corners (r.X, the same array while the copy is kept)
+  function smDrawOf(r){
+    const c=smDrawC.get(r.X); if(c&&c.T===r.T) return {XP:c.XP, L:c.L, D:{pn:c.D.pn.slice(), band:c.D.band.slice(), edges:c.D.edges.slice()}};
+    const nt=r.T.length, XP=new Float32Array(nt*3);
+    for(let k=0;k<nt;k++){ const v=r.T[k]*3; XP[k*3]=r.X[v]; XP[k*3+1]=r.X[v+1]; XP[k*3+2]=r.X[v+2]; }
+    const D=amSynthDecor(XP,nt/3);
+    const L=smRim(r.X,r.T);              // 383: the copy's rim
+    smDrawC.set(r.X,{T:r.T, XP:XP, L:L, D:{pn:D.pn.slice(), band:D.band.slice(), edges:D.edges.slice()}});
+    return {XP:XP, L:L, D:D};
+  }
   function smRecolor(){
     for(const o of smGroup.children.concat(polyGroup.children)){ const at=o.userData&&o.userData.smAt; if(!at) continue;   // and the polygons' fills
       const T=types.find(t=>t.id===at); if(!T) continue;
@@ -2810,13 +2903,14 @@ float amStippleA(float a, float lvl){
       num[r.at]=(num[r.at]||0)+1;
       if(amHidOf(types,r.at)||!r.T||!r.T.length) continue;
       const col=new THREE.Color(T.hex||'#38b000');
-      const nt=r.T.length, XP=new Float32Array(nt*3);
-      for(let k=0;k<nt;k++){ const v=r.T[k]*3; XP[k*3]=r.X[v]; XP[k*3+1]=r.X[v+1]; XP[k*3+2]=r.X[v+2]; }
-      const mm=amShellMesh(XP,col,(typeof T.op==='number')?T.op:0.75,(typeof T.design==='number')?T.design:0.6); mm.userData.smAt=r.at; mm.userData.smShell=true;   // 437 · 448
+      // 494 (2): a copy that did not change keeps what it is drawn from — its triangles, their shading (amSynthDecor) and
+      // its rim — and every object is built again, in this order, as before; it was all computed again for every copy
+      const W=smDrawOf(r);
+      const mm=amShellMesh(W.XP.slice(),col,(typeof T.op==='number')?T.op:0.75,(typeof T.design==='number')?T.design:0.6,W.D); mm.userData.smAt=r.at; mm.userData.smShell=true;   // 437 · 448
       smGroup.add(mm);
       // 383 (Eli, 30/09): the copy's rim, a thin opaque line in the layer's tone — drawn over the
       // model, as a polygon's outline is, so the edge reads where the model shows through
-      { const L=smRim(r.X,r.T);
+      { const L=W.L;
         if(L.length){ const lg=new THREE.BufferGeometry(); lg.setAttribute('position',new THREE.BufferAttribute(Float32Array.from(L),3));
           const ln=new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:col,depthTest:false,transparent:true,opacity:1}));
           ln.userData.smLine=r.at; ln.userData.smReg=r; ln.renderOrder=999; smGroup.add(ln); } }
