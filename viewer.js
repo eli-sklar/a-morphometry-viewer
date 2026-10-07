@@ -984,7 +984,7 @@ vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
   // screen." Below 100 the material turns transparent; at 100 it goes back to opaque,
   // because a transparent material sorts per object and would cost for nothing.
   function amApplyClear(pct){
-    const v=Math.max(0.05,Math.min(1,pct/100));
+    const v=Math.max(0,Math.min(1,pct/100));                 // 495: 0–100
     const ms=Array.isArray(mesh.material)?mesh.material:[mesh.material];
     for(const m of ms){ m.transparent=(v<0.999); m.opacity=v;
                         m.depthWrite=(v>=0.999); m.needsUpdate=true; }
