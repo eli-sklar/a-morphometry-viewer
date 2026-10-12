@@ -474,9 +474,186 @@ $('file').addEventListener('change',e=>{
       .catch(ex=>amTell('טעינת הגיליון נכשלה:\n'+((ex&&ex.message)||ex)));
     return;
   }
-  f.arrayBuffer().then(load).catch(ex=>{$('err').textContent='שגיאה: '+ex.message;});
+  // 484: the planimeter while the file is read and the work built — the build itself holds the page, so the
+  // drawing may stand still for its length; it is on the screen from the moment the file is chosen
+  const veil=$('amLoad'), hide=()=>{ veil.style.display='none'; };
+  $('amLoadMsg').textContent='פותח את העבודה…'; veil.style.display='flex';
+  if(window.__pmStart) window.__pmStart('פותח את העבודה',{size:f.size/1048576});
+  f.arrayBuffer().then(buf=>new Promise(res=>requestAnimationFrame(()=>requestAnimationFrame(()=>res(buf)))))
+    .then(buf=>{ load(buf); if(window.__pmFinish) window.__pmFinish(hide); else hide(); })
+    .catch(ex=>{ if(window.__pmStop) window.__pmStop(); hide(); $('err').textContent='שגיאה: '+ex.message;});
 });
 if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+function amPlanimeterMarkup(){
+  // the logo's A, written counter-clockwise (decision 350): a polar planimeter reads a
+  // positive area only when the outline is traced in the positive sense. The outline is
+  // written here once and drawn twice — the faint shape and the tracer's line (S2 reads it here)
+  const OUTLINE='M118,60 C112,60 110,64 106,74 C90,108 72,162 58,206 C50,230 38,254 44,266 C50,276 76,272 82,258 C90,238 92,212 100,190 C108,174 134,176 140,190 C148,212 150,238 156,260 C162,274 186,278 194,270 C200,262 186,250 178,232 C164,200 154,166 146,134 C138,104 132,74 118,60 Z';
+  return '<style>'
+    +'#planim{margin-bottom:-6px;max-height:42vh}'   // 358: in a short window the centred column pushed the drawing off the top
+    +'#pmCount{font:500 22px/1 ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;color:var(--amber);letter-spacing:.06em;text-align:center;direction:rtl}'
+    +'#pmCount .u{font:400 14px var(--sans);color:var(--dim);letter-spacing:0}'
+    +'#pmNum{display:inline-block;min-width:5ch}'
+    +'</style>'
+    +'<svg id="planim" viewBox="0 0 330 300" width="286" height="260">'
+    +'<path id="pmBlob" fill="#d8cdb8" fill-opacity=".13" stroke="#6b5f4c" stroke-width="2.4" stroke-linejoin="round" d="'+OUTLINE+'"/>'
+    +'<path id="pmTrace" fill="none" stroke="var(--amber)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" d="'+OUTLINE+'"/>'
+    +'<line id="pmA1" stroke="var(--amber)" stroke-width="3" stroke-linecap="round"/>'
+    +'<line id="pmA2" stroke="var(--amber)" stroke-width="3" stroke-linecap="round"/>'
+    +'<g id="pmCar">'
+    +'<rect x="-20" y="-6" width="40" height="12" rx="1.5" fill="var(--bg)" stroke="var(--amber)" stroke-width="2.4"/>'
+    +'<g id="pmG1"></g><g id="pmG2"></g>'
+    +'</g>'
+    +'<circle cx="300" cy="220" r="13" fill="var(--amber)"/>'
+    +'<circle cx="300" cy="220" r="7" fill="none" stroke="var(--bg)" stroke-width="2"/>'
+    +'<circle id="pmEl" r="9" fill="var(--bg)" stroke="var(--amber)" stroke-width="3"/>'
+    +'<circle id="pmTp" r="5.5" fill="#e9e0cd"/>'
+    +'</svg>'
+    +'<div id="pmCount"><span id="pmNum" dir="ltr">0.0</span> <span class="u">מילימטר רבוע</span></div>';
+}
+// The polar planimeter (decisions 350–351). The logo's A is traced once, counter-clockwise,
+// so the instrument reads a positive area. The elbow is solved by real inverse kinematics on
+// one fixed branch; the measuring wheel sits on the tracer arm with its axle along the arm,
+// so it turns only by the component of its own motion perpendicular to the arm, and the
+// counting gear is meshed to it by the tooth ratio. Around the closed outline the wheel's net
+// roll s gives the area as L2·s (Amsler: pole outside, neither arm makes a full turn), and the
+// counter shows exactly that — midway it is an instrument reading, not a partial area.
+// Pole, arm lengths and branch were searched so every point of the A is reachable with a wide
+// margin from the straight-arm singularities and the elbow never leaves the canvas; S2 re-runs
+// the linkage from these constants and checks the reading against the shoelace area.
+function amPlanimeterMount(host){
+  if(!host){console.warn('planimeter: no host element');return;}
+  if(!document.getElementById('planim')) host.innerHTML=amPlanimeterMarkup();
+  host.style.display='contents';                        // the drawing and the counter stay items of the veil's own column
+  const path=document.getElementById('pmBlob');
+  if(!path){console.warn('planimeter: #pmBlob missing');return;}
+  const $$=id=>document.getElementById(id), NS='http://www.w3.org/2000/svg';
+  const trace=$$('pmTrace'), a1=$$('pmA1'), a2=$$('pmA2'), el=$$('pmEl'), tp=$$('pmTp'),
+        car=$$('pmCar'), g1=$$('pmG1'), g2=$$('pmG2'), cnt=$$('pmNum'), svg=$$('planim');
+  const P={x:300,y:220}, L1=184, L2=186, BR=1;          // pole, pole arm, tracer arm, elbow branch
+  const CAR=44;                                         // carriage centre: distance from the elbow along the tracer arm
+  const MOD=1.4, TOOTH=3, NW=7, NC=14;                  // module, tooth length, teeth: measuring wheel, counting gear
+  const RW=MOD*NW/2, RC=MOD*NC/2, XW=(RW+RC)/2, GY=-15; // pitch radii; gear centres in the carriage frame
+  const CW=CAR-XW;                                      // the wheel's contact point on the arm, from the elbow
+  function gear(g,N,R,x){                               // the logo's gear: a ring, radial teeth, a hub
+    g.innerHTML='';
+    const w=document.createElementNS(NS,'g'); w.setAttribute('transform','translate('+x+' '+GY+')'); g.appendChild(w);
+    const r=document.createElementNS(NS,'g'); w.appendChild(r);
+    const add=(t,at)=>{const e=document.createElementNS(NS,t);for(const k in at)e.setAttribute(k,at[k]);r.appendChild(e);};
+    const r0=R-TOOTH/2;
+    add('circle',{r:r0,fill:'var(--bg)',stroke:'var(--amber)','stroke-width':2.2});
+    add('circle',{r:Math.max(0.9,r0*0.22),fill:'var(--amber)'});
+    for(let k=0;k<N;k++){const a=2*Math.PI*k/N, c=Math.cos(a), s=Math.sin(a);
+      add('line',{x1:r0*c,y1:r0*s,x2:(r0+TOOTH)*c,y2:(r0+TOOTH)*s,stroke:'var(--amber)','stroke-width':2.2,'stroke-linecap':'round'});}
+    return r;
+  }
+  const rotW=gear(g1,NW,RW,XW), rotC=gear(g2,NC,RC,-XW);   // wheel on the elbow side, counter on the tracer side (as in the logo)
+  const L=path.getTotalLength();
+  function pose(T){                                     // tracer point -> elbow, unit tracer arm (elbow->tracer)
+    const dx=T.x-P.x, dy=T.y-P.y, d=Math.hypot(dx,dy)||1e-6;
+    const a=(L1*L1-L2*L2+d*d)/(2*d), h=Math.sqrt(Math.max(L1*L1-a*a,0));
+    const E={x:P.x+a*dx/d-BR*h*dy/d, y:P.y+a*dy/d+BR*h*dx/d};
+    return {E, u:{x:(T.x-E.x)/L2, y:(T.y-E.y)/L2}};
+  }
+  // the wheel's roll along the whole loop, once: ds = dW·n, with n the arm's normal in the
+  // mathematical frame (y up). Per frame the roll is read from this table by arc length.
+  const K=2400, S=new Float64Array(K+1);
+  { let prev=null;
+    for(let i=0;i<=K;i++){
+      const T=path.getPointAtLength(Math.min(L*i/K,L)), q=pose(T), W={x:q.E.x+CW*q.u.x, y:q.E.y+CW*q.u.y};
+      S[i]= i? S[i-1] + ((W.x-prev.W.x)*prev.n.x - (W.y-prev.W.y)*prev.n.y + (W.x-prev.W.x)*q.u.y - (W.y-prev.W.y)*q.u.x)/2 : 0;
+      prev={W, n:{x:q.u.y, y:q.u.x}};
+    }
+  }
+  const roll=f=>{const x=Math.max(0,Math.min(1,f))*K, i=Math.min(K-1,Math.floor(x)); return S[i]+(S[i+1]-S[i])*(x-i);};
+  trace.style.strokeDasharray=L; trace.style.strokeDashoffset=L;
+  // the reading in square millimetres of the A as drawn: drawing units -> CSS px -> CSS mm
+  // (a CSS mm is 96/25.4 px by definition; on a screen scaled other than 100% the ruler differs)
+  const MM=svg.width.baseVal.value/svg.viewBox.baseVal.width*25.4/96;
+  const set=(e,at)=>{for(const k in at)e.setAttribute(k,at[k]);};
+  function draw(f){
+    const T=path.getPointAtLength(f*L), q=pose(T), E=q.E, u=q.u, s=roll(f);
+    set(a1,{x1:P.x,y1:P.y,x2:E.x,y2:E.y});
+    set(a2,{x1:E.x-16*u.x,y1:E.y-16*u.y,x2:T.x,y2:T.y});            // the arm runs a little past the elbow, as in the logo
+    set(el,{cx:E.x,cy:E.y}); set(tp,{cx:T.x,cy:T.y});
+    const C={x:E.x+CAR*u.x, y:E.y+CAR*u.y}, psi=Math.atan2(-u.y,-u.x)*180/Math.PI;
+    car.setAttribute('transform','translate('+C.x+' '+C.y+') rotate('+psi+')');
+    const tw=s/RW, tc=Math.PI/NC-(NW/NC)*(tw-Math.PI);           // rolling contact at the pitch circles, teeth in mesh
+    rotW.setAttribute('transform','rotate('+(tw*180/Math.PI)+')');
+    rotC.setAttribute('transform','rotate('+(tc*180/Math.PI)+')');
+    trace.style.strokeDashoffset=L*(1-f);
+    cnt.textContent=(L2*s*MM*MM).toFixed(1);
+  }
+  // progress (351): the server reports none. The pace (352): one loop per operation at an even
+  // speed, reaching 95% at the expected time. That time is the server's own estimate where
+  // there is one; otherwise this machine's last runs of the same kind — the median time per
+  // face (per MB while a scan is taken in) times the size now. With neither, the old curve:
+  // quick at first and never past 92%. A run longer than expected keeps creeping, never
+  // stopping and never closing the loop; when the work ends the rest is traced at the same
+  // pace, within 2 s, and the final reading holds for a moment. Only successes are recorded.
+  const TAU=8000, CAP=0.92, LEAD=0.95, HOLD=300, STORE='amPmTimes', KEEP=8;
+  const kindOf=m=>String(m||'').replace(/[:(].*$/,'').replace(/[\d.,]+/g,'').replace(/…/g,'').trim();
+  const sizeNow=o=>{ if(o&&o.size>0) return o.size; try{ return NSCAN>0?NSCAN:0; }catch(_){ return 0; } };
+  const past=()=>{ try{ return JSON.parse(localStorage.getItem(STORE)||'{}')||{}; }catch(_){ return {}; } };
+  function expect(kind,size){
+    const h=past()[kind]; if(!Array.isArray(h)||!h.length) return 0;
+    const r=h.map(x=>size>0&&x.z>0? x.ms*size/x.z : x.ms).filter(v=>v>0).sort((a,b)=>a-b);
+    return r.length? r[r.length>>1] : 0;
+  }
+  function record(run,ms){
+    if(!run.kind) return;
+    try{ const all=past(); all[run.kind]=(Array.isArray(all[run.kind])?all[run.kind]:[]).concat([{ms:Math.round(ms),z:run.size}]).slice(-KEEP);
+         localStorage.setItem(STORE,JSON.stringify(all)); }catch(_){}
+  }
+  let raf=null, run={t0:0,T:0,kind:'',size:0}, fin=null, fall=null, prog=null;
+  const runF=t=>!run.T? CAP*t/(t+TAU)
+                : t<=run.T? LEAD*t/run.T : LEAD+(1-LEAD)*0.8*(1-Math.exp(-(t-run.T)/run.T));
+  // 468: a REAL fraction (the map's cut reports its stages and tiles). The tracer catches up
+  // with the reported fraction quickly, then creeps toward the next expected value — at most
+  // most of the way to it, never past it, and never back. The time pace above is not used then.
+  const CATCH=350, CREEP=9000, REACH=0.9;
+  function progF(ms){
+    const dt=prog.t? Math.max(0,Math.min(250,ms-prog.t)) : 0; prog.t=ms;
+    const behind=prog.shown<prog.f-1e-4, goal=behind? prog.f : prog.f+REACH*(prog.next-prog.f);
+    if(goal>prog.shown) prog.shown+=(goal-prog.shown)*(1-Math.exp(-dt/(behind?CATCH:CREEP)));
+    return prog.shown;
+  }
+  function frame(ms){
+    let f;
+    if(!fin) f=prog? progF(ms) : runF(ms-run.t0);
+    else{ const x=Math.min(1,(ms-fin.t)/fin.dur); f=fin.f0+(1-fin.f0)*(run.T? x : 1-Math.pow(1-x,3));
+      if(ms-fin.t>=fin.dur+HOLD){ draw(1); const cb=fin.cb; stop(); cb(); return; } }
+    draw(f); raf=requestAnimationFrame(frame);
+  }
+  function stop(){ if(raf){cancelAnimationFrame(raf); raf=null;} clearTimeout(fall); fin=null; prog=null; }
+  draw(0);
+  window.__pmStart=(msg,opt)=>{
+    if(raf&&!fin) return;
+    stop();
+    const kind=kindOf(msg), size=sizeNow(opt), est=opt&&opt.est>0? opt.est*1000 : 0;
+    run={t0:performance.now(), T:est||expect(kind,size), kind, size};
+    if(opt&&opt.progress){ run.T=0; prog={f:0,next:0,shown:0,t:0}; }   // 468: driven by __pmProgress, not by the clock
+    draw(0); raf=requestAnimationFrame(frame);
+  };
+  // 468: the work's own fraction (0..1), and where its next report is expected to land
+  window.__pmProgress=(frac,next)=>{
+    if(!raf||fin) return;
+    const f=Math.max(0,Math.min(1,+frac||0)), nx=Math.max(f,Math.min(1,+next||0));
+    if(!prog) prog={f:0,next:0,shown:runF(performance.now()-run.t0),t:0};
+    prog.f=Math.max(prog.f,f); prog.next=Math.max(prog.next,nx,prog.f);
+  };
+  window.__pmStop=stop;                                           // don't burn CPU when hidden
+  window.__pmFinish=cb=>{
+    if(!raf||fin){ stop(); cb(); return; }
+    const now=performance.now(), f0=prog? prog.shown : runF(now-run.t0);
+    if(!prog) record(run, now-run.t0);                             // a run driven by real progress teaches the pace nothing
+    const dur=run.T? Math.max(250,Math.min(1700,(1-f0)*run.T/LEAD)) : 400+1300*(1-f0);
+    fin={t:now, f0, dur, cb};
+    fall=setTimeout(()=>{ if(fin&&fin.cb===cb){ stop(); cb(); } }, dur+HOLD+400);   // a throttled frame loop must not keep the screen shut
+  };
+  window.__pmModel={P,L1,L2,BR,CW,MM,len:L,roll:()=>roll(1),run:()=>run,pace:t=>runF(t),expect,kindOf,prog:()=>prog};         // for the QA layer and for inspection
+}
+amPlanimeterMount($('pmHost'));   // 484
 const STANDALONE=matchMedia('(display-mode: standalone)').matches||!!navigator.standalone;
 // installed (home-screen) mode is always fullscreen — the button only serves browser tabs
 if(STANDALONE) $('mFull').style.display='none';
@@ -3726,6 +3903,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     amPanBy(dmx,dmy,amWorldPerPx(amPinchH?amDepthOf(amPinchH):dist));
   }  const AM_NAV_R=()=>bs.radius;   // 379: the model's radius, for the walk's floor
   const AM_YAW_SIGN=1;
+  const AM_PITCH_SIGN=1, AM_NAV_LOCKED=()=>false;   // 483
   /*AM_NAV361_START*/
   // 361 (Eli, 29/09): two more ways to move, in the navigation mode. Shift+wheel turns the
   // view IN PLACE — the camera stands and the gaze swings about the upright axis through it
@@ -3779,6 +3957,65 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(amSpace){ amWalk(e,-Math.sign(d)*Math.max(AM_WALK_STEP,AM_WALK_MIN*AM_NAV_R()/Math.max(dist,1e-9))); return true; }
     return false;
   }
+  // 483 (Eli, 12/10): "חץ לבד מסובב את המבט בכיוון (כמו ALT+גלגלת) — ימינה, שמאלה, למטה ולמעלה. חץ + רווח הולך
+  // בכיוון החץ — ימינה, שמאלה, למטה ולמעלה (קדימה ואחורה זה גלגלת + רווח, כמו היום)". A tap is one wheel step; held,
+  // the view moves on, slowly (Eli: "15 מעלות לשנייה עם הגברה ל-30 אחרי שנייה") — the walk in the same measure of
+  // steps. Not while a field takes the keys (text, a slider, a choice), and not while the view is locked
+  const AM_ARROW_TPS=6, AM_ARROW_BOOST=2, AM_ARROW_BOOST_AT=1000;   // 6 steps of 2.5° a second = 15°/s, twice that after a second
+  let amArrow=null;
+  function amPitchInPlace(dPol){
+    const c=camera.position.clone(); pol+=dPol*AM_PITCH_SIGN; amApply();
+    target.add(c.sub(camera.position)); amApply(); amWheel=null;
+  }
+  function amStrafe(sx,sy,f){
+    camera.updateMatrixWorld(); const d=new THREE.Vector3(); camera.getWorldDirection(d);
+    const right=new THREE.Vector3().crossVectors(d,camera.up).normalize();
+    const up=new THREE.Vector3().crossVectors(right,d).normalize();
+    target.addScaledVector(right,sx*f*dist).addScaledVector(up,sy*f*dist); amApply(); amWheel=null;
+  }
+  function amArrowMove(sx,sy){
+    if(amSpace){ amStrafe(sx,sy,Math.max(AM_WALK_STEP,AM_WALK_MIN*AM_NAV_R()/Math.max(dist,1e-9))); return; }
+    if(sx) amYawInPlace(-sx*AM_YAW_STEP);
+    if(sy) amPitchInPlace(sy*AM_YAW_STEP);
+  }
+  function amArrowFrame(now){
+    if(!amArrow) return;
+    const dt=Math.min(0.1,Math.max(0,(now-amArrow.last)/1000)); amArrow.last=now;
+    if(!AM_NAV_LOCKED()){
+      let sx=0, sy=0;
+      for(const s of amArrow.keys.values()){
+        const n=AM_ARROW_TPS*(now-s.t0>=AM_ARROW_BOOST_AT?AM_ARROW_BOOST:1)*dt;
+        s.moved+=n; sx+=s.v[0]*n; sy+=s.v[1]*n; }
+      if(sx||sy) amArrowMove(sx,sy);
+    }
+    amArrow.raf=requestAnimationFrame(amArrowFrame);
+  }
+  function amArrowKey(e,down){
+    const v={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,1],ArrowDown:[0,-1]}[e.key];
+    if(!v) return false;
+    if(down){
+      if(e.ctrlKey||e.metaKey||e.altKey||e.shiftKey) return false;
+      const t=e.target;
+      if(amTyping(t)||(t&&t.tagName==='INPUT'&&/^(range|radio)$/i.test(t.type||''))) return false;
+      if(AM_NAV_LOCKED()) return false;
+      const now=performance.now();
+      if(!amArrow) amArrow={keys:new Map(), last:now, raf:0};
+      if(!amArrow.keys.has(e.key)) amArrow.keys.set(e.key,{v:v,t0:now,moved:0});
+      if(!amArrow.raf) amArrow.raf=requestAnimationFrame(amArrowFrame);
+      return true;
+    }
+    if(!amArrow||!amArrow.keys.has(e.key)) return false;
+    const s=amArrow.keys.get(e.key); amArrow.keys.delete(e.key);
+    if(s.moved<1&&!AM_NAV_LOCKED()) amArrowMove(s.v[0]*(1-s.moved),s.v[1]*(1-s.moved));   // a tap is one wheel step
+    if(!amArrow.keys.size) amArrowStop();
+    return true;
+  }
+  function amArrowStop(){ if(amArrow){ cancelAnimationFrame(amArrow.raf); amArrow=null; } }
+  window.addEventListener('keydown',e=>{ if(amArrowKey(e,true)) e.preventDefault(); },true);
+  window.addEventListener('keyup',e=>{ if(amArrowKey(e,false)) e.preventDefault(); },true);
+  window.addEventListener('blur',()=>{ amArrowStop(); });
+  window.amArrowKey=amArrowKey;   // the outer page hands the keys to the frame on screen (as Ctrl+Z)
+  window.amSpaceHeld=v=>{ amSpace=!!v; };   // and the held Space with them — its keydown never reaches the frame
   /*AM_NAV361_END*/
 
   // Is the press ON the model, or in empty space?
