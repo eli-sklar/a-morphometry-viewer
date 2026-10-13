@@ -395,6 +395,79 @@ function amAboutMount(btn,ver){
   return M;
 }
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:(($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?'});
+/* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
+   keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
+   rule: never on its own at start). Six fields — ours (locked until a finger, 453), the same outside our lock, a textarea,
+   a clean document, outside the lock with the page's own lock released, contenteditable — and for each the pointer, the
+   lock, the focus and whether the keyboard docked (a docked keyboard shortens visualViewport, a floating one does not).
+   "העתק" copies the log for the chat. The version after it takes this out, with the fix. */
+(function amKbDiag(){
+  const M=document.getElementById('infoModal'); if(!M) return;
+  const box=M.querySelector('.box')||M.firstElementChild; if(!box) return;
+  const btnCss='background:#232019;color:#d8cdb8;border:1px solid #6b5a33;border-radius:2px;padding:8px 14px;font-size:14px';
+  const b=document.createElement('button'); b.id='amKbBtn'; b.textContent='בדיקת מקלדת'; b.style.cssText='margin-top:12px;'+btnCss;
+  box.appendChild(b); b.onclick=()=>{ M.style.display='none'; openCheck(); };
+  function openCheck(){
+    const L=[], vv=window.visualViewport;
+    const mm=q=>{ try{ return matchMedia(q).matches?1:0; }catch(_){ return '?'; } };
+    L.push('v='+((($('ver')||{}).textContent)||'?')+' | ua='+navigator.userAgent+' | standalone='+(navigator.standalone?1:0)
+      +' display='+(mm('(display-mode: standalone)')?'standalone':'browser')+' | touch='+(navigator.maxTouchPoints||0)
+      +' anyFine='+mm('(any-pointer: fine)')+' anyHover='+mm('(any-hover: hover)')
+      +' | vv='+(vv?Math.round(vv.height)+'/'+Math.round(vv.offsetTop):'-')+' inner='+innerHeight);
+    const W=document.createElement('div');
+    W.style.cssText='position:fixed;inset:0;z-index:2147483500;background:#141210;color:#d8cdb8;direction:rtl;overflow:auto;'
+      +'padding:14px;font:14px system-ui,Arial,sans-serif;-webkit-user-select:text;user-select:text';
+    const head=document.createElement('div'); head.style.cssText='font-weight:600;margin-bottom:6px';
+    head.textContent='בדיקת מקלדת — נגיעה באצבע בכל שדה בתורו, לחכות שנייה, לסגור את המקלדת, ובסוף "העתק"';
+    W.appendChild(head);
+    const log=document.createElement('pre');
+    log.style.cssText='white-space:pre-wrap;direction:ltr;text-align:left;font:11px ui-monospace,Menlo,monospace;background:#1c1915;padding:8px;max-height:30vh;overflow:auto';
+    const say=t=>{ L.push(t); log.textContent=L.join('\n'); };
+    const row=(label,el)=>{ const d=document.createElement('div'); d.style.cssText='margin:8px 0;display:flex;gap:10px;align-items:center';
+      const s=document.createElement('span'); s.textContent=label; s.style.minWidth='10em'; d.appendChild(s); d.appendChild(el); W.appendChild(d); };
+    const field=(tag,ph)=>{ const i=document.createElement(tag); if(tag==='input') i.type='text'; else i.rows=2;
+      i.placeholder=ph; i.style.cssText='font-size:16px;padding:6px;width:12em'; return i; };
+    const shadowed=ph=>{ const h=document.createElement('span'), i=field('input',ph); h.attachShadow({mode:'open'}).appendChild(i); return [h,i]; };
+    const watch=(tag,t,before,after)=>{
+      let h0=0;
+      t.addEventListener('pointerdown',e=>say(tag+': pointerdown type='+e.pointerType+' pressure='+(+e.pressure||0).toFixed(2)+' ro='+(t.readOnly?1:0)),true);
+      t.addEventListener('focus',()=>{ if(before) before(); h0=vv?vv.height:innerHeight;
+        say(tag+': focus ro='+(t.readOnly?1:0)+' active='+((t.ownerDocument.activeElement===t)?1:0)+' type='+(t.type||t.tagName)
+          +' im='+(t.inputMode||'-')+' vv0='+Math.round(h0));
+        for(const ms of [300,800]) setTimeout(()=>{ const h=vv?vv.height:innerHeight;
+          say(tag+': +'+ms+'ms vv='+Math.round(h)+' off='+(vv?Math.round(vv.offsetTop):'-')+' inner='+innerHeight
+            +' -> '+((h0-h>150)?'DOCKED':'floating or none')); },ms); });
+      t.addEventListener('blur',()=>{ if(after) after(); say(tag+': blur'); });
+      t.addEventListener('keydown',e=>say(tag+': keydown '+e.key),true);
+    };
+    const a=field('input','א'); row('א · כמו שלנו (נעול עד אצבע)',a); watch('A-ours',a);
+    const [hb,bI]=shadowed('ב'); row('ב · בלי הנעילה',hb); watch('B-unlocked',bI);
+    const c=field('textarea','ג'); row('ג · תיבת טקסט',c); watch('C-textarea',c);
+    const fr=document.createElement('iframe'); fr.style.cssText='width:15em;height:46px;border:1px solid #6b5a33;background:#fff';
+    fr.srcdoc='<!doctype html><meta name="viewport" content="width=device-width"><input id="x" type="text" placeholder="ד" style="font-size:16px;padding:6px;width:90%">';
+    row('ד · מסמך נקי',fr);
+    fr.onload=()=>{ try{ watch('D-clean',fr.contentDocument.getElementById('x')); }catch(e){ say('D-clean: '+e.message); } };
+    const [he,eI]=shadowed('ה'); row('ה · בלי נעילת הדף',he);
+    const H=document.documentElement, B=document.body, kept=new Map();
+    watch('E-pageFree',eI,
+      ()=>{ for(const el of [H,B]){ kept.set(el,[el.style.position,el.style.userSelect,el.style.webkitUserSelect]);
+              el.style.position='static'; el.style.userSelect='text'; el.style.webkitUserSelect='text'; } },
+      ()=>{ for(const [el,k] of kept){ el.style.position=k[0]; el.style.userSelect=k[1]; el.style.webkitUserSelect=k[2]; } kept.clear(); });
+    const f=document.createElement('div'); f.contentEditable='true';
+    f.style.cssText='min-width:12em;min-height:30px;border:1px solid #6b5a33;padding:6px;font-size:16px;background:#1c1915';
+    row('ו · contenteditable',f); watch('F-editable',f);
+    W.appendChild(log);
+    const bar=document.createElement('div'); bar.style.cssText='display:flex;gap:8px;margin-top:10px';
+    const cp=document.createElement('button'), cl=document.createElement('button');
+    cp.textContent='העתק'; cl.textContent='סגור'; cp.style.cssText=btnCss; cl.style.cssText=btnCss;
+    cp.onclick=()=>{ const t=L.join('\n');
+      const p=(navigator.clipboard&&navigator.clipboard.writeText)?navigator.clipboard.writeText(t):Promise.reject(new Error('no clipboard'));
+      p.then(()=>{ cp.textContent='הועתק ✓'; },()=>{ amCopyBox('להעתקה — לסמן ולהעתיק:',t); }); };
+    cl.onclick=()=>W.remove();
+    bar.appendChild(cp); bar.appendChild(cl); W.appendChild(bar);
+    document.body.appendChild(W); log.textContent=L.join('\n');
+  }
+})();
 const cv=$('cv');
 const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
   // a lost GL context is HEARD, not a silent white canvas (field report 25/08);
@@ -411,8 +484,24 @@ scene.background=new THREE.Color(0x15171a);   // dark working background, as on 
 const camera=new THREE.PerspectiveCamera(50,innerWidth/Math.max(1,innerHeight),0.01,1000);
 function resize(){renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/Math.max(1,innerHeight);camera.updateProjectionMatrix();}
 addEventListener('resize',resize); resize();
-(function tick(){requestAnimationFrame(tick);if(window.amMarkTick)window.amMarkTick();if(window.amRescaleFixed)window.amRescaleFixed();
-  if(window.amColFlush)window.amColFlush();renderer.render(scene,camera);})();   // 494: the recoloured sub-faces by their ranges
+// 523 (Eli, 13/10: the iPad warms up with many marks, whatever the model's size): the frame is drawn only when something
+// changed, as the measurement screen does (renderUntil) — a finger down, the camera moved since the last frame, or a change
+// that asked for it (invalidate) in the last 320 ms. It was drawn every frame, and every frame every fixed-size label was
+// scaled again, however still the screen
+let amRenderUntil=performance.now()+3500, amDown=0; const amCamLast=new Float64Array(32);
+window.amInvalidate=ms=>{ amRenderUntil=Math.max(amRenderUntil,performance.now()+(ms||320)); };
+for(const t of ['pointerdown','pointerup','pointercancel'])
+  addEventListener(t,()=>{ if(t==='pointerdown') amDown++; else amDown=Math.max(0,amDown-1); window.amInvalidate(); },true);
+for(const t of ['wheel','keydown','keyup','input','change','click','resize','orientationchange'])
+  addEventListener(t,()=>window.amInvalidate(),{capture:true,passive:true});
+document.addEventListener('visibilitychange',()=>{ amDown=0; window.amInvalidate(); });
+function amCamMoved(){ camera.updateMatrixWorld(); const a=camera.matrixWorld.elements, b=camera.projectionMatrix.elements; let ch=false;
+  for(let i=0;i<16;i++){ if(amCamLast[i]!==a[i]){ amCamLast[i]=a[i]; ch=true; } if(amCamLast[16+i]!==b[i]){ amCamLast[16+i]=b[i]; ch=true; } }
+  return ch; }
+(function tick(){requestAnimationFrame(tick);if(window.amMarkTick)window.amMarkTick();
+  const now=performance.now(); if(amCamMoved()) amRenderUntil=Math.max(amRenderUntil,now+120);
+  if(amDown>0||now<amRenderUntil){ if(window.amRescaleFixed)window.amRescaleFixed();
+    if(window.amColFlush)window.amColFlush();renderer.render(scene,camera); } })();   // 494: the recoloured sub-faces by their ranges
 
 $('openBtn').onclick=()=>$('file').click();
 /* ---- 453 (Eli, 05/10: "the keyboard that opens on the iPad should be the big comfortable one, not the small
@@ -480,7 +569,8 @@ $('file').addEventListener('change',e=>{
   $('amLoadMsg').textContent='פותח את העבודה…'; veil.style.display='flex';
   if(window.__pmStart) window.__pmStart('פותח את העבודה',{size:f.size/1048576});
   f.arrayBuffer().then(buf=>new Promise(res=>requestAnimationFrame(()=>requestAnimationFrame(()=>res(buf)))))
-    .then(buf=>{ load(buf); if(window.__pmFinish) window.__pmFinish(hide); else hide(); })
+    .then(buf=>{ load(buf); if(window.amInvalidate) window.amInvalidate(6000);   // 523: the textures decode after it
+      if(window.__pmFinish) window.__pmFinish(hide); else hide(); })
     .catch(ex=>{ if(window.__pmStop) window.__pmStop(); hide(); $('err').textContent='שגיאה: '+ex.message;});
 });
 if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
@@ -2052,7 +2142,7 @@ mat.onBeforeCompile=sh=>{
      thing — a measurement whose definition may not differ between the desk and the iPad —
      so the core below is copied verbatim and a gate compares the two texts.
      The environment differences are kept OUT of the shared text, in these two shims. */
-  function invalidate(){}                    // the iPad draws every frame already
+  function invalidate(){ if(window.amInvalidate) window.amInvalidate(); }   // 523: the frame is drawn when asked
   // 454: nothing ever defined window.amMarkDirty on the iPad (since 17/09) — a ring closed, a point dragged, a
   // run or a ring erased by its tag, a smoothing change: no ⚠ on the export and no recovery copy. Here it is
   // what every other change of the iPad does
@@ -2846,6 +2936,32 @@ mat.onBeforeCompile=sh=>{
     return smW;
   }
   function smBusyShow(on){ const e=document.getElementById('smBusy'); if(e) e.style.display=on?'':'none'; }
+  // 524 (Eli, 13/10: "כשאני מחזיר את ההחלקה ל-0, עדיין יש הודעה מתחת לגלגלת: 'בונה משטח מוחלק'"): the word under the
+  // wheel is the OPEN layer's — its regions still waiting for their film (and, on the measurement screen, the volume
+  // layer's copy). It was any region of any layer, so a layer turned to 0 kept the word while another's films queued
+  function smBusyNow(){
+    if(typeof volSmWait!=='undefined'&&volSmWait&&activeKind==='vol') return true;
+    const T=(activeKind==='area')?types[activeT]:null;
+    return !!T&&SMR.some(r=>r.pending&&r.at===T.id);
+  }
+  // 523 (Eli, 13/10: the iPad warms up in the smoothing brush with many marks, whatever the model's size): a film sent
+  // to the worker ran to its end even when no region wanted it any more — every stroke changes a region's faces, so
+  // every stroke queued another film behind the ones the strokes before it had already made useless. After every change
+  // to the regions, a worker running films no region waits for is stopped and started again with only the wanted ones;
+  // the films the server makes (the measurement screen) are left to come back and are dropped, as before. Then the word
+  function smJobsTidy(){
+    if(typeof smWJobs!=='undefined'&&smW&&typeof smW.terminate==='function'&&smWJobs.size){
+      const need=new Set(); for(const r of SMR) if(r.pending){ const m=smMemoOf(r); if(m&&m.job) need.add(m.job); }
+      let stale=false; for(const id of smWJobs.keys()) if(!need.has(id)){ stale=true; break; }
+      if(stale){
+        const keep=[]; for(const [id,m] of smWJobs) if(need.has(id)) keep.push(m);
+        for(const m of smWJobs.values()) m.job=0;
+        smWJobs.clear(); smW.terminate(); smW=null;
+        if(keep.length&&smWorker()) for(const m of keep){ m.job=++smWSeq; smWJobs.set(m.job,m); smW.postMessage({id:m.job,X:m.X10,T:m.M.T}); }
+      }
+    }
+    smBusyShow(smBusyNow());
+  }
   // a film came back (or the worker is gone): the regions that waited for it take their level
   // 436: films that come back together (a layer's regions, each its own) make ONE redraw — each made its own,
   // half a second of every layer's copies a film, and a level turned on a layer of eleven regions froze for six
@@ -2853,12 +2969,12 @@ mat.onBeforeCompile=sh=>{
   function smFilmDone(){ clearTimeout(smFilmT); smFilmT=setTimeout(smFilmApply,40); }
   function smFilmApply(){ let busy=false, ch=false;
     for(const r of SMR) if(r.pending){ const m=smMemoOf(r); if(m.F||!smWorker()){ smCompute(r); ch=true; } else busy=true; }
-    smBusyShow(busy); if(ch){ smRebuild(); updateArea(); } }
+    smBusyShow(smBusyNow()); if(ch){ smRebuild(); updateArea(); } }   // 524: the open layer's
   function smCompute(r){ const m=smMemoOf(r);
     if(r.level>SM_SOFT&&!m.F&&(r.faces.length>SM_BG_FACES||typeof amFilmServer==='function')&&smWorker()){
       const g=smRegion(pos,area,r.faces,SM_SOFT,r.pc,m); r.X=g.X; r.T=g.T; r.area=g.area; r.pending=true;
       if(!m.job){ m.job=++smWSeq; smWJobs.set(m.job,m); smW.postMessage({id:m.job,X:m.X10,T:m.M.T}); }
-      smBusyShow(true); return; }
+      return; }                                       // 524: the word is set by whoever asked, for the open layer
     const g=smRegion(pos,area,r.faces,r.level,r.pc,m); r.X=g.X; r.T=g.T; r.area=g.area; r.level=g.level; r.pending=false; }
   function smSnap(at){ const t=smT(at), S=[], X=[];
     for(let f=0;f<N;f++){ if(t.S[f]) S.push(f); if(t.X[f]) X.push(f); }
@@ -2883,7 +2999,7 @@ mat.onBeforeCompile=sh=>{
     for(const q of snap.regs){ const r={id:q.id,at:at,level:q.level,faces:q.faces.slice(),pc:q.pc||null};
       const o=keep.get(smSig(r)); if(o){ r.X=o.X; r.T=o.T; r.area=o.area; r.level=o.level; r.pending=o.pending; } else smCompute(r); SMR.push(r); }
     if(smSel) smSel=SMR.find(r=>r.id===smSel.id)||null;
-    smSyncWheel(); smRebuild(); updateArea(); markDirty();
+    smSyncWheel(); smRebuild(); updateArea(); markDirty(); smJobsTidy();   // 523, 524
   }
   function smWheelLevel(){ const e=document.getElementById('smLevel'); return e?Math.max(0,Math.min(SM_MAXLEVEL,Math.round(+e.value||0))):3; }
   function smSyncWheel(){ const e=document.getElementById('smLevel'), v=document.getElementById('smLevelV');
@@ -2946,8 +3062,8 @@ mat.onBeforeCompile=sh=>{
     if(typeof amLive!=='undefined'&&amLive){ smSyncSoon(); return; }      // not while a stroke is down
     let ch=false; for(let ti=0;ti<types.length;ti++) if(smLayerSync(ti)) ch=true;
     if(ch){ smRebuild(); updateArea(); } smWheelShow();
-  // the bar's word follows the films still being built — none left, no word
-  smBusyShow(SMR.some(r=>r.pending)||(typeof volSmWait!=='undefined'&&!!volSmWait)); }
+  // the bar's word follows the open layer's films still being built — none left, no word (524); unwanted films stop (523)
+  smJobsTidy(); }
   // 433: what of a layer's marking reaches the report as the brush's: all of it at level 0; at a level,
   // only what no smoothed region took (its specks)
   function smBrushLeft(T,d){ if(!(smLevelOf(T)>0)) return d;
@@ -2955,7 +3071,8 @@ mat.onBeforeCompile=sh=>{
     const fr=new Map(d.frac), fs=d.faces.filter(f=>!In.has(f)); let a=0; for(const f of fs) a+=(fr.has(f)?fr.get(f):1)*area[f];
     return {a:a, faces:fs, frac:d.frac.filter(q=>!In.has(q[0])), pieces:d.pieces.filter(q=>!In.has(q[0]))}; }
   // the wheel shows the open layer's level
-  function smWheelShow(){ const e=document.getElementById('smLevel'), v=document.getElementById('smLevelV'); if(!e) return;
+  function smWheelShow(){ smBusyShow(smBusyNow());   // 524: another layer opened — its own word
+    const e=document.getElementById('smLevel'), v=document.getElementById('smLevelV'); if(!e) return;
     if(activeKind==='area'&&types[activeT]){ e.value=smLevelOf(types[activeT]); if(v) v.textContent=e.value; } }
   function smRemoveRegion(r){ const at=r.at, before=smSnap(at), t=smT(at);
     for(const f of r.faces){ if(r.pc&&r.pc.has(f)) t.X[f]=1; else t.S[f]=0; }
@@ -4415,7 +4532,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   }
   function lineAt(e){if(activeL<0)return;
     const hit=castAt(e); if(!hit.length)return;
-    const h=hit[0]; const nrm=h.face?h.face.normal:null; const lift=Math.max(0.004,lineW*0.8);
+    // 522: a wide tape is not lifted off the wall by its width — the line is measured where it is drawn, so the lift
+    // stops where the old widest tape's was (2.4 cm)
+    const h=hit[0]; const nrm=h.face?h.face.normal:null; const lift=Math.min(0.024,Math.max(0.004,lineW*0.8));
     const px=h.point.x+(nrm?nrm.x*lift:0), py=h.point.y+(nrm?nrm.y*lift:0), pz=h.point.z+(nrm?nrm.z*lift:0);
     if(!curLine){curLine={t:lenTypes[activeL].id,pts:[px,py,pz],len:0,w:lineW,obj:null};return;}
     const p=curLine.pts, n=p.length;
@@ -5007,9 +5126,11 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   function applyBrush(){const v=+document.getElementById('brush').value;
     // 432 (Eli, 02/10): the slider runs 1–100 cm for every brush; a tape's width keeps its own
     // 2–30 mm, read off the slider's ends (as the way back below has always done)
+    // 522 (Eli, 13/10: "סרט המדידה צר מאוד (על המודל הזה שהוא גדול מאוד)"): 2 mm to 50 cm, on a logarithmic slider —
+    // as fine at the narrow end as it was, wide enough at the far end for a facade; the tape's own width on the model
     if(activeKind==='len'){const br=document.getElementById('brush');
-      lineW=0.002+(v-(+br.min))/((+br.max)-(+br.min))*0.028;
-      document.getElementById('brushV').textContent=(lineW*1000).toFixed(0)+' מ"מ';}
+      lineW=0.002*Math.pow(250,(v-(+br.min))/((+br.max)-(+br.min)));
+      document.getElementById('brushV').textContent=lineW<0.01?(lineW*1000).toFixed(lineW<0.003?1:0)+' מ"מ':(lineW*100).toFixed(lineW<0.1?1:0)+' ס"מ';}
     else if(activeKind==='cnt'){
       // on a counter layer the slider is the diamond DIAMETER, in true metres on the
       // model (user 12/08): slider 2..40 -> 2..40cm; existing diamonds resize live
@@ -5112,7 +5233,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     // read it as its own — a ruler at 10 pixels came back to the area brush as 60 cm.
     {const br=document.getElementById('brush');
      if(activeKind==='area'||activeKind==='vol') br.value=Math.round(brushR*100);
-     else if(activeKind==='len') br.value=Math.round(+br.min+(lineW-0.002)/0.028*(+br.max-(+br.min)));}
+     else if(activeKind==='len') br.value=Math.round(+br.min+Math.log(Math.max(0.002,Math.min(0.5,lineW))/0.002)/Math.log(250)*(+br.max-(+br.min)));}   // 522
     applyBrush();}
   function activateC(i){activeKind='cnt';activeC=i;
     const T=cntTypes[i];
