@@ -2343,6 +2343,25 @@ mat.onBeforeCompile=sh=>{
     }
     rescaleFixed(); invalidate();
   }
+  /* 256 — Ctrl+Z takes back the LAST POINT, in both tools. Until now the only way back
+     from a misplaced point was to finish the shape and delete the whole thing. The stack
+     is the drawing itself: the ruler drops the point it last placed together with the
+     segment that reached it, and steps the chain back to where that segment came from.
+     526 (13/10): in the core — the iPad's keyboard called these two, and only the measurement screen had them */
+  function rulUndoPoint(){
+    if(!rulPts.length) return false;
+    const tid=(activeR>=0&&rulTypes[activeR])?rulTypes[activeR].id:null;
+    let last=null;
+    for(const q of rulPts) if((!tid||q.t===tid)&&(last===null||q.id>last.id)) last=q;
+    if(!last) return false;
+    let back=null;
+    for(const g of rulSegs){
+      if(g.a===last.id) back=g.b; else if(g.b===last.id) back=g.a; else continue;
+    }
+    rulDropPoints([last.id]);
+    rulLast=(back!==null&&rulPtById(back))?back:null;   // the chain continues from there
+    return true;
+  }    // 526
   function rulPointAt(e){
     const r=el.getBoundingClientRect(), px=e.clientX-r.left, py=e.clientY-r.top;
     const hw=r.width/2, hh=r.height/2, v=new THREE.Vector3();
@@ -3577,8 +3596,16 @@ float amStippleA(float a, float lvl){
     if(!curPoly) curPoly={at:(types[activeT]||types[0]).id,pts:[],area:0};
     curPoly.pts.push(k.p);
     polyRebuild();
+    if(typeof updateHB==='function') updateHB();   // 527: ↶ is live while a polygon is open — it takes back its last point
   }
-  function polyCancel(){ if(curPoly){ curPoly=null; polyRebuild(); } }
+  function polyCancel(){ if(curPoly){ curPoly=null; polyRebuild(); if(typeof updateHB==='function') updateHB(); } }
+  function polyUndoPoint(){
+    if(!curPoly||!curPoly.pts.length) return false;
+    curPoly.pts.pop();
+    if(!curPoly.pts.length) curPoly=null;
+    polyRebuild(); markDirty(); if(typeof updateHB==='function') updateHB();
+    return true;
+  }   // 526: Ctrl+Z (an external keyboard) and ↶ on an open polygon
   function polyEraseAt(e){
     const r=el.getBoundingClientRect(), px=e.clientX-r.left, py=e.clientY-r.top;
     const hw=r.width/2, hh=r.height/2, v=new THREE.Vector3();
@@ -3925,7 +3952,10 @@ float amStippleA(float a, float lvl){
     inv.reverse(); colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();return inv;}
   const undo=()=>{if(undoStack.length){redoStack.push(applyDiff(undoStack.pop()));updateHB();}};
   const redo=()=>{if(redoStack.length){undoStack.push(applyDiff(redoStack.pop()));updateHB();}};
-  function updateHB(){document.getElementById('undo').disabled=!undoStack.length;document.getElementById('redo').disabled=!redoStack.length;
+  function updateHB(){
+    // 527: an open polygon is something to take back too — its last point (256), so ↶ is not dimmed while it is open
+    const open=(typeof curPoly!=='undefined'&&!!curPoly&&curPoly.pts.length>0);
+    document.getElementById('undo').disabled=!undoStack.length&&!open;document.getElementById('redo').disabled=!redoStack.length;
     amSnapSoon();}                     // 327: every step of the history is a change of the work
   function findOrMkType(hex,name){
     let T=types.find(t=>t.hex===hex); if(!T){T=mkType(name||'',hex||'#38b000');buildChips();}
@@ -5071,7 +5101,12 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // keyboard, so a strip telling the user about Ctrl+Z described something that is not
   // there. On this shell the buttons are the whole story. Gestures for undo/redo were
   // proposed and dropped in the same breath — two fingers are already the pinch.
-  $('undo').onclick=()=>{undo();};
+  // 527 (13/10: no way out of an open polygon on the iPad): ↶ takes back an open shape's last point first, as Ctrl+Z does
+  // (256) — the polygon's last point gone, the polygon is gone; then the history
+  $('undo').onclick=()=>{
+    if(activeKind==='rul'&&rulLast!==null&&rulUndoPoint()) return;
+    if(activeKind==='area'&&curPoly&&polyUndoPoint()) return;
+    undo(); };
   $('redo').onclick=()=>{redo();};
   addEventListener('keydown',ev=>{
     if(!(ev.ctrlKey||ev.metaKey)) return;
