@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=47;
+const VIEWER_JS_VER=48;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -4860,60 +4860,125 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   }
 
   /* ---- auto-complete (logistic head on quadratic feature expansion) ---- */
-  let EX=null,NE=0;
-  function buildEX(){
-    NE=12+12+66; EX=new Float32Array(FO*NE); const f=new Float32Array(12);
-    for(let fo=0;fo<FO;fo++){for(let k=0;k<12;k++)f[k]=qfeat[fo*12+k]/25; let o=fo*NE,c=0;
-      for(let k=0;k<12;k++)EX[o+(c++)]=f[k];
-      for(let k=0;k<12;k++)EX[o+(c++)]=f[k]*f[k];
-      for(let a=0;a<12;a++)for(let b=a+1;b<12;b++)EX[o+(c++)]=f[a]*f[b];}
-    const mean=new Float64Array(NE),std=new Float64Array(NE);
-    for(let fo=0;fo<FO;fo++){const o=fo*NE;for(let k=0;k<NE;k++)mean[k]+=EX[o+k];}
-    for(let k=0;k<NE;k++)mean[k]/=FO;
-    for(let fo=0;fo<FO;fo++){const o=fo*NE;for(let k=0;k<NE;k++){const d=EX[o+k]-mean[k];std[k]+=d*d;}}
-    for(let k=0;k<NE;k++)std[k]=Math.sqrt(std[k]/FO)+1e-6;
-    for(let fo=0;fo<FO;fo++){const o=fo*NE;for(let k=0;k<NE;k++)EX[o+k]=(EX[o+k]-mean[k])/std[k];}
+  // 513: the learning's 90 means and spreads, once a session (the features themselves are expanded when asked)
+  const LSTATS={v:null};
+  // 513: the 90 features of face `fo` (its 12, their squares, their 66 products) — as buildEX stored them: the 12 through a
+  // Float32Array (q/25), and every square and product rounded to float32 as its store did; with `st` (amLearnStats),
+  // normalised as buildEX normalised them ((x - mean) / spread, rounded to float32). `out`: a Float64Array(90).
+  function amLearnRow(q,fo,out,st){
+    const f=amLearnRow.f||(amLearnRow.f=new Float32Array(12)); let c=0;
+    for(let k=0;k<12;k++) f[k]=q[fo*12+k]/25;
+    for(let k=0;k<12;k++) out[c++]=f[k];
+    for(let k=0;k<12;k++) out[c++]=Math.fround(f[k]*f[k]);
+    for(let a=0;a<12;a++) for(let b=a+1;b<12;b++) out[c++]=Math.fround(f[a]*f[b]);
+    if(st){ const M=st.mean, S=st.std; for(let k=0;k<90;k++) out[k]=Math.fround((out[k]-M[k])/S[k]); }
+    return out;
   }
-  function autoComplete(){
-    if(!EX)buildEX();
-    // per-type learning (decision 58): the ACTIVE type's marks are the examples;
-    // faces positive in OTHER types are NEUTRAL — overlap is allowed
-    const T=types[activeT];
+  // 513: the 90 means and spreads buildEX computed over every face — the same sums in the same order (float64 over the
+  // float32 values), in two passes, giving the page back every ~40 ms (`ms`; `tick(done)` answers false to stop: cancelled).
+  async function amLearnStats(q,FO,tick,ms){
+    const lim=(ms==null)?40:ms;
+    const mean=new Float64Array(90), std=new Float64Array(90), r=new Float64Array(90);
+    let t=performance.now();
+    for(let pass=0;pass<2;pass++){
+      for(let fo=0;fo<FO;fo++){
+        amLearnRow(q,fo,r,null);
+        if(pass===0){ for(let k=0;k<90;k++) mean[k]+=r[k]; }
+        else{ for(let k=0;k<90;k++){ const d=r[k]-mean[k]; std[k]+=d*d; } }
+        if((fo&4095)===0&&performance.now()-t>=lim){ if(!(await tick(pass*FO+fo))) return null; t=performance.now(); }
+      }
+      if(pass===0) for(let k=0;k<90;k++) mean[k]/=FO;
+    }
+    for(let k=0;k<90;k++) std[k]=Math.sqrt(std[k]/FO)+1e-6;
+    return {mean,std};
+  }
+  // 513: one learning for the active layer — the examples (its marks; other layers' positives neutral; outside the orange
+  // zone a sampled clean negative), 500 steps of the logistic head, and the probability of every face — the arithmetic of
+  // the two copies it replaces, step for step. o: {types, activeT, N, FO, FACEOF, OFF, roi, roiCount, qfeat, stats (a
+  // holder: {v}), progress(f,next), cancelled(), sliceMs (40 when not given)}. Answers {few:true,npos,nneg} (too few examples, nothing computed),
+  // null (cancelled — nothing written), or {prob: Float32Array(N), npos, nneg} for the caller to put on the layer.
+  async function amLearnRun(o){
+    const T=o.types[o.activeT], N=o.N, FO=o.FO, FACEOF=o.FACEOF, OFF=o.OFF;
     const cnt=new Int32Array(FO);
-    for(let s=0;s<N;s++){const m=T.manual[s];if(m!==0)cnt[FACEOF[s]]+=m;}
+    for(let s=0;s<N;s++){const m=T.manual[s]; if(m!==0) cnt[FACEOF[s]]+=m;}
     const otherPos=new Uint8Array(FO);
-    for(let tj=0;tj<types.length;tj++){if(tj===activeT)continue;const M=types[tj].manual;
-      for(let s=0;s<N;s++)if(M[s]===1)otherPos[FACEOF[s]]=1;}
+    for(let tj=0;tj<o.types.length;tj++){ if(tj===o.activeT)continue; const M=o.types[tj].manual;
+      for(let s=0;s<N;s++) if(M[s]===1) otherPos[FACEOF[s]]=1; }
     const Xi=[],yi=[]; const labeled=new Uint8Array(FO);
-    for(let fo=0;fo<FO;fo++){if(cnt[fo]>0){Xi.push(fo);yi.push(1);labeled[fo]=1;}
-      else if(cnt[fo]<0){Xi.push(fo);yi.push(0);labeled[fo]=1;}}
-    let npos=0;for(const y of yi)npos+=y;let nneg=yi.length-npos;
-    if(roiCount>0){
-      const rf=new Uint8Array(FO);for(let s=0;s<N;s++)if(roi[s])rf[FACEOF[s]]=1;
-      const out=[];for(let fo=0;fo<FO;fo++)if(!rf[fo]&&!labeled[fo]&&!otherPos[fo])out.push(fo);
-      const cap=Math.min(out.length,Math.max(300,npos*3));
-      for(let i=0;i<cap;i++){const fo=out[(Math.random()*out.length)|0];
-        if(labeled[fo])continue;labeled[fo]=1;Xi.push(fo);yi.push(0);nneg++;}
+    for(let fo=0;fo<FO;fo++){ if(cnt[fo]>0){Xi.push(fo);yi.push(1);labeled[fo]=1;} else if(cnt[fo]<0){Xi.push(fo);yi.push(0);labeled[fo]=1;} }
+    let npos=0; for(const y of yi) npos+=y; let nneg=yi.length-npos;
+    if(o.roiCount>0){
+      const rf=new Uint8Array(FO); for(let s=0;s<N;s++) if(o.roi[s]) rf[FACEOF[s]]=1;
+      const out=[]; for(let fo=0;fo<FO;fo++) if(!rf[fo]&&!labeled[fo]&&!otherPos[fo]) out.push(fo);
+      const cap=Math.min(out.length, Math.max(300, npos*3));
+      for(let i=0;i<cap;i++){const fo=out[(Math.random()*out.length)|0]; if(labeled[fo])continue; labeled[fo]=1; Xi.push(fo); yi.push(0); nneg++;}
     }
-    if(npos<15||nneg<15){amTell('צריך עוד דוגמאות לסוג "'+(T.name||'ללא שם')+'": לפחות ~15 פאות מסומנות (＋) ו-15 לא (−).\nכרגע: '+npos+' כן, '+nneg+' לא.');return;}
-    const w=new Float64Array(NE);let bw=0;
-    const wpos=yi.length/(2*npos),wneg=yi.length/(2*nneg),lr=0.3,lam=0.02;
+    if(npos<15||nneg<15) return {few:true,npos,nneg};
+    // the work's units, for the fraction: two passes over the faces (once a session), the steps over the examples, the
+    // prediction over the faces — each face-row about one unit
+    const st0=o.stats.v, uStats=st0?0:2*FO, uTrain=500*Xi.length*2, uPred=2*FO, U=Math.max(1,uStats+uTrain+uPred);
+    const say=(u,un)=>{ if(o.progress) o.progress(u/U, un/U); };
+    const go=async(u,un)=>{ say(u,un); await new Promise(r=>setTimeout(r,0)); return !o.cancelled(); };
+    let st=st0; const lim=(o.sliceMs==null)?40:o.sliceMs;
+    if(!st){ st=await amLearnStats(o.qfeat,FO,d=>go(d,Math.min(uStats,d+FO/8)),lim);
+      if(!st) return null; o.stats.v=st; }
+    // the examples' rows, normalised once — the same float32 numbers buildEX's array held for them
+    const NE=90, X=new Float32Array(Xi.length*NE), r=new Float64Array(NE);
+    for(let n=0;n<Xi.length;n++){ amLearnRow(o.qfeat,Xi[n],r,st); for(let k=0;k<NE;k++) X[n*NE+k]=r[k]; }
+    const w=new Float64Array(NE); let bw=0;
+    const wpos=yi.length/(2*npos), wneg=yi.length/(2*nneg), lr=0.3, lam=0.02;
+    let t=performance.now();
     for(let it=0;it<500;it++){
-      const gw=new Float64Array(NE);let gb=0;
-      for(let n2=0;n2<Xi.length;n2++){const o=Xi[n2]*NE;let z=bw;
-        for(let k=0;k<NE;k++)z+=w[k]*EX[o+k];
-        const p=1/(1+Math.exp(-z));const e2=(p-yi[n2])*(yi[n2]?wpos:wneg);
-        for(let k=0;k<NE;k++)gw[k]+=e2*EX[o+k];gb+=e2;}
-      const m=Xi.length;for(let k=0;k<NE;k++)w[k]-=lr*(gw[k]/m+lam*w[k]);bw-=lr*gb/m;
+      const gw=new Float64Array(NE); let gb=0;
+      for(let n=0;n<Xi.length;n++){const o2=n*NE; let z=bw;
+        for(let k=0;k<NE;k++) z+=w[k]*X[o2+k];
+        const p=1/(1+Math.exp(-z)); const e=(p-yi[n])*(yi[n]?wpos:wneg);
+        for(let k=0;k<NE;k++) gw[k]+=e*X[o2+k]; gb+=e;}
+      const m=Xi.length; for(let k=0;k<NE;k++) w[k]-=lr*(gw[k]/m+lam*w[k]); bw-=lr*gb/m;
+      // the clock asked every 10 steps (a step is ~2 ms)
+      if((it%10)===9&&performance.now()-t>=lim){ const u=uStats+(it+1)*Xi.length*2; if(!(await go(u,u+Xi.length*20))) return null; t=performance.now(); }
     }
+    const prob=new Float32Array(N); t=performance.now();
+    for(let fo=0;fo<FO;fo++){ amLearnRow(o.qfeat,fo,r,st); let z=bw; for(let k=0;k<NE;k++) z+=w[k]*r[k];
+      const p=1/(1+Math.exp(-z)); for(let s=OFF[fo];s<OFF[fo+1];s++) prob[s]=p;
+      if((fo&4095)===0&&performance.now()-t>=lim){ const u=uStats+uTrain+2*fo; if(!(await go(u,u+FO/4))) return null; t=performance.now(); }
+    }
+    say(U,U);
+    return {prob,npos,nneg};
+  }
+  // 513 (Eli, 14/10: "תתחילו בשניהם"; the iPad too): the planimeter on the waiting screen after 1.5 s, driven by the
+  // work done, and "ביטול" on it — nothing is written until the end, so a cancelled learning leaves the screen as it was
+  let LEARN_OP=null;
+  async function autoComplete(){
+    if(LEARN_OP)return;
+    const T=types[activeT], op={}; LEARN_OP=op;
+    const veil=$('amLoad'), cb=$('amLoadCancel'); let shown=false;
+    const tv=setTimeout(()=>{ if(veil.style.display!=='none')return; shown=true;
+      $('amLoadMsg').textContent='לומד את הסימונים…';
+      if(cb){ cb.hidden=false; cb.disabled=false; cb.textContent='ביטול';
+        cb.onclick=async()=>{ if(!(await amAsk('לבטל את הלמידה?\nהסימונים יישארו כפי שהיו.',
+            [{t:'לבטל את הלמידה',v:true,primary:true},{t:'להמשיך',v:false}],false)))return;
+          if(LEARN_OP===op){ LEARN_OP=null; cb.disabled=true; cb.textContent='מבטל…'; } }; }
+      veil.style.display='flex'; if(window.__pmStart)window.__pmStart('לומד את הסימונים',{progress:true}); },1500);
+    let r=null,ok=false;
+    try{
+      r=await amLearnRun({types:types,activeT:activeT,N:N,FO:FO,FACEOF:FACEOF,OFF:OFF,roi:roi,roiCount:roiCount,qfeat:qfeat,stats:LSTATS,
+        progress:(f,nx)=>{ if(shown&&window.__pmProgress)window.__pmProgress(f,nx); },
+        cancelled:()=>LEARN_OP!==op});
+      ok=true;
+    }finally{
+      clearTimeout(tv); if(LEARN_OP===op)LEARN_OP=null; if(cb)cb.hidden=true;
+      if(shown){ const hide=()=>{veil.style.display='none';};
+        if(ok&&r&&!r.few&&window.__pmFinish)window.__pmFinish(hide); else{ if(window.__pmStop)window.__pmStop(); hide(); } }
+    }
+    if(!r)return;                                   // cancelled: the screen as it was
+    if(r.few){ const npos=r.npos, nneg=r.nneg; amTell('צריך עוד דוגמאות לסוג "'+(T.name||'ללא שם')+'": לפחות ~15 פאות מסומנות (＋) ו-15 לא (−).\nכרגע: '+npos+' כן, '+nneg+' לא.'); return; }
     if(!T.prob||T.prob===prob&&activeT!==0)T.prob=new Float32Array(N);
-    for(let fo=0;fo<FO;fo++){const o=fo*NE;let z=bw;for(let k=0;k<NE;k++)z+=w[k]*EX[o+k];
-      const p=1/(1+Math.exp(-z));for(let t=OFF[fo];t<OFF[fo+1];t++)T.prob[t]=p;}
+    T.prob.set(r.prob);
     T.hasProb=true;recolorAll();
-    const ab=$('auto');const old=ab.textContent;ab.textContent='✓ הושלם ('+npos+'+/'+nneg+'−)';
+    const ab=$('auto');const old=ab.textContent;ab.textContent='✓ הושלם ('+r.npos+'+/'+r.nneg+'−)';
     setTimeout(()=>{ab.textContent=old;},2500);
   }
-
   // קרומי נפח (החלטות 114+120): גאומטריה מפורשת החיה בגיליון בלבד.
   // הצפיין אינו יוצר אותם ואינו מציג אותם עדיין — הוא מחזיר אותם כמות שהם,
   // כדי שמסלול האייפד לא ירוקן גיליון שיש בו קרומים.
