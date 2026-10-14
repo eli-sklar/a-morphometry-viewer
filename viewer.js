@@ -394,7 +394,10 @@ function amAboutMount(btn,ver){
   },true);
   return M;
 }
-amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:(($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?'});
+// 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
+// cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
+const VIEWER_JS_VER=47;
+amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
    rule: never on its own at start). Six fields — ours (locked until a finger, 453), the same outside our lock, a textarea,
@@ -410,11 +413,11 @@ amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:(($('ver')||{}
   function openCheck(){
     const L=[], vv=window.visualViewport;
     const mm=q=>{ try{ return matchMedia(q).matches?1:0; }catch(_){ return '?'; } };
-    L.push('v='+((($('ver')||{}).textContent)||'?')+' | ua='+navigator.userAgent+' | standalone='+(navigator.standalone?1:0)
+    L.push('v='+((($('ver')||{}).textContent)||'?')+' code='+VIEWER_JS_VER+' | ua='+navigator.userAgent+' | standalone='+(navigator.standalone?1:0)
       +' display='+(mm('(display-mode: standalone)')?'standalone':'browser')+' | touch='+(navigator.maxTouchPoints||0)
       +' anyFine='+mm('(any-pointer: fine)')+' anyHover='+mm('(any-hover: hover)')
       +' | vv='+(vv?Math.round(vv.height)+'/'+Math.round(vv.offsetTop):'-')+' inner='+innerHeight);
-    const W=document.createElement('div');
+    const W=document.createElement('div'); W.id='amKbCheck';   // 536: the page's touch guard lets it scroll
     W.style.cssText='position:fixed;inset:0;z-index:2147483500;background:#141210;color:#d8cdb8;direction:rtl;overflow:auto;'
       +'padding:14px;font:14px system-ui,Arial,sans-serif;-webkit-user-select:text;user-select:text';
     const head=document.createElement('div'); head.style.cssText='font-weight:600;margin-bottom:6px';
@@ -4267,6 +4270,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   document.addEventListener('touchmove',e=>{
     if(e.touches.length>1){e.preventDefault();return;}
     const t=e.target;
+    // 536 (14/10): the About box and the keyboard check scroll under a finger (once a work is loaded this guard is on, and
+    // it cancelled every scroll inside them). Measured in WebKit at iPad sizes the box does not overflow — not the cause
+    // of 536, a guard all the same
+    if(t.closest&&t.closest('#infoModal,#amKbCheck')) return;
     if(!(t.closest&&t.closest('input,button,select,textarea,label'))) e.preventDefault();
   },{passive:false});
   document.addEventListener('dblclick',e=>e.preventDefault());

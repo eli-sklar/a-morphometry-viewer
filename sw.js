@@ -2,12 +2,14 @@
    one-time install the viewer must work with no network at all (decision 19).
    Bump CACHE on every release; the old cache is dropped on activate. */
 'use strict';
-const CACHE='am-viewer-v46';
+const CACHE='am-viewer-v47';
 const ASSETS=['./','index.html','viewer.js','three.min.js','three-mesh-bvh.js','manifest.webmanifest',
               'icon-180.png','icon-512.png'];
 
+// 536 (14/10): every file is fetched past the browser's HTTP cache (cache:'reload'). Pages serves max-age=600, and a
+// plain addAll could take a fresh index.html ("גרסה 46") beside a viewer.js still cached from the version before
 self.addEventListener('install',e=>{
-  e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS.map(a=>new Request(a,{cache:'reload'})))).then(()=>self.skipWaiting()));
 });
 self.addEventListener('activate',e=>{
   e.waitUntil(caches.keys().then(ks=>Promise.all(
