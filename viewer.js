@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=48;
+const VIEWER_JS_VER=49;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -5779,13 +5779,15 @@ const amPal=(function(){
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
   const AM_SHEET_READER = 8;   // 433: one brush, a level per layer   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
-  const AM_SUB_SCHEME = 1;      // core.subdiv_weights, face-major child order
+  const AM_SUB_SCHEME = (am.subScheme===2)?2:1;   // 539: 1 — one k; 2 — a target size, k_f = sqrt(cnt) (the work says which)
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
   function dec(b64){const bin=atob(b64),len=bin.length,u=new Uint8Array(len);for(let i=0;i<len;i++)u[i]=bin.charCodeAt(i);return u.buffer;}   // 349: the shared amRemap reads the sheet layout with it
   function amRemap(j){
     const sch=(typeof j.subScheme==='number')?j.subScheme:AM_SUB_SCHEME;
-    if(sch!==AM_SUB_SCHEME) return {ok:false,why:'סדר תת-הפאות בקובץ (סכימה '+sch+') אינו מוכר לתוכנה הזאת.'};
+    if(sch!==AM_SUB_SCHEME) return {ok:false,why:(sch===1||sch===2)
+      ? 'הגיליון נכתב לפריסת תת-פאות אחרת (סכימה '+sch+') מזו של המודל הפתוח (סכימה '+AM_SUB_SCHEME+').'   // 539
+      : 'סדר תת-הפאות בקובץ (סכימה '+sch+') אינו מוכר לתוכנה הזאת.'};
     const oldK=(typeof j.subdiv==='number')?j.subdiv:SUBK;
     if(oldK!==SUBK) return {ok:false,why:'דקוּת הסימון בקובץ ('+oldK+') שונה מזו של המודל הפתוח ('+SUBK+').'};
     const oSPF=oldK*oldK;
