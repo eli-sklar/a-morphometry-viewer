@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=49;
+const VIEWER_JS_VER=50;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -1970,6 +1970,15 @@ mat.onBeforeCompile=sh=>{
       at.clearUpdateRanges(); at.addUpdateRange(0,o*at.itemSize); at.needsUpdate=true; }
     g.setDrawRange(0,o); amMarkMesh.visible=true; invalidate();
   }
+  // 545: the pieces of the line take their layers' opacity, alone — amMarkDraw's order and offsets, its aFlat only
+  // (a layer's opacity that stays above 0 changes neither which pieces are drawn nor where)
+  function amMarkOps(){
+    if(!amMarkMesh||!amMarkMesh.visible) return;
+    const A=amMarkMesh.geometry.attributes.aFlat; let o=0;
+    for(const T of amMarkLayers()){ if(!T.pieces||!(T.op>0)||T.hid) continue;
+      for(const q of T.pieces.values()){ const n=q.pos.length/3; A.array.fill(T.op,o,o+n); o+=n; } }
+    A.clearUpdateRanges(); A.addUpdateRange(0,o); A.needsUpdate=true; invalidate();
+  }
   // a stroke of the area brush: its balls go into the layer the moment it starts
   function amStrokeBegin(){
     if(!(activeKind==='area'&&areaTool===AM_BRUSH&&(mode==='add'||mode==='rem'))) return;
@@ -2046,6 +2055,7 @@ mat.onBeforeCompile=sh=>{
     if(typeof smLive!=='undefined'&&smLive&&smLive[f]&&mode!=='rem'&&!(typeof smLiveT!=='undefined'&&smLiveT&&smLiveT.band.has(f))){   // 389: an erasure is drawn by its own red (smRed), not face by face
       const T=types[activeT], c=(mode==='rem')?[0.780,0.122,0.216]:((T&&T.color)||[0.220,0.690,0.000]), o0=f*9;
       for(let k=0;k<3;k++){colors[o0+k*3]=c[0];colors[o0+k*3+1]=c[1];colors[o0+k*3+2]=c[2];flats[f*3+k]=0.8;dess[f*3+k]=0;}
+      if(typeof amShowT==='object'&&amShowT) amShowT[f]=254;   // 545: the brush's, not a layer's
       return;
     }
     // Volume paint wins the pixel, SOLID. It was drawn as a dither on every other
@@ -2055,6 +2065,7 @@ mat.onBeforeCompile=sh=>{
       const o0=f*9;
       for(let c=0;c<3;c++){colors[o0+c*3]=VOLC[0];colors[o0+c*3+1]=VOLC[1];colors[o0+c*3+2]=VOLC[2];
         flats[f*3+c]=volOp; dess[f*3+c]=volDes;}
+      if(typeof amShowT==='object'&&amShowT) amShowT[f]=254;   // 545: the volume paint's, not a layer's
       return;
     }
     for(let ti=0;ti<types.length;ti++) if(types[ti].op>0 && !types[ti].hid && isType(ti,f) && !(types[ti].band&&types[ti].band.has(f))) _vis.push(ti);
@@ -2063,6 +2074,7 @@ mat.onBeforeCompile=sh=>{
     if(selMask[f]){ r=[(r[0]+SELC[0])*0.5,(r[1]+SELC[1])*0.5,(r[2]+SELC[2])*0.5]; a=Math.max(a,0.35); }
     const o=f*9;
     for(let c=0;c<3;c++){colors[o+c*3]=r[0];colors[o+c*3+1]=r[1];colors[o+c*3+2]=r[2];flats[f*3+c]=a;dess[f*3+c]=d;}
+    if(typeof amShowT==='object'&&amShowT) amShowT[f]=_vis.length?_vis[f%_vis.length]:255;   // 545: the layer it shows
   }
   function amColMark(f){
     if(!amCF||amCF.df.length!==N){ const c={df:new Uint8Array(N), dl:[], all:false, gpu:[-1,-1,-1], mine:[-1,-1,-1], cb:null};
@@ -2100,8 +2112,36 @@ mat.onBeforeCompile=sh=>{
   function amMarkLayers(){ const L=(typeof volMarkT!=='undefined'&&volMarkT)?types.concat([volMarkT]):types;
     return (typeof smLiveT!=='undefined'&&smLiveT)?L.concat([smLiveT]):L; }   // 325: no volume brush · 335: the smooth brush's line while it is down
   function recolorAll(){if(typeof smRecolor==='function') smRecolor();   // 335ב: the copies take the layer's colour too
+    if(!amShowT||amShowT.length!==N) amShowT=new Uint8Array(N);   // 545: which layer each sub-face shows (recolorFace)
     for(let f=0;f<N;f++)recolorFace(f);colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();
+    if(!amOpShownM) amOpShownM=new WeakMap(); for(const T of types) amOpShownM.set(T,T.op);   // 545: the opacity drawn
     if(typeof amMarkDraw==='function'){ amMarkDraw(); amMarkSoon(); }}   // 324: the line follows whatever changed
+  // 545 (Eli, 19/10: "שינוי השקיפות של הסימונים לוקח זמן חריג ותוקע את המחשב"; "בטח שיכנס הלילה"): the area layer's
+  // opacity, alone. The wheel ran recolorAll on every step — every sub-face (1.57M on his work), the colour, cover and
+  // design arrays whole to the card, the area counted again, every ring rebuilt, and (amMarkSoon) every stroke of the
+  // smoothed brush cut again from nothing, 239 of them. The opacity is one number per vertex of the sub-faces that SHOW
+  // the layer (recolorFace keeps which: amShowT), the pieces of the line (amMarkOps), the copies and the rings' fills
+  // (smRecolor) and the rings' outlines — nothing is cut, counted or rebuilt. A layer that passes through 0 changes
+  // WHICH sub-faces show it (a layer at 0 shows nothing; a sub-face of two layers then shows the other): that is
+  // recolorAll's, as before. One update a frame (amAreaOpSoon): the last value wins.
+  var amShowT=null, amOpShownM=null, amAoPend=null;
+  function amAreaOp(ti){
+    const T=types[ti]; if(!T) return;
+    const v=T.op, was=amOpShownM?amOpShownM.get(T):undefined;
+    if(!(was>0)||!(v>0)||!amShowT||amShowT.length!==N||types.length>=254){
+      recolorAll(); if(polys.length||curPoly||(typeof SMR!=='undefined'&&SMR.length)) polyRebuild(); return; }
+    for(let f=0;f<N;f++) if(amShowT[f]===ti){ const a=selMask[f]?Math.max(v,0.35):v, o=f*3; flats[o]=a; flats[o+1]=a; flats[o+2]=a; }
+    flatAttr.needsUpdate=true;
+    if(typeof amMarkOps==='function') amMarkOps();
+    if(typeof smRecolor==='function') smRecolor();
+    for(const o of polyGroup.children){ const u=o.userData; if(u&&u.pgAt===T.id&&!u.pgOpen&&o.material) o.material.opacity=v; }
+    amOpShownM.set(T,v); invalidate();
+  }
+  function amAreaOpSoon(ti){
+    if(amAoPend!==null&&amAoPend!==ti) amAreaOp(amAoPend);   // another layer's step, still waiting: drawn first
+    if(amAoPend===ti) return;
+    amAoPend=ti; requestAnimationFrame(()=>{ const t=amAoPend; amAoPend=null; if(t!==null) amAreaOp(t); });
+  }
   // Design-only repaint (decision 93) — same words as the editor: the wheel touches
   // only aDes, and a full recolour per drag tick killed the GL context on a 168k-face
   // building. One attribute pass, coalesced to a frame.
@@ -3541,7 +3581,7 @@ float amStippleA(float a, float lvl){
       for(const q of P.pts){
         const m=new THREE.Mesh(new THREE.SphereGeometry(1,14,10),
           new THREE.MeshBasicMaterial(_lm()));
-        m.position.set(q[0],q[1],q[2]); m.renderOrder=999;
+        m.position.set(q[0],q[1],q[2]); m.renderOrder=999; m.userData.pgAt=P.at; m.userData.pgOpen=!!open;   // 545
         polyGroup.add(m); keepOnScreen(m,RUL_PT_K);
       }
       const n=P.pts.length;
@@ -3550,7 +3590,7 @@ float amStippleA(float a, float lvl){
         const gm=new THREE.BufferGeometry().setFromPoints(
           [new THREE.Vector3(a[0],a[1],a[2]),new THREE.Vector3(b[0],b[1],b[2])]);
         const ln=new THREE.Line(gm,new THREE.LineBasicMaterial(_lm()));
-        ln.renderOrder=999; polyGroup.add(ln);
+        ln.renderOrder=999; ln.userData.pgAt=P.at; ln.userData.pgOpen=!!open; polyGroup.add(ln);   // 545
       }
       if(open) return;
       // 335ב: the fill on the model, in the wall's law — and on the plane where no model is. Kept on
@@ -5308,7 +5348,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     $('repopV').textContent=e.target.value+'%';
     if(!T) return;
     T.op=v;
-    if(activeKind==='area'){recolorAll(); if(polys.length||curPoly||SMR.length) polyRebuild();}
+    if(activeKind==='area') amAreaOpSoon(types.indexOf(T));   // 545: the opacity alone, once a frame
     else if(activeKind==='len') applyLenOp(T);
     else if(activeKind==='cnt'){for(const m of xmarks) if(m.t===T.id&&m.obj){
       m.obj.material.transparent=v<1; m.obj.material.opacity=v; m.obj.material.needsUpdate=true;}}
