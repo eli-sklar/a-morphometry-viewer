@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=51;
+const VIEWER_JS_VER=52;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -1930,10 +1930,14 @@ mat.onBeforeCompile=sh=>{
       if(op.c.length>k0) rmax=Math.max(rmax,op.r); amSeen.set(op,op.c.length); }
     if(pts.length) amMarkLocal(T,pts,rmax);
   }
+  // 548: the sub-faces a stroke of the line marked since the last tick — coloured only after the line has taken them
+  var amPendQ=[];
+  function amPendFlush(){ if(typeof amPendQ==='undefined'||!amPendQ.length) return; const q=amPendQ; amPendQ=[]; for(const f of q) recolorFace(f); }
   function amMarkTick(){
     const t0=performance.now(); if(t0<amMarkHold) return;
     amMarkDue=false;
-    if(amLive&&types[amLiveT]){ amMarkNear(types[amLiveT]); amMarkDraw(); }   // 494: its sub-faces go up by their ranges (amColFlush)
+    if(amLive&&types[amLiveT]){ amMarkNear(types[amLiveT]); if(typeof amPendFlush==='function') amPendFlush(); amMarkDraw(); }   // 494: by their ranges (amColFlush); 548: the queue after the line
+    else if(typeof amPendFlush==='function') amPendFlush();
     const dt=performance.now()-t0; amMarkHold=dt>25?performance.now()+16:0;
   }
   // the marked parts, drawn over the sub-faces they cut with the layer's colour, opacity and
@@ -2017,12 +2021,12 @@ mat.onBeforeCompile=sh=>{
   function amStrokeEnd(){
     if(!amLive) return;
     const T=types[amLiveT], op=amLive;
-    if(T){ amMarkNear(T);
+    if(T){ amMarkNear(T); if(typeof amPendFlush==='function') amPendFlush();   // 548: what the stroke marked since the last tick
       const chose=!!(curDiff&&curDiff.some(d=>d[0]!=='OP'));
       if(!chose&&!amKeeps(T,op)){ const k=T.ops.lastIndexOf(op); if(k>=0) T.ops.splice(k,1);
         if(curDiff) curDiff=curDiff.filter(d=>d[2]!==op);
         amWatch=null; amMarkAt(T,op); } }
-    amLive=null; amWatch=null;
+    amLive=null; amWatch=null; if(typeof amPendFlush==='function') amPendFlush();
     updateArea(); amMarkDraw();   // 494: the area counted once, at the end; the colours by their ranges
   }
   // undo and redo: an op leaves or comes back, and the line is asked again where it was
@@ -4305,12 +4309,12 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(amHold&&Math.hypot(e.clientX-amHold.x,e.clientY-amHold.y)>AM_HOLD_SLOP) amHoldClear();
     const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];
     if(dragging==='rot'){amTurn(-dx*0.006,-dy*0.006);}
-    else if(dragging==='line'){lineAt(e);}
+    else if(dragging==='line'){ if(e.getCoalescedEvents){for(const ce of e.getCoalescedEvents())lineAt(ce);} else lineAt(e); }   // 548: as the measurement screen
     else if(dragging==='lerase'){lineEraseAt(e);}
     else if(dragging==='xerase'){eraseXAt(e);}
     else if(dragging==='grab'){amGrabMove(e);}
     else if(dragging==='smpaint'){smPaintAt(e);}
-    else if(dragging==='paint'){paintAt(e);}
+    else if(dragging==='paint'){paintAtAll(e);}   // 548: every gathered sample
   });
   function endDrag(e){
     amHoldClear();
@@ -4622,11 +4626,22 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         const dx=cen[f*3]-p.x,dy=cen[f*3+1]-p.y,dz=cen[f*3+2]-p.z;
         if(dx*dx+dy*dy+dz*dz<=r2&&(!seen||seen.has(f))){
           { const M=types[activeT].manual;
-            if(M[f]!==val){recH(activeT,f);M[f]=val;amSUpd(activeT,f);recolorFace(f);ch=true;} }
+            if(M[f]!==val){recH(activeT,f);M[f]=val;amSUpd(activeT,f);
+              // 548: in a stroke of the line, the sub-face is coloured by the tick, after the line has taken it (amMarkTick) —
+              // coloured here, it showed WHOLE across the line until the tick caught up; on the iPad, a frame or two
+              if(amLive&&typeof amPendQ!=='undefined') amPendQ.push(f); else recolorFace(f);
+              ch=true;} }
         }}}
     // 494: the sub-faces it recoloured go up at the frame (amColFlush); the area is counted once the stroke ends
     // (amStrokeEnd), by the same full count — a touch with no stroke (no ball line) still counts it here
     if(ch&&!amLive) updateArea();}
+  // 548 (Eli: "משיכות רציפות יותר זה טוב"): every sample the browser gathered since the last event — a pencil gives 240 a
+  // second, the event comes at the screen's 60 — each with its own ball, so a fast stroke is one line and not beads
+  // (the tape, 14/08: "a quick hand leaves 4+ cm gaps"). The last sample is the event itself
+  function paintAtAll(e){
+    const L=(e&&e.getCoalescedEvents)?e.getCoalescedEvents():null;
+    if(L&&L.length>1){ for(const ce of L) paintAt(ce); } else paintAt(e);
+  }
 
   /* ---- length stroke: sample the pencil path into a surface polyline ---- */
   function lineEraseAt(e){const hit=castAt(e); if(!hit.length)return;
