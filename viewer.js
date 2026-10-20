@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=54;
+const VIEWER_JS_VER=55;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -1506,46 +1506,85 @@ mat.onBeforeCompile=sh=>{
     const d=Math.sqrt(d2);
     return ins?-d:d;
   }
+  // 553: two levels — the layer's cells (2·rmax) hold each stroke once (which strokes a point finds); each radius's cells
+  // (2r, never finer than a 64th of the layer's) hold the dabs (how near). See ccFieldIx
   function ccIndex(ops){
     let rmax=0, farPos=Infinity, n=0;
     for(const op of ops){ if(op.t==='faces') continue; if(op.t!=='balls') return null;
       if(op.c.length){ rmax=Math.max(rmax,op.r); if(op.s>=0) farPos=Math.min(farPos,op.r); } n+=(op.c.length/3)|0; }
     const cs=Math.max(2*rmax,1e-6);
+    // the radii: one class each, with its cells
+    const cls=new Int32Array(ops.length), rOf=new Map(), fcsL=[];
+    ops.forEach((op,k)=>{ if(op.t!=='balls') return; let c=rOf.get(op.r);
+      if(c===undefined){ c=fcsL.length; rOf.set(op.r,c); fcsL.push(Math.max(2*op.r,cs/64,1e-6)); } cls[k]=c; });
+    const fcs=Float64Array.from(fcsL);
+    // the layer's cells: each stroke once in each
     let size=16; while(size<4*n) size*=2; const mask=size-1;
-    const KI=new Int32Array(size), KJ=new Int32Array(size), KK=new Int32Array(size), used=new Uint8Array(size), cnt=new Int32Array(size);
-    const slotOf=new Int32Array(n), dOp=new Int32Array(n), dI=new Int32Array(n); let q=0;
+    const KI=new Int32Array(size), KJ=new Int32Array(size), KK=new Int32Array(size), used=new Uint8Array(size), cnt=new Int32Array(size), last=new Int32Array(size).fill(-1);
+    const slotOf=[], opOf=[];
     ops.forEach((op,k)=>{ if(op.t!=='balls') return; const c=op.c;
       for(let i=0;i+2<c.length;i+=3){ const a=Math.floor(c[i]/cs), b=Math.floor(c[i+1]/cs), d=Math.floor(c[i+2]/cs);
         let h=(Math.imul(a,73856093)^Math.imul(b,19349663)^Math.imul(d,83492791))&mask;
         while(used[h]&&!(KI[h]===a&&KJ[h]===b&&KK[h]===d)) h=(h+1)&mask;
         if(!used[h]){used[h]=1;KI[h]=a;KJ[h]=b;KK[h]=d;}
-        cnt[h]++; slotOf[q]=h; dOp[q]=k; dI[q]=i; q++; } });
+        if(last[h]!==k){ last[h]=k; cnt[h]++; slotOf.push(h); opOf.push(k); } } });
     const start=new Int32Array(size+1); for(let h=0;h<size;h++) start[h+1]=start[h]+cnt[h];
-    const fill=start.slice(0,size), EO=new Int32Array(n), EI=new Int32Array(n);
-    for(let t=0;t<q;t++){ const h=slotOf[t], w=fill[h]++; EO[w]=dOp[t]; EI[w]=dI[t]; }
+    const fill=start.slice(0,size), EO=new Int32Array(slotOf.length);
+    for(let t=0;t<slotOf.length;t++){ EO[fill[slotOf[t]]++]=opOf[t]; }
+    // each radius's cells: the dabs
+    const fmask=mask, FI=new Int32Array(size), FJ=new Int32Array(size), FK=new Int32Array(size), FC=new Int32Array(size), fused=new Uint8Array(size), fcnt=new Int32Array(size);
+    const fslot=new Int32Array(n), dOp=new Int32Array(n), dI=new Int32Array(n); let q=0;
+    ops.forEach((op,k)=>{ if(op.t!=='balls') return; const c=op.c, cc=cls[k], fs=fcs[cc], hc=Math.imul(cc,2654435761);
+      for(let i=0;i+2<c.length;i+=3){ const a=Math.floor(c[i]/fs), b=Math.floor(c[i+1]/fs), d=Math.floor(c[i+2]/fs);
+        let h=(Math.imul(a,73856093)^hc^Math.imul(b,19349663)^Math.imul(d,83492791))&fmask;
+        while(fused[h]&&!(FC[h]===cc&&FI[h]===a&&FJ[h]===b&&FK[h]===d)) h=(h+1)&fmask;
+        if(!fused[h]){fused[h]=1;FC[h]=cc;FI[h]=a;FJ[h]=b;FK[h]=d;}
+        fcnt[h]++; fslot[q]=h; dOp[q]=k; dI[q]=i; q++; } });
+    const fstart=new Int32Array(size+1); for(let h=0;h<size;h++) fstart[h+1]=fstart[h]+fcnt[h];
+    const ffill=fstart.slice(0,size), FEO=new Int32Array(n), FEI=new Int32Array(n);
+    for(let t=0;t<q;t++){ const h=fslot[t], w=ffill[h]++; FEO[w]=dOp[t]; FEI[w]=dI[t]; }
     const fops=[]; ops.forEach((op,k)=>{ if(op.t==='faces') fops.push(k); });
-    return {fops:fops, cs:cs, mask:mask, KI:KI, KJ:KJ, KK:KK, used:used, start:start, EO:EO, EI:EI, farPos:farPos, stamp:0,
+    return {fops:fops, cs:cs, mask:mask, KI:KI, KJ:KJ, KK:KK, used:used, start:start, EO:EO, farPos:farPos, stamp:0,
+            cls:cls, cseen:new Int32Array(fcs.length), clist:new Int32Array(fcs.length), fcs:fcs,
+            fmask:fmask, FI:FI, FJ:FJ, FK:FK, FC:FC, fused:fused, fstart:fstart, FEO:FEO, FEI:FEI,
             seen:new Int32Array(ops.length), best:new Float64Array(ops.length), touch:new Int32Array(ops.length)};
   }
+  // 553 (Eli, a Kennedy hand of 2,000 m²: the screen frozen minutes after the open; measured by line: 15.7 of 28 s in the
+  // loop over the dabs of the 27 cells): the layer's cells are 2·rmax — 2 m beside a 1 m brush — and every point read every
+  // dab of every stroke within them. Now the layer's cells say only WHICH strokes the point finds (as before: a stroke with
+  // a dab in them), and each found stroke's nearest dab is read in its own cells (2r, by radius). The same to the last bit:
+  // a stroke's term is r when its nearest found dab is past 2r, and √d²−r when within — and a dab within 2r ≤ 2·rmax lies in
+  // the layer's 27 cells and in its own 27, so the nearest within 2r is found by both; past it, both give r
   function ccFieldIx(ix,ops,x,y,z,en){
     const cs=ix.cs, ix0=Math.floor(x/cs), iy0=Math.floor(y/cs), iz0=Math.floor(z/cs);
     const st=++ix.stamp, S=ix.seen, B=ix.best, T=ix.touch, mask=ix.mask, KI=ix.KI, KJ=ix.KJ, KK=ix.KK,
-          U=ix.used, ST=ix.start, EO=ix.EO, EI=ix.EI; let nt=0;
+          U=ix.used, ST=ix.start, EO=ix.EO, CLS=ix.cls, CS=ix.cseen, CL=ix.clist; let nt=0, nc=0;
     for(let a=ix0-1;a<=ix0+1;a++){ const ha=Math.imul(a,73856093);
       for(let b=iy0-1;b<=iy0+1;b++){ const hb=ha^Math.imul(b,19349663);
         for(let d=iz0-1;d<=iz0+1;d++){
           let h=(hb^Math.imul(d,83492791))&mask;
           while(U[h]&&!(KI[h]===a&&KJ[h]===b&&KK[h]===d)) h=(h+1)&mask;
           if(!U[h]) continue;
-          for(let w=ST[h],we=ST[h+1];w<we;w++){ const k=EO[w], i=EI[w], c=ops[k].c;
-            const dx=x-c[i],dy=y-c[i+1],dz=z-c[i+2], d2=dx*dx+dy*dy+dz*dz;
-            if(S[k]!==st){S[k]=st;B[k]=d2;T[nt++]=k;} else if(d2<B[k]) B[k]=d2; } } } }
+          for(let w=ST[h],we=ST[h+1];w<we;w++){ const k=EO[w];
+            if(S[k]!==st){ S[k]=st; B[k]=Infinity; T[nt++]=k; const c=CLS[k]; if(CS[c]!==st){ CS[c]=st; CL[nc++]=c; } } } } } }
+    // each radius's own cells: the nearest dab of every found stroke
+    const fm=ix.fmask, FI=ix.FI, FJ=ix.FJ, FK=ix.FK, FC=ix.FC, FU=ix.fused, FS=ix.fstart, FO2=ix.FEO, FE=ix.FEI, FCS=ix.fcs;
+    for(let q=0;q<nc;q++){ const c=CL[q], fs=FCS[c], jx=Math.floor(x/fs), jy=Math.floor(y/fs), jz=Math.floor(z/fs), hc=Math.imul(c,2654435761);
+      for(let a=jx-1;a<=jx+1;a++){ const ha=Math.imul(a,73856093)^hc;
+        for(let b=jy-1;b<=jy+1;b++){ const hb=ha^Math.imul(b,19349663);
+          for(let d=jz-1;d<=jz+1;d++){
+            let h=(hb^Math.imul(d,83492791))&fm;
+            while(FU[h]&&!(FC[h]===c&&FI[h]===a&&FJ[h]===b&&FK[h]===d)) h=(h+1)&fm;
+            if(!FU[h]) continue;
+            for(let w=FS[h],we=FS[h+1];w<we;w++){ const k=FO2[w]; if(S[k]!==st) continue;
+              const i=FE[w], cc=ops[k].c, dx=x-cc[i],dy=y-cc[i+1],dz=z-cc[i+2], d2=dx*dx+dy*dy+dz*dz;
+              if(d2<B[k]) B[k]=d2; } } } } }
     for(let i=1;i<nt;i++){ const v=T[i]; let j=i-1; while(j>=0&&T[j]>v){T[j+1]=T[j];j--;} T[j+1]=v; }
     // the sub-face's own start, and the face-level acts in their place among the strokes
     let f=(en&&en.st)?(en.st(en.cur)?-CC_BIG:CC_BIG):Infinity;
-    const FO=ix.fops; let fi=0;
+    const FOP=ix.fops; let fi=0;
     for(let q=0;q<=nt;q++){ const kb=(q<nt)?T[q]:Infinity;
-      while(fi<FO.length&&FO[fi]<kb){ const v=ops[FO[fi]].m.get(en?en.cur:-1); if(v!==undefined) f=(v>0)?-CC_BIG:CC_BIG; fi++; }
+      while(fi<FOP.length&&FOP[fi]<kb){ const v=ops[FOP[fi]].m.get(en?en.cur:-1); if(v!==undefined) f=(v>0)?-CC_BIG:CC_BIG; fi++; }
       if(q===nt) break;
       const op=ops[T[q]], r=op.r, d2=B[T[q]];
       const g=(d2>4*r*r)?r:Math.sqrt(d2)-r; f=(op.s>=0)?Math.min(f,g):Math.max(f,-g); }
@@ -1847,8 +1886,19 @@ mat.onBeforeCompile=sh=>{
   // nothing there. Kept besides — so the cut is the same to the last bit: the stroke of the largest radius (the cells' size),
   // the dab at each of the six sides of the layer's box (ccPlan's box), every face-level act, all in their order; a stroke
   // cut down is a copy with the same radius and side. A layer with a box or a polygon (no index): the whole entry. Each
-  // stroke's box and its side dabs are kept, and grow with the stroke
-  var AM_OPBB=new WeakMap();
+  // stroke's box and its side dabs are kept, and grow with the stroke.
+  // 552 (Eli, iPad 54, a Kennedy hand of 2,000 m²: the screen frozen two minutes after the open; measured: 39 of 42 s the
+  // whole layer's cut, 33 of them in ccFieldIx): the field reads every face-level act at every point — 47 of them in a
+  // row (a fill kept in parts of 80,000 faces). Acts with no stroke between them — none kept here, so none the field can
+  // find — stand in the same place among the strokes, and at a point the last that holds it wins: one act, the later
+  // overriding, is the same to the last bit. Kept, as the run's acts and their sizes stay
+  var AM_OPBB=new WeakMap(), AM_FRUN=new WeakMap();
+  function amFacesRun(run){
+    const c=AM_FRUN.get(run[0]);
+    if(c&&c.run.length===run.length&&c.run.every((o,i)=>o===run[i]&&c.sz[i]===o.m.size)) return c.op;
+    const m=new Map(); for(const o of run) for(const [f,v] of o.m) m.set(f,v);
+    const op={t:'faces', m:m}; AM_FRUN.set(run[0],{run:run.slice(), sz:run.map(o=>o.m.size), op:op}); return op;
+  }
   function amEnNear(T,lo,hi){
     const en=amEnOf(T), ops=T.ops; if(ops.length<3) return en;
     let rmax=0, rk=-1; const ev=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity], ek=[-1,-1,-1,-1,-1,-1], ei=[0,0,0,0,0,0];
@@ -1873,8 +1923,14 @@ mat.onBeforeCompile=sh=>{
       for(const i of ex) q.push(c[i],c[i+1],c[i+2]);
       if(!q.length&&k===rk) q.push(c[0],c[1],c[2]);
       cut=true; if(q.length) keep.push({t:'balls', c:q, r:op.r, s:op.s}); }
-    if(!cut||keep.length<2) return en;
-    en.ops=keep; return en;
+    // 552: a run of face-level acts — one
+    const out=[];
+    for(let i=0;i<keep.length;){ if(keep[i].t!=='faces'){ out.push(keep[i++]); continue; }
+      let j=i; while(j<keep.length&&keep[j].t==='faces') j++;
+      if(j-i>1){ out.push(amFacesRun(keep.slice(i,j))); cut=true; } else out.push(keep[i]);
+      i=j; }
+    if(!cut||out.length<2) return en;
+    en.ops=out; return en;
   }
   function amSOf(T){ const ti=types.indexOf(T); if(!T.S||T.S.length!==N) T.S=new Uint8Array(N);
     for(let f=0;f<N;f++) T.S[f]=isType(ti,f)?1:0; }
