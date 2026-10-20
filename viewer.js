@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=50;
+const VIEWER_JS_VER=51;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -2128,14 +2128,39 @@ mat.onBeforeCompile=sh=>{
   function amAreaOp(ti){
     const T=types[ti]; if(!T) return;
     const v=T.op, was=amOpShownM?amOpShownM.get(T):undefined;
-    if(!(was>0)||!(v>0)||!amShowT||amShowT.length!==N||types.length>=254){
+    if(!amShowT||amShowT.length!==N||types.length>=254){
       recolorAll(); if(polys.length||curPoly||(typeof SMR!=='undefined'&&SMR.length)) polyRebuild(); return; }
+    if(!(was>0)||!(v>0)){ amAreaVis(ti); return; }   // 547: through 0 — the layer disappears or comes back, alone
     for(let f=0;f<N;f++) if(amShowT[f]===ti){ const a=selMask[f]?Math.max(v,0.35):v, o=f*3; flats[o]=a; flats[o+1]=a; flats[o+2]=a; }
     flatAttr.needsUpdate=true;
     if(typeof amMarkOps==='function') amMarkOps();
     if(typeof smRecolor==='function') smRecolor();
     for(const o of polyGroup.children){ const u=o.userData; if(u&&u.pgAt===T.id&&!u.pgOpen&&o.material) o.material.opacity=v; }
     amOpShownM.set(T,v); invalidate();
+  }
+  // 547 (Eli, 20/10: "עדיין ניכרת תקיעה ... במיוחד במעבר ל-0% וגם בהסתרה מלאה של שכבת הסימונים דרך העין"): a layer that
+  // disappears or comes back — its eye, or its opacity through 0 — changes which layer the sub-faces it is a CANDIDATE on
+  // show (it alone, or the other one on a sub-face of two), and nothing else. Those sub-faces are coloured again (494:
+  // recolorFace marks each for the frame's ranges — no array goes up whole); the line's pieces are drawn again from what
+  // they are (amMarkDraw skips a layer hidden or at 0) — not cut; the copies and the rings' fills take the colour and
+  // opacity (smRecolor); the rings' outlines the opacity; the rings and copies of a hidden layer are hidden in place and
+  // shown in place — rebuilt only when they were never built (the layer was hidden when they were). Not counted (the
+  // area does not depend on it), not cut (amMarkSoon) and not rebuilt. It was recolorAll + polyRebuild: every sub-face,
+  // every stroke cut again, every ring and copy rebuilt.
+  function amAreaVis(ti){
+    const T=types[ti]; if(!T) return;
+    if(!amShowT||amShowT.length!==N||types.length>=254){ recolorAll(); polyRebuild(); return; }
+    for(let f=0;f<N;f++) if(amShowT[f]===ti||isType(ti,f)) recolorFace(f);
+    if(typeof amMarkDraw==='function') amMarkDraw();
+    if(typeof smRecolor==='function') smRecolor();
+    const own=o=>{ const u=o.userData; return !!u&&(u.pgAt===T.id||u.smAt===T.id||u.smLine===T.id); };
+    let built=false;
+    for(const o of polyGroup.children) if(own(o)){ o.visible=!T.hid; built=true;
+      if(o.userData.pgAt===T.id&&!o.userData.pgOpen&&o.material) o.material.opacity=T.op; }
+    if(typeof smGroup!=='undefined'&&smGroup) for(const o of smGroup.children) if(own(o)){ o.visible=!T.hid; built=true; }
+    const has=polys.some(P=>P.at===T.id)||(typeof SMR!=='undefined'&&SMR.some(r=>r&&r.at===T.id));
+    if(!T.hid&&has&&!built) polyRebuild();
+    if(!amOpShownM) amOpShownM=new WeakMap(); amOpShownM.set(T,T.op); invalidate();
   }
   function amAreaOpSoon(ti){
     if(amAoPend!==null&&amAoPend!==ti) amAreaOp(amAoPend);   // another layer's step, still waiting: drawn first
@@ -5538,7 +5563,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       // 10: no measurement-mode menu on the layer — a layer holds both, and the side bar
       // picks the tool (the menu and its lock were 256's "the two cannot be mixed")
       if(T.hid) c.style.opacity='0.45';
-      c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;recolorAll();polyRebuild();buildChips();markUnexported(true);}));
+      c.appendChild(amEye(!T.hid,()=>{T.hid=!T.hid;amAreaVis(i);buildChips();markUnexported(true);}));   // 547: the layer alone
       c.appendChild(amDelX('area',i));
       c.onclick=()=>{activateT(i);if(mode==='nav')setMode('add');};
       A.appendChild(c);});
