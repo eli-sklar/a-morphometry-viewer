@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=55;
+const VIEWER_JS_VER=56;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
