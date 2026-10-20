@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=53;
+const VIEWER_JS_VER=54;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -1840,6 +1840,42 @@ mat.onBeforeCompile=sh=>{
   // where a sub-face starts: inside when the automatic detection marks it (no manual mark)
   function amStartOf(T,ti){ return f=>{ if(!T.prob||(AM_PROB_ARMED_ONLY&&!T.hasProb)||!roi[f]) return false; return T.prob[f]>effThr(ti,f); }; }                  // the iPad's isType, without the manual mark
   function amEnOf(T){ return {faces:null, S:T.S, ops:T.ops, inv:false, cur:-1, st:amStartOf(T,types.indexOf(T))}; }
+  // 550 (Eli, iPad 52/53, a Kennedy hand with many marks: "המשיכה מעט איטית"): the layer's entry for a cut near one place —
+  // only the dabs that can reach it. ccPlan indexes every dab of the entry it is given, and amEnOf is new at each call, so
+  // every tick indexed the whole layer (239 strokes, ~265K dabs) and the whole live stroke. The field at a point reads only
+  // the dabs in the index cells around it (within two cells), so a dab farther than three cells from the place's box changes
+  // nothing there. Kept besides — so the cut is the same to the last bit: the stroke of the largest radius (the cells' size),
+  // the dab at each of the six sides of the layer's box (ccPlan's box), every face-level act, all in their order; a stroke
+  // cut down is a copy with the same radius and side. A layer with a box or a polygon (no index): the whole entry. Each
+  // stroke's box and its side dabs are kept, and grow with the stroke
+  var AM_OPBB=new WeakMap();
+  function amEnNear(T,lo,hi){
+    const en=amEnOf(T), ops=T.ops; if(ops.length<3) return en;
+    let rmax=0, rk=-1; const ev=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity], ek=[-1,-1,-1,-1,-1,-1], ei=[0,0,0,0,0,0];
+    for(let k=0;k<ops.length;k++){ const op=ops[k]; if(op.t==='faces') continue; if(op.t!=='balls') return en;
+      const c=op.c; if(c.length<3) continue;
+      let b=AM_OPBB.get(op);
+      if(!b||b.c!==c||b.n>c.length){ b={c:c,n:0,lo:[Infinity,Infinity,Infinity],hi:[-Infinity,-Infinity,-Infinity],li:[0,0,0],hk:[0,0,0]}; AM_OPBB.set(op,b); }
+      for(let i=b.n;i+2<c.length;i+=3) for(let a=0;a<3;a++){ const v=c[i+a]; if(v<b.lo[a]){ b.lo[a]=v; b.li[a]=i; } if(v>b.hi[a]){ b.hi[a]=v; b.hk[a]=i; } }
+      b.n=c.length-c.length%3;
+      if(op.r>rmax){ rmax=op.r; rk=k; }
+      for(let a=0;a<3;a++){ const l=b.lo[a]-op.r, h=b.hi[a]+op.r;
+        if(l<ev[a]){ ev[a]=l; ek[a]=k; ei[a]=b.li[a]; } if(h>ev[3+a]){ ev[3+a]=h; ek[3+a]=k; ei[3+a]=b.hk[a]; } } }
+    const m=3*Math.max(2*rmax,1e-6), zl=[lo[0]-m,lo[1]-m,lo[2]-m], zh=[hi[0]+m,hi[1]+m,hi[2]+m], keep=[]; let cut=false;
+    for(let k=0;k<ops.length;k++){ const op=ops[k]; if(op.t==='faces'){ keep.push(op); continue; }
+      const c=op.c; if(c.length<3){ cut=true; continue; }
+      const b=AM_OPBB.get(op), ex=[]; for(let a=0;a<6;a++) if(ek[a]===k) ex.push(ei[a]);
+      if(b.lo[0]>=zl[0]&&b.hi[0]<=zh[0]&&b.lo[1]>=zl[1]&&b.hi[1]<=zh[1]&&b.lo[2]>=zl[2]&&b.hi[2]<=zh[2]){ keep.push(op); continue; }
+      const q=[];
+      if(b.lo[0]<=zh[0]&&b.hi[0]>=zl[0]&&b.lo[1]<=zh[1]&&b.hi[1]>=zl[1]&&b.lo[2]<=zh[2]&&b.hi[2]>=zl[2])
+        for(let i=0;i+2<c.length;i+=3){ const x=c[i],y=c[i+1],z=c[i+2];
+          if(x>=zl[0]&&x<=zh[0]&&y>=zl[1]&&y<=zh[1]&&z>=zl[2]&&z<=zh[2]) q.push(x,y,z); }
+      for(const i of ex) q.push(c[i],c[i+1],c[i+2]);
+      if(!q.length&&k===rk) q.push(c[0],c[1],c[2]);
+      cut=true; if(q.length) keep.push({t:'balls', c:q, r:op.r, s:op.s}); }
+    if(!cut||keep.length<2) return en;
+    en.ops=keep; return en;
+  }
   function amSOf(T){ const ti=types.indexOf(T); if(!T.S||T.S.length!==N) T.S=new Uint8Array(N);
     for(let f=0;f<N;f++) T.S[f]=isType(ti,f)?1:0; }
   function amHasBalls(T){ return !!(T.ops&&T.ops.some(o=>o.t==='balls'&&o.c.length)); }
@@ -1896,8 +1932,11 @@ mat.onBeforeCompile=sh=>{
         if(pts[i]>=q.lo[0]-rmax&&pts[i]<=q.hi[0]+rmax&&pts[i+1]>=q.lo[1]-rmax&&pts[i+1]<=q.hi[1]+rmax&&pts[i+2]>=q.lo[2]-rmax&&pts[i+2]<=q.hi[2]+rmax){ region.add(q.f); break; } }
     for(const f of region) outer.delete(f);
     const seeds=new Set(); for(const f of outer) if(T.band.has(f)) seeds.add(f);
-    const en=amEnOf(T);
-    const plan=ccPlan([en],[...region,...seeds],seeds);
+    // 550: the strokes that can reach the faces asked — the place is their corners' box
+    const cand=[...region,...seeds], zl=[Infinity,Infinity,Infinity], zh=[-Infinity,-Infinity,-Infinity];
+    for(const f of cand){ const o=f*9; for(let c=0;c<9;c+=3) for(let k=0;k<3;k++){ const v=pos[o+c+k]; if(v<zl[k]) zl[k]=v; if(v>zh[k]) zh[k]=v; } }
+    const en=amEnNear(T,zl,zh);
+    const plan=ccPlan([en],cand,seeds);
     for(const f of region){ if(T.band.has(f)&&!plan.cuts.has(f)){ amStash(T,f); T.band.delete(f); T.pieces.delete(f); recolorFace(f); } }
     for(const f of plan.cuts.keys()){ if(!region.has(f)) continue; amStash(T,f); const was=T.band.has(f); T.band.add(f);
       T.pieces.set(f,amPiecesOf(f,en)); if(!was) recolorFace(f); }
@@ -1925,8 +1964,10 @@ mat.onBeforeCompile=sh=>{
   // while the hand paints: the dabs added since the last frame (317)
   // 549: with a budget (ms) — the tick's — the new dabs are cut a few at a time (each chunk against the whole line, so the
   // pieces come out as one call would cut them), and the cut stops once the budget is spent; what is left waits for the next
-  // frame (amSeen moves only as far as was cut). Returns whether all was cut. Without a budget: everything, as before
-  var AM_TICK_BUDGET=8, AM_TICK_CHUNK=4;
+  // frame (amSeen moves only as far as was cut). Returns whether all was cut. Without a budget: everything, as before.
+  // 550: a call's cost is mostly fixed (the region, the plan), not its dabs — measured, one call on a frame's 12 dabs costs
+  // about one on 4 — so a tick's new dabs are cut in one call, as 548 did; the budget is only the net for a tick far behind
+  var AM_TICK_BUDGET=8, AM_TICK_CHUNK=64;
   function amMarkNear(T,budget){
     if(!budget){
       const pts=[]; let rmax=0;
