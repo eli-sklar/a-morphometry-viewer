@@ -712,6 +712,9 @@ function amPlanimeterMount(host){
     return prog.shown;
   }
   function frame(ms){
+    // 555: a run that asks for fewer drawings (the measurement screen's cut behind the view) skips the frames between them
+    if(run&&run.fps&&!fin&&ms-(run.drawn||0)<1000/run.fps){ raf=requestAnimationFrame(frame); return; }
+    if(run) run.drawn=ms;
     let f;
     if(!fin) f=prog? progF(ms) : runF(ms-run.t0);
     else{ const x=Math.min(1,(ms-fin.t)/fin.dur); f=fin.f0+(1-fin.f0)*(run.T? x : 1-Math.pow(1-x,3));
@@ -726,6 +729,7 @@ function amPlanimeterMount(host){
     const kind=kindOf(msg), size=sizeNow(opt), est=opt&&opt.est>0? opt.est*1000 : 0;
     run={t0:performance.now(), T:est||expect(kind,size), kind, size};
     if(opt&&opt.progress){ run.T=0; prog={f:0,next:0,shown:0,t:0}; }   // 468: driven by __pmProgress, not by the clock
+    if(opt&&opt.fps>0) run.fps=+opt.fps;   // 555
     draw(0); raf=requestAnimationFrame(frame);
   };
   // 468: the work's own fraction (0..1), and where its next report is expected to land
@@ -794,6 +798,7 @@ function amCentre(pos){
   return [cx,cy,cz];
 }
 function load(buf){
+  if(window.__amCutCancel) window.__amCutCancel();   // 555: the work open before stops its cut
   const g=parseGLB(buf);
   const am=g.json.asset&&g.json.asset.extras&&g.json.asset.extras.amWork;
   if(!am) throw new Error('הקובץ אינו נושא נתוני עבודה (amWork).');
@@ -1794,18 +1799,23 @@ mat.onBeforeCompile=sh=>{
     for(const ei of idx){ entries[ei].cur=f; const nx=[]; for(const [p,b] of tris) for(const t of ccClipTri(p,b,entries[ei])) nx.push(t);
       tris=nx; if(!tris.length) break; }
     return tris; }
-  function ccPlan(entries,cand,seeds){
+  // 555 (Eli, a Kennedy hand of 2,000 m²: the screen frozen after the open and a sheet's load; "מאשר לבנות לפי ההמלצה"):
+  // the plan as steps — the same code, in the same order, pausing now and then (`yield`, with how far the faces have come)
+  // so a long cut can be spread over frames (amCutStep). ccPlan runs it to the end at once, exactly as it always ran
+  function* ccPlanG(entries,cand,seeds){
     const removed=cand?null:new Uint8Array(N), cuts=new Map();
     const vkey=(f,c)=>{const o=f*9+c*3;return Math.round(pos[o]*1e5)+','+Math.round(pos[o+1]*1e5)+','+Math.round(pos[o+2]*1e5);};
-    entries.forEach((en,ei)=>{
-      if(!en.ops||!en.ops.length){ for(const f of en.faces) if(f<N) removed[f]=1; return; }
+    let yk=0;
+    for(let ei=0;ei<entries.length;ei++){ const en=entries[ei];
+      if(!en.ops||!en.ops.length){ for(const f of en.faces) if(f<N) removed[f]=1; continue; }
       if(en._ix===undefined) en._ix=en.ops.length>1?ccIndex(en.ops):null;
       const S=en.S||(()=>{const a=new Uint8Array(N); for(const f of en.faces) if(f<N) a[f]=1; return a;})();
       const [lo,hi]=ccBBox(en);
       const fv=new Map(), mixed=new Set(), bitten=new Set();
       // `cand`: only these faces are looked at (26/09: the red while the hand paints)
       const nC=cand?cand.length:N;
-      for(let q=0;q<nC;q++){ const f=cand?cand[q]:q; if(f>=N) continue; const o=f*9; let inb=false; en.cur=f;
+      for(let q=0;q<nC;q++){ if((q&63)===63) yield 0.8*q/nC;
+        const f=cand?cand[q]:q; if(f>=N) continue; const o=f*9; let inb=false; en.cur=f;
         for(let c=0;c<3&&!inb;c++){ const x=pos[o+c*3],y=pos[o+c*3+1],z=pos[o+c*3+2];
           if(x>=lo[0]&&x<=hi[0]&&y>=lo[1]&&y<=hi[1]&&z>=lo[2]&&z<=hi[2]) inb=true; }
         if(!inb) continue;
@@ -1823,7 +1833,8 @@ mat.onBeforeCompile=sh=>{
       if(!cand){ for(const f of en.faces) if(f<N&&!mixed.has(f)) removed[f]=1; }   // whole, as before
       // the crossed edges of the mixed faces, keyed by their welded ends
       const edges=new Map(), nrm=new Map();
-      for(const f of mixed){ const v=fv.get(f), k=[vkey(f,0),vkey(f,1),vkey(f,2)];
+      for(const f of mixed){ if((++yk&1023)===0) yield 0.85;
+        const v=fv.get(f), k=[vkey(f,0),vkey(f,1),vkey(f,2)];
         const a=ccCorner(f,0),b=ccCorner(f,1),c=ccCorner(f,2);
         const ux=b[0]-a[0],uy=b[1]-a[1],uz=b[2]-a[2],wx=c[0]-a[0],wy=c[1]-a[1],wz=c[2]-a[2];
         const nx=uy*wz-uz*wy,ny=uz*wx-ux*wz,nz=ux*wy-uy*wx,nl=Math.hypot(nx,ny,nz)||1;
@@ -1843,37 +1854,47 @@ mat.onBeforeCompile=sh=>{
       // `seeds`: faces already known to be on the line just outside the region asked about —
       // the neighbours a face in it may be reached from (26/09)
       for(const f of mixed) if(S[f]||(seeds&&seeds.has(f))){band.add(f);q.push(f);}
-      while(q.length){ const f=q.pop(), v=fv.get(f), k=[vkey(f,0),vkey(f,1),vkey(f,2)], n1=nrm.get(f);
+      while(q.length){ if((++yk&1023)===0) yield 0.95;
+        const f=q.pop(), v=fv.get(f), k=[vkey(f,0),vkey(f,1),vkey(f,2)], n1=nrm.get(f);
         for(let i=0;i<3;i++){ const j=(i+1)%3; if(!crossedEdge(f,i)) continue;
           const ek=k[i]<k[j]?k[i]+'|'+k[j]:k[j]+'|'+k[i];
           for(const g of (edges.get(ek)||[])){ if(band.has(g)) continue;
             const n2=nrm.get(g); if(Math.abs(n1[0]*n2[0]+n1[1]*n2[1]+n1[2]*n2[2])<=CC_FOLD) continue;
             band.add(g); q.push(g); } } }
       for(const f of band) if(!removed||!removed[f]) (cuts.get(f)||cuts.set(f,[]).get(f)).push(ei);
-    });
+    }
     if(removed) for(const f of [...cuts.keys()]) if(removed[f]) cuts.delete(f);
     return {removed:removed, cuts:cuts};
   }
+  function ccPlan(entries,cand,seeds){ const g=ccPlanG(entries,cand,seeds); let r=g.next(); while(!r.done) r=g.next(); return r.value; }
   let ccReachFor=null, ccReachV=0.3;
-  function ccReach(){
+  function* ccReachG(){   // 555: as steps; ccReach runs it to the end at once
     if(ccReachFor===pos) return ccReachV;
     // the 99th percentile of the edges, sampled: the few longer ones are the stroke end's
-    const E=[]; for(let f=0;f<N;f+=7){ const o=f*9;
+    const E=[]; for(let f=0;f<N;f+=7){ if((f&65535)<7) yield; const o=f*9;
       for(let c=0;c<3;c++){ const j=(c+1)%3; E.push(Math.hypot(pos[o+c*3]-pos[o+j*3],pos[o+c*3+1]-pos[o+j*3+1],pos[o+c*3+2]-pos[o+j*3+2])); } }
-    E.sort((x,y)=>x-y);
-    ccReachFor=pos; ccReachV=Math.min(1.0,E.length?E[Math.floor(0.99*(E.length-1))]:0.3); return ccReachV;
+    // 555: the k-th smallest by selection, not a sort of all (300 ms on 670K) — the same value, it is one
+    let v=0.3;
+    if(E.length){ const A=Float64Array.from(E), k=Math.floor(0.99*(A.length-1)); let lo=0, hi=A.length-1;
+      while(lo<hi){ yield; const x=A[(lo+hi)>>1]; let i=lo, j=hi;
+        while(i<=j){ while(A[i]<x) i++; while(A[j]>x) j--; if(i<=j){ const t=A[i]; A[i]=A[j]; A[j]=t; i++; j--; } }
+        if(k<=j) hi=j; else if(k>=i) lo=i; else break; }
+      v=A[k]; }
+    ccReachFor=pos; ccReachV=Math.min(1.0,v); return ccReachV;
   }
+  function ccReach(){ const g=ccReachG(); let r=g.next(); while(!r.done) r=g.next(); return r.value; }
   let ccLongFor=null, ccLong=null;
-  function ccLongFaces(){
+  function* ccLongFacesG(){   // 555: as steps; ccLongFaces runs it to the end at once
     if(ccLongFor===pos) return ccLong;
     const R=ccReach(), L=[];
-    for(let f=0;f<N;f++){ const o=f*9; let e=0;
+    for(let f=0;f<N;f++){ if((f&16383)===16383) yield; const o=f*9; let e=0;
       for(let c=0;c<3;c++){ const j=(c+1)%3; e=Math.max(e,Math.hypot(pos[o+c*3]-pos[o+j*3],pos[o+c*3+1]-pos[o+j*3+1],pos[o+c*3+2]-pos[o+j*3+2])); }
       if(e>R){ const lo=[Infinity,Infinity,Infinity], hi=[-Infinity,-Infinity,-Infinity];
         for(let c=0;c<3;c++) for(let k=0;k<3;k++){ lo[k]=Math.min(lo[k],pos[o+c*3+k]); hi[k]=Math.max(hi[k],pos[o+c*3+k]); }
         L.push({f:f,lo:lo,hi:hi}); } }
     ccLongFor=pos; ccLong=L; return L;
   }
+  function ccLongFaces(){ const g=ccLongFacesG(); let r=g.next(); while(!r.done) r=g.next(); return r.value; }
   let amMarkDue=false, amMarkHold=0, amMarkTimer=0, amLive=null, amLiveT=-1, amWatch=null;
   const amSeen=new WeakMap();                // a stroke -> how many of its dabs the line has asked
   // where a sub-face starts: inside when the automatic detection marks it (no manual mark)
@@ -1893,12 +1914,13 @@ mat.onBeforeCompile=sh=>{
   // find — stand in the same place among the strokes, and at a point the last that holds it wins: one act, the later
   // overriding, is the same to the last bit. Kept, as the run's acts and their sizes stay
   var AM_OPBB=new WeakMap(), AM_FRUN=new WeakMap();
-  function amFacesRun(run){
+  function* amFacesRunG(run){   // 555: as steps; amFacesRun runs it to the end at once
     const c=AM_FRUN.get(run[0]);
     if(c&&c.run.length===run.length&&c.run.every((o,i)=>o===run[i]&&c.sz[i]===o.m.size)) return c.op;
-    const m=new Map(); for(const o of run) for(const [f,v] of o.m) m.set(f,v);
+    const m=new Map(); let n=0; for(const o of run) for(const [f,v] of o.m){ m.set(f,v); if((++n&65535)===0) yield; }
     const op={t:'faces', m:m}; AM_FRUN.set(run[0],{run:run.slice(), sz:run.map(o=>o.m.size), op:op}); return op;
   }
+  function amFacesRun(run){ const g=amFacesRunG(run); let r=g.next(); while(!r.done) r=g.next(); return r.value; }
   function amEnNear(T,lo,hi){
     const en=amEnOf(T), ops=T.ops; if(ops.length<3) return en;
     let rmax=0, rk=-1; const ev=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity], ek=[-1,-1,-1,-1,-1,-1], ei=[0,0,0,0,0,0];
@@ -1932,8 +1954,9 @@ mat.onBeforeCompile=sh=>{
     if(!cut||out.length<2) return en;
     en.ops=out; return en;
   }
-  function amSOf(T){ const ti=types.indexOf(T); if(!T.S||T.S.length!==N) T.S=new Uint8Array(N);
-    for(let f=0;f<N;f++) T.S[f]=isType(ti,f)?1:0; }
+  function* amSOfG(T){ const ti=types.indexOf(T); if(!T.S||T.S.length!==N) T.S=new Uint8Array(N);   // 555: as steps
+    for(let f=0;f<N;f++){ if((f&4095)===4095) yield; T.S[f]=isType(ti,f)?1:0; } }
+  function amSOf(T){ const g=amSOfG(T); while(!g.next().done){} }
   function amHasBalls(T){ return !!(T.ops&&T.ops.some(o=>o.t==='balls'&&o.c.length)); }
   function amTriA(p){ const ax=p[1][0]-p[0][0],ay=p[1][1]-p[0][1],az=p[1][2]-p[0][2],bx=p[2][0]-p[0][0],by=p[2][1]-p[0][1],bz=p[2][2]-p[0][2];
     return 0.5*Math.sqrt((ay*bz-az*by)**2+(az*bx-ax*bz)**2+(ax*by-ay*bx)**2); }
@@ -1952,71 +1975,174 @@ mat.onBeforeCompile=sh=>{
   function amStash(T,f){ if(amWatch&&amWatch.T===T&&!amWatch.m.has(f)) amWatch.m.set(f,T.band.has(f)?T.pieces.get(f):null); }
   // the line where these points (dabs) are, in one layer: every sub-face near them asked again,
   // the faces already on the line just beyond as the ones they may be reached from (317)
-  function amMarkLocal(T,pts,rmax){
+  // 555: as steps — the same code in the same order, pausing (`yield`, with how far it has come, 0..1) so the whole layer's
+  // cut can be spread over frames (amCutStep); amMarkLocal runs it to the end at once, exactly as before
+  function* amMarkLocalG(T,pts,rmax){
+    let yk=0;
     if(!T.band){ T.band=new Set(); T.pieces=new Map(); }
     if(!amHasBalls(T)){ for(const f of T.band) recolorFace(f); T.band.clear(); T.pieces.clear(); return; }
-    const reach=rmax+ccReach(), span=Math.ceil(reach/CELL)+1, ring=span+2;
+    let rg=ccReachG(), rr=rg.next(); while(!rr.done){ yield 0; rr=rg.next(); }
+    const reach=rmax+rr.value, span=Math.ceil(reach/CELL)+1, ring=span+2;
     const region=new Set(), outer=new Set(), cells=new Set();
     for(let i=0;i<pts.length;i+=3){
       const ix=Math.floor(pts[i]/CELL), iy=Math.floor(pts[i+1]/CELL), iz=Math.floor(pts[i+2]/CELL);
       const ck=ccCellKey(ix,iy,iz); if(cells.has(ck)) continue; cells.add(ck);
-      for(let a=-ring;a<=ring;a++) for(let b=-ring;b<=ring;b++) for(let c=-ring;c<=ring;c++){
-        const L=grid.get(ckey(ix+a,iy+b,iz+c)); if(!L) continue;
-        const inner=Math.abs(a)<=span&&Math.abs(b)<=span&&Math.abs(c)<=span;
-        for(const f of L){ if(inner) region.add(f); else if(T.band.has(f)) outer.add(f); } } }   // 386: of the ring, only what is on the line (the seeds)
+      for(let a=-ring;a<=ring;a++) for(let b0=-ring;b0<=ring;b0+=4){ amRegionSlab(T,ix,iy,iz,a,b0,Math.min(ring,b0+3),span,ring,region,outer); yield 0.15*i/pts.length; } }   // 386: of the ring, only what is on the line (the seeds)
     // 386 (Eli, 30/09: "improve it, safely"): the cells take in a cube around each dab — for a 5 cm
     // brush a 75 cm one. A sub-face whose centre is farther than the reach from every new dab has
     // all of itself farther than the radius (no edge is longer than the reach's edge; the longer
     // ones are taken below by their box), so no new dab can change it: it is not asked, and stays
     // one the line may be reached from, as the ring beyond is.
     { const DG=new Map(), rc=reach, R2=reach*reach;
-      for(let i=0;i<pts.length;i+=3){ const k=ckey(Math.floor(pts[i]/rc),Math.floor(pts[i+1]/rc),Math.floor(pts[i+2]/rc));
+      for(let i=0;i<pts.length;i+=3){ if((++yk&4095)===0) yield 0.15; const k=ckey(Math.floor(pts[i]/rc),Math.floor(pts[i+1]/rc),Math.floor(pts[i+2]/rc));
         let L=DG.get(k); if(!L){ L=[]; DG.set(k,L); } L.push(i); }
       const far=[];
-      for(const f of region){ const x=cen[f*3], y=cen[f*3+1], z=cen[f*3+2];
+      for(const f of region){ if((++yk&255)===0) yield 0.15;
+        const x=cen[f*3], y=cen[f*3+1], z=cen[f*3+2];
         const ix=Math.floor(x/rc), iy=Math.floor(y/rc), iz=Math.floor(z/rc); let near=false;
         for(let a=-1;a<=1&&!near;a++) for(let b=-1;b<=1&&!near;b++) for(let c=-1;c<=1&&!near;c++){
           const L=DG.get(ckey(ix+a,iy+b,iz+c)); if(!L) continue;
           for(const i of L){ const dx=pts[i]-x, dy=pts[i+1]-y, dz=pts[i+2]-z; if(dx*dx+dy*dy+dz*dz<=R2){ near=true; break; } } }
         if(!near) far.push(f); }
-      for(const f of far){ region.delete(f); if(T.band.has(f)) outer.add(f); } }
+      for(const f of far){ if((++yk&16383)===0) yield 0.16; region.delete(f); if(T.band.has(f)) outer.add(f); } }
     const pl=[Infinity,Infinity,Infinity], ph=[-Infinity,-Infinity,-Infinity];
     for(let i=0;i<pts.length;i+=3) for(let k=0;k<3;k++){ pl[k]=Math.min(pl[k],pts[i+k]); ph[k]=Math.max(ph[k],pts[i+k]); }
-    for(const q of ccLongFaces()){
+    let lg=ccLongFacesG(), lr=lg.next(); while(!lr.done){ yield 0.17; lr=lg.next(); }
+    for(const q of lr.value){ if((++yk&63)===0) yield 0.18;
       if(q.hi[0]<pl[0]-rmax||q.lo[0]>ph[0]+rmax||q.hi[1]<pl[1]-rmax||q.lo[1]>ph[1]+rmax||q.hi[2]<pl[2]-rmax||q.lo[2]>ph[2]+rmax) continue;
       for(let i=0;i<pts.length;i+=3)
         if(pts[i]>=q.lo[0]-rmax&&pts[i]<=q.hi[0]+rmax&&pts[i+1]>=q.lo[1]-rmax&&pts[i+1]<=q.hi[1]+rmax&&pts[i+2]>=q.lo[2]-rmax&&pts[i+2]<=q.hi[2]+rmax){ region.add(q.f); break; } }
-    for(const f of region) outer.delete(f);
+    for(const f of region){ if((++yk&16383)===0) yield 0.2; outer.delete(f); }
     const seeds=new Set(); for(const f of outer) if(T.band.has(f)) seeds.add(f);
     // 550: the strokes that can reach the faces asked — the place is their corners' box
-    const cand=[...region,...seeds], zl=[Infinity,Infinity,Infinity], zh=[-Infinity,-Infinity,-Infinity];
-    for(const f of cand){ const o=f*9; for(let c=0;c<9;c+=3) for(let k=0;k<3;k++){ const v=pos[o+c+k]; if(v<zl[k]) zl[k]=v; if(v>zh[k]) zh[k]=v; } }
+    const cand=[], zl=[Infinity,Infinity,Infinity], zh=[-Infinity,-Infinity,-Infinity];
+    for(const f of region){ cand.push(f); if((++yk&16383)===0) yield 0.21; } for(const f of seeds) cand.push(f);
+    for(const f of cand){ if((++yk&4095)===0) yield 0.22; const o=f*9; for(let c=0;c<9;c+=3) for(let k=0;k<3;k++){ const v=pos[o+c+k]; if(v<zl[k]) zl[k]=v; if(v>zh[k]) zh[k]=v; } }
+    { const ops=T.ops; for(let k=0;k<ops.length;){ if(ops[k].t!=='faces'){ k++; continue; } let j=k; while(j<ops.length&&ops[j].t==='faces') j++;
+        if(j-k>1){ const fg=amFacesRunG(ops.slice(k,j)); while(!fg.next().done) yield 0.23; } k=j; } }
     const en=amEnNear(T,zl,zh);
-    const plan=ccPlan([en],cand,seeds);
-    for(const f of region){ if(T.band.has(f)&&!plan.cuts.has(f)){ amStash(T,f); T.band.delete(f); T.pieces.delete(f); recolorFace(f); } }
-    for(const f of plan.cuts.keys()){ if(!region.has(f)) continue; amStash(T,f); const was=T.band.has(f); T.band.add(f);
+    const pg=ccPlanG([en],cand,seeds); let pr=pg.next(); while(!pr.done){ yield 0.25+0.6*(+pr.value||0); pr=pg.next(); } const plan=pr.value;
+    for(const f of region){ if((++yk&4095)===0) yield 0.85; if(T.band.has(f)&&!plan.cuts.has(f)){ amStash(T,f); T.band.delete(f); T.pieces.delete(f); recolorFace(f); } }
+    let nc=0; const NC=plan.cuts.size||1;
+    for(const f of plan.cuts.keys()){ if((++nc&7)===0) yield 0.86+0.14*nc/NC; if(!region.has(f)) continue; amStash(T,f); const was=T.band.has(f); T.band.add(f);
       T.pieces.set(f,amPiecesOf(f,en)); if(!was) recolorFace(f); }
+  }
+  function amMarkLocal(T,pts,rmax){ const g=amMarkLocalG(T,pts,rmax); while(!g.next().done){} }
+  // four rows (a, b0..b1) of a new cell's cube: the region's faces, and of the ring only those on the line — the same as the
+  // loop it was, in the same order
+  function amRegionSlab(T,ix,iy,iz,a,b0,b1,span,ring,region,outer){
+    for(let b=b0;b<=b1;b++) for(let c=-ring;c<=ring;c++){
+      const L=grid.get(ckey(ix+a,iy+b,iz+c)); if(!L) continue;
+      const inner=Math.abs(a)<=span&&Math.abs(b)<=span&&Math.abs(c)<=span;
+      for(const f of L){ if(inner) region.add(f); else if(T.band.has(f)) outer.add(f); } }
   }
   function amOpPts(op){ if(op.t==='balls') return op.c;
     const p=[]; for(const f of op.m.keys()) p.push(cen[f*3],cen[f*3+1],cen[f*3+2]); return p; }
   function amMarkAt(T,op){ const p=amOpPts(op); if(p.length) amMarkLocal(T,p,op.t==='balls'?op.r:0); }
   // the whole layer: after a threshold, a learning, a load — every stroke's dabs at once
-  function amMarkFull(T){
+  function* amMarkFullG(T){   // 555: as steps (amMarkLocalG); amMarkFull runs it to the end at once
     if(T.band) for(const f of T.band) recolorFace(f);
     T.band=new Set(); T.pieces=new Map();
     if(!amHasBalls(T)) return;
     const pts=[]; let rmax=0;
     for(const op of T.ops){ if(op.t!=='balls') continue; for(let i=0;i+2<op.c.length;i+=3) pts.push(op.c[i],op.c[i+1],op.c[i+2]);
       if(op.c.length) rmax=Math.max(rmax,op.r); amSeen.set(op,op.c.length); }
-    amMarkLocal(T,pts,rmax);
+    yield* amMarkLocalG(T,pts,rmax);
+  }
+  function amMarkFull(T){ const g=amMarkFullG(T); while(!g.next().done){} }
+  function* amMarkAllG(order){   // 555: every layer as steps, in this order; yields how far the whole has come (0..1)
+    for(let i=0;i<order.length;i++){ const T=order[i]; if(!T.ops) T.ops=[];
+      if(amCutJob&&amCutJob.gen) amCutJob.T=T;
+      const sg=amSOfG(T); while(!sg.next().done) yield i/order.length;
+      const g=amMarkFullG(T); let r=g.next(); while(!r.done){ yield (i+(+r.value||0))/order.length; r=g.next(); } }
+    colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true;
+    yield 1; amMarkDraw(); yield 1;
+    if(amCutJob&&amCutJob.gen) amCutJob=null;   // the area is counted below, and no longer "…"
+    updateArea(); invalidate();
   }
   function amMarkAll(){
-    amMarkTimer=0;
-    for(const T of types){ if(!T.ops) T.ops=[]; amSOf(T); amMarkFull(T); }
-    colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true;
-    updateArea(); amMarkDraw(); invalidate();
+    amMarkTimer=0; const w=amCutCancel(true); amCutUI(false);
+    const g=amMarkAllG(types.slice()); while(!g.next().done){}
+    for(const fn of w){ try{ fn(); }catch(e){ console.error(e); } }   // what waited for a job, now the cut is whole
   }
-  function amMarkSoon(){ if(amMarkTimer) clearTimeout(amMarkTimer); amMarkTimer=setTimeout(amMarkAll,120); }
+  // 555 (Eli, a Kennedy hand of 2,000 m²: the screen frozen 20–40 s after the open, a sheet's load, a threshold; "מאשר
+  // לבנות לפי ההמלצה"): the whole layer's cut as a job over frames — a time budget a frame, the open layer first, the
+  // model and the sub-faces whole on the screen at once and the line coming in as each layer is cut. While it runs the
+  // view is free; the brush, the edits, undo, the report and saving wait for its end (amCutWhenDone), and the areas read
+  // "…". A new request (a second threshold, another sheet) stops it and starts again; a stop puts the layer it was in
+  // back whole — no layer is ever left half cut
+  // The steps follow one another as tasks (a MessageChannel), each within its budget — the browser draws and takes input
+  // between them. One a frame (requestAnimationFrame) took the line 45 s against 20 at once on Kennedy (8 ms of 16.7)
+  var amCutJob=null, AM_CUT_BUDGET=24, amCutPmHome=null, amCutMC=null, amCutSeq=0, amCutSched=null;
+  function amCutPost(J){
+    if(amCutSched){ amCutSched(()=>{ if(amCutJob===J) amCutStep(); }); return; }   // the QA layer's own clock
+    if(!amCutMC){ amCutMC=new MessageChannel(); amCutMC.port1.onmessage=e=>{ if(amCutJob&&e.data===amCutJob.id) amCutStep(); }; }
+    amCutMC.port2.postMessage(J.id);
+  }
+  function amCutStart(){
+    amMarkTimer=0; const w=amCutCancel(true);   // a new request: the one running stops, and what waited, waits for this one
+    const order=types.slice(), a=types[activeT]; if(a){ order.splice(order.indexOf(a),1); order.unshift(a); }   // the open layer first
+    amCutJob={gen:null, T:null, f:0, wait:w, id:++amCutSeq, t:performance.now()};
+    window.__amCutCancel=amCutCancel;   // the iPad: a new work, opened in the same page, stops the old one's job
+    amCutJob.gen=amMarkAllG(order);
+    amCutUI(true,0); updateArea();
+    amCutPost(amCutJob);
+  }
+  function amCutStep(){
+    const J=amCutJob; if(!J) return;
+    const t0=performance.now(); let r;
+    // 555: the budget follows what the page does between two steps (its frame: x4 makes it four times as long) — six times
+    // that, within 24..80 ms: the cut keeps most of the time, and a frame waits no more than about 100 ms
+    if(J.end){ const g=t0-J.end; J.ov=J.ov===undefined?g:0.7*J.ov+0.3*g; }
+    const B=Math.max(AM_CUT_BUDGET,Math.min(80,6*(J.ov||0)));
+    let n=0;   // the clock read every 4 steps — a read each time was a tenth of the job at x4; every 16 let heavy ones run on
+    do{ r=J.gen.next(); if(!r.done) J.f=+r.value||J.f; } while(!r.done&&((++n&3)!==0||performance.now()-t0<B));
+    if(r.done){ amCutJob=null; amCutUI(false,1); for(const fn of J.wait){ try{ fn(); }catch(e){ console.error(e); } } return; }
+    amCutUI(true,J.f); J.end=performance.now();
+    if(t0-J.t>2000){ J.t=t0; amMarkDraw(); invalidate(); }   // the line as it comes in, every two seconds
+    amCutPost(J);
+  }
+  // a stop: the layer it was in back whole; returns what waited (kept for the next job), or drops it (`keep` false: the
+  // work closes, or a sheet replaces it)
+  function amCutCancel(keep){
+    const J=amCutJob; if(!J) return [];
+    amCutJob=null; try{ J.gen.return(); }catch(_){}   // a step still posted finds another job id, and does nothing
+    const T=J.T; if(T&&T.band){ const B=T.band; T.band=new Set(); T.pieces=new Map(); for(const f of B) recolorFace(f); }   // back whole
+    if(!keep){ amCutUI(false); amMarkDraw(); updateArea(); invalidate(); return []; }
+    return J.wait;
+  }
+  function amCutWhenDone(fn){ if(amCutJob) amCutJob.wait.push(fn); else fn(); }
+  function amCutBusy(){ return !!amCutJob; }
+  // the corner panel: the planimeter (468's drawing, small) and "מכין את הסימונים… N%"; it takes no clicks
+  function amCutUI(on,frac){
+    let P=document.getElementById('amCutPanel');
+    if(!on){ if(!P||P.style.display==='none') return;
+      // let the drawing go at once (a loading veil may want it next: a finish still running would never hand it back)
+      if(P.dataset.pm==='1'&&typeof window.__pmStop==='function') window.__pmStop();
+      P.dataset.pm=''; P.style.display='none';
+      if(amCutPmHome){ const h=document.getElementById('pmHost'); if(h) amCutPmHome.p.insertBefore(h,amCutPmHome.n); amCutPmHome=null; }
+      return; }
+    if(!P){ P=document.createElement('div'); P.id='amCutPanel'; P.setAttribute('dir','rtl');
+      P.style.cssText='position:fixed;left:12px;bottom:12px;z-index:50;pointer-events:none;display:none;flex-direction:column;align-items:center;gap:2px;'
+        +'padding:6px 12px 9px;border-radius:12px;background:rgba(20,18,16,.86);border:1px solid rgba(216,205,184,.22);color:#d8cdb8;'
+        +'font:500 13px system-ui,sans-serif;--amber:#b8934a;--bg:#141210;--dim:#9a917f;--sans:system-ui,sans-serif';
+      P.innerHTML='<style>#amCutPanel #pmCount{display:none}</style>'
+        +'<div style="width:108px;height:98px;overflow:hidden;position:relative"><div id="amCutPmIn" style="position:absolute;left:0;top:0;'
+        +'width:286px;transform:scale(.378);transform-origin:0 0;display:flex;flex-direction:column;align-items:center"></div></div>'
+        +'<div id="amCutTxt"></div>';
+      document.body.appendChild(P); }
+    P.style.display='flex';
+    if(P.dataset.pm!=='1'){   // the drawing: this screen's own (the measurement screen has none), or the iPad's, once its veil is down
+      const into=document.getElementById('amCutPmIn'), h=document.getElementById('pmHost');
+      const veil=h&&h.parentNode&&h.parentNode.closest?h.parentNode.closest('#amLoad,#loading,#load'):null;
+      const free=!veil||getComputedStyle(veil).display==='none';
+      if(typeof window.__pmStart!=='function'){ if(typeof amPlanimeterMount==='function'&&!h) amPlanimeterMount(into); }
+      else if(h&&free&&!into.contains(h)){ amCutPmHome={p:h.parentNode,n:h.nextSibling}; into.appendChild(h); }
+      if(typeof window.__pmStart==='function'&&into.querySelector('#planim')){ window.__pmStart('מכין את הסימונים',{progress:true,fps:12}); P.dataset.pm='1'; } }
+    if(typeof window.__pmProgress==='function') window.__pmProgress(frac,Math.min(1,frac+0.05));
+    const t=document.getElementById('amCutTxt'); if(t) t.textContent='מכין את הסימונים… '+Math.round(100*Math.max(0,Math.min(1,frac)))+'%';
+  }
+  function amMarkSoon(){ if(amMarkTimer) clearTimeout(amMarkTimer); amMarkTimer=setTimeout(amCutStart,120); }   // 555: as a job over frames
   // while the hand paints: the dabs added since the last frame (317)
   // 549: with a budget (ms) — the tick's — the new dabs are cut a few at a time (each chunk against the whole line, so the
   // pieces come out as one call would cut them), and the cut stops once the budget is spent; what is left waits for the next
@@ -2105,6 +2231,7 @@ mat.onBeforeCompile=sh=>{
   // a stroke of the area brush: its balls go into the layer the moment it starts
   function amStrokeBegin(){
     if(!(activeKind==='area'&&areaTool===AM_BRUSH&&(mode==='add'||mode==='rem'))) return;
+    if(amCutJob) return;   // 555: the brush waits for the whole layer's cut
     const T=types[activeT]; if(!T) return;
     if(!T.ops) T.ops=[]; if(!T.S) amSOf(T);
     amLive={t:'balls',c:[],r:brushR,s:(mode==='add')?1:-1}; amLiveT=activeT; T.ops.push(amLive);
@@ -2308,6 +2435,7 @@ mat.onBeforeCompile=sh=>{
   }
   function amDessSoon(){ if(_desReq) return; _desReq=true; requestAnimationFrame(amDessOnly); }
   function updateArea(){
+    if(typeof amCutJob!=='undefined'&&amCutJob){ for(const T of types){ const e=document.getElementById('tA_'+T.id); if(e) e.textContent='…'; } amLenCntShow(); return; }   // 555: counted when the cut is whole
     for(let ti=0;ti<types.length;ti++){const T=types[ti];let a=0;
       // 324: a sub-face the line crosses counts by its marked part
       {const B=T.band; if(B&&B.size){ for(let f=0;f<N;f++)if(isType(ti,f)&&!B.has(f))a+=area[f]; for(const [f,q] of T.pieces)a+=q.fr*area[f]; }
@@ -3270,6 +3398,7 @@ mat.onBeforeCompile=sh=>{
   function smSyncSoon(){ clearTimeout(smSyncT); smSyncT=setTimeout(smSyncNow,600); }   // 436: once the brush rests, not between strokes
   function smSyncNow(){ clearTimeout(smSyncT);
     if(typeof amLive!=='undefined'&&amLive){ smSyncSoon(); return; }      // not while a stroke is down
+    if(typeof amCutJob!=='undefined'&&amCutJob){ smSyncSoon(); return; }   // 555: nor while the whole layer is being cut
     let ch=false; for(let ti=0;ti<types.length;ti++) if(smLayerSync(ti)) ch=true;
     if(ch){ smRebuild(); updateArea(); } smWheelShow();
   // the bar's word follows the open layer's films still being built — none left, no word (524); unwanted films stop (523)
@@ -4087,7 +4216,7 @@ float amStippleA(float a, float lvl){
     clearTimeout(amSnapT);
     // 494 (3): the copy is the sheet WITHOUT the report's derived fields (typeAreas, repairFaces, the totals) — the
     // restore (applySheet) reads none of them, and they were half of the copy's work after every change
-    amSnapT=setTimeout(()=>{ try{ snapPut(getSheet(false)); }catch(_){} },1500);
+    amSnapT=setTimeout(()=>amCutWhenDone(()=>{ try{ snapPut(getSheet(false)); }catch(_){} }),1500);   // 555: after the cut
   }
   function applyDiff(diff){const inv=[];
     for(let i=diff.length-1;i>=0;i--){const d=diff[i];
@@ -4141,8 +4270,8 @@ float amStippleA(float a, float lvl){
       else if(d[0]==='H-'){inv.push(['H+',d[1]]);holeAdd(d[1]);}
       else {const ti=d[0],f=d[1],o=d[2];inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;amSUpd(ti,f);recolorFace(f);}}
     inv.reverse(); colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();return inv;}
-  const undo=()=>{if(undoStack.length){redoStack.push(applyDiff(undoStack.pop()));updateHB();}};
-  const redo=()=>{if(redoStack.length){undoStack.push(applyDiff(redoStack.pop()));updateHB();}};
+  const undo=()=>{if(undoStack.length&&!(typeof amCutJob!=='undefined'&&amCutJob)){redoStack.push(applyDiff(undoStack.pop()));updateHB();}};
+  const redo=()=>{if(redoStack.length&&!(typeof amCutJob!=='undefined'&&amCutJob)){undoStack.push(applyDiff(redoStack.pop()));updateHB();}};
   function updateHB(){
     // 527: an open polygon is something to take back too — its last point (256), so ↶ is not dimmed while it is open
     const open=(typeof curPoly!=='undefined'&&!!curPoly&&curPoly.pts.length>0);
@@ -4527,6 +4656,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     return ray.intersectObject(mesh,false);
   }
   function growAt(e){
+    if(typeof amCutJob!=='undefined'&&amCutJob) return;   // 555: waits for the whole layer's cut
     const hit=castAt(e); if(!hit.length)return;
     const seed=hit[0].faceIndex; if(seed==null)return;
     const seedVal = lum[FACEOF[seed]];
@@ -4731,6 +4861,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   if($('sBall')) $('sBall').onclick=()=>amSetShape('ball');
   if($('sFlat')) $('sFlat').onclick=()=>amSetShape('flat');
   function paintAt(e,hit0){
+    if(typeof amCutJob!=='undefined'&&amCutJob) return;   // 555: waits for the whole layer's cut
     const hit=hit0||castAt(e); if(!hit.length)return;   // 549: paintAtAll has cast it already
     const p=hit[0].point,r2=brushR*brushR;let ch=false;
     const val=(mode==='add')?1:-1;
@@ -4767,6 +4898,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // pencil's 240 a second on a slow hand were four full balls a frame. The event's own sample always is one
   var amPaintLast=null;
   function paintAtAll(e){
+    if(typeof amCutJob!=='undefined'&&amCutJob) return;   // 555: waits for the whole layer's cut
     const L=(e&&e.getCoalescedEvents)?e.getCoalescedEvents():null;
     if(!(L&&L.length>1)){ paintAt(e); return; }
     const g2=(0.25*brushR)*(0.25*brushR);
@@ -5174,6 +5306,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
             [{t:'לבטל את הלמידה',v:true,primary:true},{t:'להמשיך',v:false}],false)))return;
           if(LEARN_OP===op){ LEARN_OP=null; cb.disabled=true; cb.textContent='מבטל…'; } }; }
       veil.style.display='flex'; if(window.__pmStart)window.__pmStart('לומד את הסימונים',{progress:true}); },1500);
+    amCutCancel();   // 555: the learning recolours all after it, and the cut starts again then
     let r=null,ok=false;
     try{
       r=await amLearnRun({types:types,activeT:activeT,N:N,FO:FO,FACEOF:FACEOF,OFF:OFF,roi:roi,roiCount:roiCount,qfeat:qfeat,stats:LSTATS,
@@ -5328,6 +5461,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   }
   function amSheetHost(){ return {cnt:CNT?b64u8(CNT):null, volLayers:VOL_LAYERS, jobId:AM.jobId, exportedBy:'A-morphometry iPad'}; }   // 349: the product's own fields for the shared getSheet
   $('mExport').onclick=async()=>{
+    await new Promise(res=>amCutWhenDone(res));   // 555: the sheet with the line waits for the cut
     const sheet=getSheet(true);
     // 332: the photos go out INSIDE the sheet — the computer has no other way to receive them
     const imgs={};
@@ -6066,6 +6200,7 @@ const amPal=(function(){
     return -1;
   }
   function applySheet(sh){
+    if(amCutBusy()){ amCutCancel(); setTimeout(()=>{ if(!amCutBusy()) amMarkSoon(); },0); }   // 555: another sheet stops the cut; it starts again after
     const _need=(sh&&typeof sh.minReader==='number')?sh.minReader:1;
     if(_need>AM_SHEET_READER)
       throw new Error('\u05d4\u05d2\u05d9\u05dc\u05d9\u05d5\u05df \u05e0\u05db\u05ea\u05d1 \u05d1\u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d9\u05d5\u05ea\u05e8 \u05e9\u05dc \u05d4\u05ea\u05d5\u05db\u05e0\u05d4. \u05e2\u05d3\u05db\u05df \u05d0\u05ea \u05d4\u05e6\u05e4\u05d9\u05d9\u05df.');
