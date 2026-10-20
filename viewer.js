@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=52;
+const VIEWER_JS_VER=53;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -1923,20 +1923,42 @@ mat.onBeforeCompile=sh=>{
   }
   function amMarkSoon(){ if(amMarkTimer) clearTimeout(amMarkTimer); amMarkTimer=setTimeout(amMarkAll,120); }
   // while the hand paints: the dabs added since the last frame (317)
-  function amMarkNear(T){
-    const pts=[]; let rmax=0;
-    for(const op of T.ops){ if(op.t!=='balls') continue; const k0=amSeen.get(op)||0;
-      for(let i=k0;i+2<op.c.length;i+=3) pts.push(op.c[i],op.c[i+1],op.c[i+2]);
-      if(op.c.length>k0) rmax=Math.max(rmax,op.r); amSeen.set(op,op.c.length); }
-    if(pts.length) amMarkLocal(T,pts,rmax);
+  // 549: with a budget (ms) — the tick's — the new dabs are cut a few at a time (each chunk against the whole line, so the
+  // pieces come out as one call would cut them), and the cut stops once the budget is spent; what is left waits for the next
+  // frame (amSeen moves only as far as was cut). Returns whether all was cut. Without a budget: everything, as before
+  var AM_TICK_BUDGET=8, AM_TICK_CHUNK=4;
+  function amMarkNear(T,budget){
+    if(!budget){
+      const pts=[]; let rmax=0;
+      for(const op of T.ops){ if(op.t!=='balls') continue; const k0=amSeen.get(op)||0;
+        for(let i=k0;i+2<op.c.length;i+=3) pts.push(op.c[i],op.c[i+1],op.c[i+2]);
+        if(op.c.length>k0) rmax=Math.max(rmax,op.r); amSeen.set(op,op.c.length); }
+      if(pts.length) amMarkLocal(T,pts,rmax);
+      return true;
+    }
+    const t0=performance.now();
+    for(const op of T.ops){ if(op.t!=='balls') continue; let k0=amSeen.get(op)||0;
+      while(k0+2<op.c.length){
+        const k1=Math.min(op.c.length,k0+3*AM_TICK_CHUNK);
+        amMarkLocal(T,op.c.slice(k0,k1),op.r); k0=k1; amSeen.set(op,k0);
+        if(k0+2<op.c.length&&performance.now()-t0>budget) return false; } }
+    return true;
   }
-  // 548: the sub-faces a stroke of the line marked since the last tick — coloured only after the line has taken them
+  // 548: the sub-faces a stroke of the line marked since the last tick — coloured only after the line has taken them.
+  // 549: each with the length of the line when it was marked (pairs: f, n); with a limit — how far the line has been cut —
+  // only those whose dab is cut are coloured, the rest wait (a budgeted tick that stopped short must not colour them whole)
   var amPendQ=[];
-  function amPendFlush(){ if(typeof amPendQ==='undefined'||!amPendQ.length) return; const q=amPendQ; amPendQ=[]; for(const f of q) recolorFace(f); }
+  function amPendFlush(lim){ if(typeof amPendQ==='undefined'||!amPendQ.length) return;
+    const q=amPendQ; amPendQ=[];
+    for(let i=0;i+1<q.length;i+=2){ if(lim===undefined||q[i+1]<=lim) recolorFace(q[i]); else amPendQ.push(q[i],q[i+1]); } }
   function amMarkTick(){
     const t0=performance.now(); if(t0<amMarkHold) return;
     amMarkDue=false;
-    if(amLive&&types[amLiveT]){ amMarkNear(types[amLiveT]); if(typeof amPendFlush==='function') amPendFlush(); amMarkDraw(); }   // 494: by their ranges (amColFlush); 548: the queue after the line
+    if(amLive&&types[amLiveT]){
+      // 549: within the budget — what was not cut is cut at the next frame, and the frame is not lost
+      if(!amMarkNear(types[amLiveT],(typeof AM_TICK_BUDGET!=='undefined')?AM_TICK_BUDGET:0)) amMarkDue=true;
+      if(typeof amPendFlush==='function') amPendFlush((typeof amSeen!=='undefined'&&amSeen.get(amLive))||0);
+      amMarkDraw(); }   // 494: by their ranges (amColFlush); 548: the queue after the line
     else if(typeof amPendFlush==='function') amPendFlush();
     const dt=performance.now()-t0; amMarkHold=dt>25?performance.now()+16:0;
   }
@@ -4611,8 +4633,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   }
   if($('sBall')) $('sBall').onclick=()=>amSetShape('ball');
   if($('sFlat')) $('sFlat').onclick=()=>amSetShape('flat');
-  function paintAt(e){
-    const hit=castAt(e); if(!hit.length)return;
+  function paintAt(e,hit0){
+    const hit=hit0||castAt(e); if(!hit.length)return;   // 549: paintAtAll has cast it already
     const p=hit[0].point,r2=brushR*brushR;let ch=false;
     const val=(mode==='add')?1:-1;
     amStrokeDab(p); if(val<0&&smLevelOf(types[activeT])>0) smLiveHide(types[activeT].id,p,brushR);   // 433                               // 324: the stroke's balls
@@ -4628,8 +4650,13 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
           { const M=types[activeT].manual;
             if(M[f]!==val){recH(activeT,f);M[f]=val;amSUpd(activeT,f);
               // 548: in a stroke of the line, the sub-face is coloured by the tick, after the line has taken it (amMarkTick) —
-              // coloured here, it showed WHOLE across the line until the tick caught up; on the iPad, a frame or two
-              if(amLive&&typeof amPendQ!=='undefined') amPendQ.push(f); else recolorFace(f);
+              // coloured here, it showed WHOLE across the line until the tick caught up; on the iPad, a frame or two.
+              // 549: but one WHOLLY inside this ball (its three corners within 0.9r) is on no line — coloured at once; the
+              // ball brush only (the flat one's cut is not the ball)
+              let inB=!seen&&typeof pos!=='undefined';
+              if(inB){ const o=f*9; for(let k=0;k<9&&inB;k+=3){ const ax=pos[o+k]-p.x, ay=pos[o+k+1]-p.y, az=pos[o+k+2]-p.z;
+                if(ax*ax+ay*ay+az*az>0.81*r2) inB=false; } }
+              if(amLive&&typeof amPendQ!=='undefined'&&!inB) amPendQ.push(f,amLive.c.length); else recolorFace(f);   // 549: and where the line was
               ch=true;} }
         }}}
     // 494: the sub-faces it recoloured go up at the frame (amColFlush); the area is counted once the stroke ends
@@ -4638,9 +4665,19 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // 548 (Eli: "משיכות רציפות יותר זה טוב"): every sample the browser gathered since the last event — a pencil gives 240 a
   // second, the event comes at the screen's 60 — each with its own ball, so a fast stroke is one line and not beads
   // (the tape, 14/08: "a quick hand leaves 4+ cm gaps"). The last sample is the event itself
+  // 549 (Eli, iPad 52: "המשיכה מעט איטית (לא מספיקה להתעדכן בזמן)"): a sample is a ball only when it has gone a quarter of
+  // the radius from the last ball — balls that close cover nothing new (a dab of the line is 0.2r apart anyway), and a
+  // pencil's 240 a second on a slow hand were four full balls a frame. The event's own sample always is one
+  var amPaintLast=null;
   function paintAtAll(e){
     const L=(e&&e.getCoalescedEvents)?e.getCoalescedEvents():null;
-    if(L&&L.length>1){ for(const ce of L) paintAt(ce); } else paintAt(e);
+    if(!(L&&L.length>1)){ paintAt(e); return; }
+    const g2=(0.25*brushR)*(0.25*brushR);
+    for(let i=0;i<L.length;i++){ const ce=L[i], last=(i===L.length-1);
+      const hit=castAt(ce); if(!hit.length) continue;
+      const q=hit[0].point;
+      if(!last&&amPaintLast){ const dx=q.x-amPaintLast[0], dy=q.y-amPaintLast[1], dz=q.z-amPaintLast[2]; if(dx*dx+dy*dy+dz*dz<g2) continue; }
+      paintAt(ce,hit); amPaintLast=[q.x,q.y,q.z]; }
   }
 
   /* ---- length stroke: sample the pencil path into a surface polyline ---- */
