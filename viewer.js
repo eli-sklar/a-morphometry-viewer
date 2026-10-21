@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=57;
+const VIEWER_JS_VER=58;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -501,10 +501,67 @@ document.addEventListener('visibilitychange',()=>{ amDown=0; window.amInvalidate
 function amCamMoved(){ camera.updateMatrixWorld(); const a=camera.matrixWorld.elements, b=camera.projectionMatrix.elements; let ch=false;
   for(let i=0;i<16;i++){ if(amCamLast[i]!==a[i]){ amCamLast[i]=a[i]; ch=true; } if(amCamLast[16+i]!==b[i]){ amCamLast[16+i]=b[i]; ch=true; } }
   return ch; }
+// 557 (Eli, Arena_Ashdod at 98%: "במקום בניה הדרגתית של השקיפות אני מקבל הרבה פעמים אזורים שקופים ואזורים אטומים"; "לפי ההמלצה"):
+// the model below 100% drawn as TWO layers. See-through with no depth (265) blends the surfaces along a ray in the order of the
+// file, not of distance — at 98% the last drawn of the roof, its underside or the stand below wins, in patches with straight
+// edges. Now: (1) the nearest surface's depth, alone, to a texture; (2) the model opaque, every fragment at or before the
+// nearest discarded — the second layer; (3) the scene as it is drawn today over it, the model at its opacity and depth test
+// LESS — only the nearest passes. The picture is op of the near wall and (1−op) of the one behind it, in any order: the near
+// one fades by degrees, and the one it faces is seen through it (02/09). The marks and the surfaces are drawn in (3) as
+// today. At 100%, or with no WebGL2 (depth textures), false: the screen draws as it always did. A colour background clears
+// colour AND depth at every render() (three r160) — it is the clear colour here, and comes back after
+var AM_SEE=null;
+function amSeeRender(renderer,scene,camera,mesh){
+  if(!mesh||!mesh.visible||!mesh.parent) return false;
+  const ms=Array.isArray(mesh.material)?mesh.material:[mesh.material], m0=ms[0];
+  if(!m0||!m0.transparent||!(m0.opacity<0.999)||!renderer.capabilities.isWebGL2) return false;
+  let S=AM_SEE;
+  if(!S||S.r!==renderer){ S=AM_SEE={r:renderer, rt:null, size:new THREE.Vector2(), col:new THREE.Color(), sec:new WeakMap(), dep:{},
+    uni:{tD1:{value:null}, uRes:{value:new THREE.Vector2()}, uEps:{value:2e-6}}}; }
+  renderer.getDrawingBufferSize(S.size);
+  if(!S.rt||S.rt.width!==S.size.x||S.rt.height!==S.size.y){
+    if(S.rt){ S.rt.depthTexture.dispose(); S.rt.dispose(); }
+    S.rt=new THREE.WebGLRenderTarget(S.size.x,S.size.y); S.rt.depthTexture=new THREE.DepthTexture(S.size.x,S.size.y);
+    S.rt.depthTexture.type=THREE.UnsignedIntType; S.uni.tD1.value=S.rt.depthTexture; }
+  S.uni.uRes.value.copy(S.size);                     // gl_FragCoord is in the drawing buffer's pixels — the device's ratio included
+  // the second layer's material: the model's own (its texture, its shader changes), opaque, and what is at or before the
+  // nearest thrown away
+  const sec=m=>{ let q=S.sec.get(m);
+    if(!q){ q=m.clone(); const base=m.onBeforeCompile;
+      q.onBeforeCompile=function(sh,r){ if(base) base.call(this,sh,r); Object.assign(sh.uniforms,S.uni);
+        sh.fragmentShader='uniform sampler2D tD1;uniform vec2 uRes;uniform float uEps;\n'+sh.fragmentShader.replace('#include <clipping_planes_fragment>',
+          'if(gl_FragCoord.z<=texture2D(tD1,gl_FragCoord.xy/uRes).x+uEps) discard;   // 557: the nearest is not the second\n#include <clipping_planes_fragment>'); };
+      q.customProgramCacheKey=()=>'amSee2|'+(base?base.toString():'');
+      S.sec.set(m,q); }
+    if(q.map!==m.map||q.side!==m.side||q.vertexColors!==m.vertexColors){ q.map=m.map; q.side=m.side; q.vertexColors=m.vertexColors; q.needsUpdate=true; }
+    q.color.copy(m.color); q.transparent=false; q.opacity=1; q.depthWrite=true; q.depthTest=true;
+    return q; };
+  const dep=m=>(S.dep[m.side]||(S.dep[m.side]=new THREE.MeshBasicMaterial({side:m.side, colorWrite:false})));
+  const bg=scene.background, ac=renderer.autoClear, prevRT=renderer.getRenderTarget(), mat0=mesh.material;
+  const cc=renderer.getClearColor(S.col).clone(), ca=renderer.getClearAlpha();
+  try{
+    // (1) the nearest's depth
+    mesh.material=Array.isArray(mat0)?ms.map(dep):dep(m0);
+    renderer.setRenderTarget(S.rt); renderer.setClearColor(0x000000,1); renderer.autoClear=true; renderer.render(mesh,camera);
+    // (2) the second layer, opaque, on the screen
+    renderer.setRenderTarget(prevRT);
+    if(bg&&bg.isColor) renderer.setClearColor(bg,1); else renderer.setClearColor(cc,ca);
+    renderer.clear();
+    mesh.material=Array.isArray(mat0)?ms.map(sec):sec(m0); renderer.autoClear=false; renderer.render(mesh,camera);
+    // (3) the scene as today, the model's nearest at its opacity over it
+    mesh.material=mat0; for(const m of ms) m.depthFunc=THREE.LessDepth;
+    scene.background=(bg&&bg.isColor)?null:bg; renderer.render(scene,camera);
+  } finally {
+    mesh.material=mat0; for(const m of ms) m.depthFunc=THREE.LessEqualDepth;
+    scene.background=bg; renderer.autoClear=ac; renderer.setClearColor(cc,ca); renderer.setRenderTarget(prevRT);
+  }
+  return true;
+}
 (function tick(){requestAnimationFrame(tick);if(window.amMarkTick)window.amMarkTick();
   const now=performance.now(); if(amCamMoved()) amRenderUntil=Math.max(amRenderUntil,now+120);
   if(amDown>0||now<amRenderUntil){ if(window.amRescaleFixed)window.amRescaleFixed();
-    if(window.amColFlush)window.amColFlush();renderer.render(scene,camera); } })();   // 494: the recoloured sub-faces by their ranges
+    if(window.amColFlush)window.amColFlush();
+    if(!(window.amSeeMesh&&amSeeRender(renderer,scene,camera,window.amSeeMesh))) renderer.render(scene,camera); } })();   // 494: the recoloured sub-faces by their ranges · 557: below 100% in two layers
 
 $('openBtn').onclick=()=>$('file').click();
 /* ---- 453 (Eli, 05/10: "the keyboard that opens on the iPad should be the big comfortable one, not the small
@@ -1353,7 +1410,7 @@ mat.onBeforeCompile=sh=>{
       .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;varying vec3 vAPN;varying float vABand;uniform float amDesign;'+AM_SHADER_FN)
       .replace('#include <opaque_fragment>','outgoingLight=amStipple(amSynthShade(outgoingLight,vAPatch,vAPos,vAPN,vABand),vACol,vAFlat,vADes);\n#include <opaque_fragment>');
   };
-  const mesh=new THREE.Mesh(geo,mat); scene.add(mesh);
+  const mesh=new THREE.Mesh(geo,mat); scene.add(mesh); window.amSeeMesh=mesh;   // 557: the frame tick draws it in two layers below 100%
   if(!geo.boundingSphere) geo.computeBoundingSphere(); AM_SPK_CELL.value=2*geo.boundingSphere.radius/400;   // 413
   const amEdges=(AM_SYN&&AM_SYN.edges.length)?amSynthEdges(AM_SYN.edges):null;   // 374
   if(amEdges) scene.add(amEdges);
