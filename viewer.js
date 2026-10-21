@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=56;
+const VIEWER_JS_VER=57;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -2128,7 +2128,7 @@ mat.onBeforeCompile=sh=>{
         +'font:500 13px system-ui,sans-serif;--amber:#b8934a;--bg:#141210;--dim:#9a917f;--sans:system-ui,sans-serif';
       P.innerHTML='<style>#amCutPanel #pmCount{display:none}</style>'
         +'<div style="width:108px;height:98px;overflow:hidden;position:relative"><div id="amCutPmIn" style="position:absolute;left:0;top:0;'
-        +'width:286px;transform:scale(.378);transform-origin:0 0;display:flex;flex-direction:column;align-items:center"></div></div>'
+        +'width:286px;transform:scale(.378);transform-origin:0 0;display:flex;flex-direction:column;align-items:center"><div id="amCutPmOwn"></div></div></div>'
         +'<div id="amCutTxt"></div>';
       document.body.appendChild(P); }
     P.style.display='flex';
@@ -2136,7 +2136,8 @@ mat.onBeforeCompile=sh=>{
       const into=document.getElementById('amCutPmIn'), h=document.getElementById('pmHost');
       const veil=h&&h.parentNode&&h.parentNode.closest?h.parentNode.closest('#amLoad,#loading,#load'):null;
       const free=!veil||getComputedStyle(veil).display==='none';
-      if(typeof window.__pmStart!=='function'){ if(typeof amPlanimeterMount==='function'&&!h) amPlanimeterMount(into); }
+      // 558: a host of its own inside the scaled box — the mount makes its host display:contents, and the box must keep its scale
+      if(typeof window.__pmStart!=='function'){ if(typeof amPlanimeterMount==='function'&&!h) amPlanimeterMount(document.getElementById('amCutPmOwn')); }
       else if(h&&free&&!into.contains(h)){ amCutPmHome={p:h.parentNode,n:h.nextSibling}; into.appendChild(h); }
       if(typeof window.__pmStart==='function'&&into.querySelector('#planim')){ window.__pmStart('מכין את הסימונים',{progress:true,fps:12}); P.dataset.pm='1'; } }
     if(typeof window.__pmProgress==='function') window.__pmProgress(frac,Math.min(1,frac+0.05));
