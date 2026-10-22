@@ -505,8 +505,11 @@ function amCamMoved(){ camera.updateMatrixWorld(); const a=camera.matrixWorld.el
 // the model below 100% drawn as TWO layers. See-through with no depth (265) blends the surfaces along a ray in the order of the
 // file, not of distance — at 98% the last drawn of the roof, its underside or the stand below wins, in patches with straight
 // edges. Now: (1) the nearest surface's depth, alone, to a texture; (2) the model opaque, every fragment at or before the
-// nearest discarded — the second layer; (3) the scene as it is drawn today over it, the model at its opacity and depth test
-// LESS — only the nearest passes. The picture is op of the near wall and (1−op) of the one behind it, in any order: the near
+// nearest discarded — the second layer; (2b) the nearest's depth back into the screen's buffer, by the model's own
+// shader; (3) the scene as it is drawn today over it, the model at its opacity, at LessEqual and not writing — only the
+// nearest passes. 557b (the isolated test of 1.5.10, Arena from the side at 99%: dark patches along the roof's ribs): (3)
+// tested against the SECOND layer's depth let every surface between the two through — a rib's side, a skin thinner than
+// the margin — each at 99% over the nearest, in the order of the file: the old patches, smaller. The picture is op of the near wall and (1−op) of the one behind it, in any order: the near
 // one fades by degrees, and the one it faces is seen through it (02/09). The marks and the surfaces are drawn in (3) as
 // today. At 100%, or with no WebGL2 (depth textures), false: the screen draws as it always did. A colour background clears
 // colour AND depth at every render() (three r160) — it is the clear colour here, and comes back after
@@ -516,7 +519,7 @@ function amSeeRender(renderer,scene,camera,mesh){
   const ms=Array.isArray(mesh.material)?mesh.material:[mesh.material], m0=ms[0];
   if(!m0||!m0.transparent||!(m0.opacity<0.999)||!renderer.capabilities.isWebGL2) return false;
   let S=AM_SEE;
-  if(!S||S.r!==renderer){ S=AM_SEE={r:renderer, rt:null, size:new THREE.Vector2(), col:new THREE.Color(), sec:new WeakMap(), dep:{},
+  if(!S||S.r!==renderer){ S=AM_SEE={r:renderer, rt:null, size:new THREE.Vector2(), col:new THREE.Color(), sec:new WeakMap(), pre:new WeakMap(), dep:{},
     uni:{tD1:{value:null}, uRes:{value:new THREE.Vector2()}, uEps:{value:2e-6}}}; }
   renderer.getDrawingBufferSize(S.size);
   if(!S.rt||S.rt.width!==S.size.x||S.rt.height!==S.size.y){
@@ -536,9 +539,16 @@ function amSeeRender(renderer,scene,camera,mesh){
     if(q.map!==m.map||q.side!==m.side||q.vertexColors!==m.vertexColors){ q.map=m.map; q.side=m.side; q.vertexColors=m.vertexColors; q.needsUpdate=true; }
     q.color.copy(m.color); q.transparent=false; q.opacity=1; q.depthWrite=true; q.depthTest=true;
     return q; };
+  // 557b: the nearest's depth, by the model's OWN program (its vertex stage is the one (3) runs: the depths agree to the bit),
+  // colour off
+  const pre=m=>{ let q=S.pre.get(m);
+    if(!q){ q=m.clone(); q.onBeforeCompile=m.onBeforeCompile; q.customProgramCacheKey=m.customProgramCacheKey; S.pre.set(m,q); }
+    if(q.map!==m.map||q.side!==m.side||q.vertexColors!==m.vertexColors){ q.map=m.map; q.side=m.side; q.vertexColors=m.vertexColors; q.needsUpdate=true; }
+    q.colorWrite=false; q.transparent=false; q.opacity=1; q.depthWrite=true; q.depthTest=true; q.depthFunc=THREE.LessEqualDepth;
+    return q; };
   const dep=m=>(S.dep[m.side]||(S.dep[m.side]=new THREE.MeshBasicMaterial({side:m.side, colorWrite:false})));
   const bg=scene.background, ac=renderer.autoClear, prevRT=renderer.getRenderTarget(), mat0=mesh.material;
-  const cc=renderer.getClearColor(S.col).clone(), ca=renderer.getClearAlpha();
+  const cc=renderer.getClearColor(S.col).clone(), ca=renderer.getClearAlpha(), dw=ms.map(m=>m.depthWrite);
   try{
     // (1) the nearest's depth
     mesh.material=Array.isArray(mat0)?ms.map(dep):dep(m0);
@@ -548,11 +558,13 @@ function amSeeRender(renderer,scene,camera,mesh){
     if(bg&&bg.isColor) renderer.setClearColor(bg,1); else renderer.setClearColor(cc,ca);
     renderer.clear();
     mesh.material=Array.isArray(mat0)?ms.map(sec):sec(m0); renderer.autoClear=false; renderer.render(mesh,camera);
-    // (3) the scene as today, the model's nearest at its opacity over it
-    mesh.material=mat0; for(const m of ms) m.depthFunc=THREE.LessDepth;
+    // (2b) the nearest's depth over the second's
+    mesh.material=Array.isArray(mat0)?ms.map(pre):pre(m0); renderer.render(mesh,camera);
+    // (3) the scene as today, the model's nearest — and only it — at its opacity over the second
+    mesh.material=mat0; for(const m of ms){ m.depthFunc=THREE.LessEqualDepth; m.depthWrite=false; }
     scene.background=(bg&&bg.isColor)?null:bg; renderer.render(scene,camera);
   } finally {
-    mesh.material=mat0; for(const m of ms) m.depthFunc=THREE.LessEqualDepth;
+    mesh.material=mat0; ms.forEach((m,i)=>{ m.depthFunc=THREE.LessEqualDepth; m.depthWrite=dw[i]; });
     scene.background=bg; renderer.autoClear=ac; renderer.setClearColor(cc,ca); renderer.setRenderTarget(prevRT);
   }
   return true;
