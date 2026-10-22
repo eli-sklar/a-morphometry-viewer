@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=58;
+const VIEWER_JS_VER=59;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -1420,7 +1420,9 @@ mat.onBeforeCompile=sh=>{
       .replace('#include <begin_vertex>','#include <begin_vertex>\nvACol=aCol;vAFlat=aFlat;vADes=aDes;vAPatch=aPatch;vAPos=transformed;vAPN=aPN;vABand=aBand;');
     sh.fragmentShader=sh.fragmentShader
       .replace('#include <common>','#include <common>\nvarying vec3 vACol;varying float vAFlat;varying float vADes;varying float vAPatch;varying vec3 vAPos;varying vec3 vAPN;varying float vABand;uniform float amDesign;'+AM_SHADER_FN)
-      .replace('#include <opaque_fragment>','outgoingLight=amStipple(amSynthShade(outgoingLight,vAPatch,vAPos,vAPN,vABand),vACol,vAFlat,vADes);\n#include <opaque_fragment>');
+      // 561 (Eli: "היום כאשר הסימונים במברשת בלי החלקה השקיפות שלהם מקושרת לשקיפות המודל, אני רוצה להפריד בינהם"): the
+      // marking keeps its own opacity — the alpha rises from the model's to 1 by the marking's coverage (amStippleA, 257)
+      .replace('#include <opaque_fragment>','outgoingLight=amStipple(amSynthShade(outgoingLight,vAPatch,vAPos,vAPN,vABand),vACol,vAFlat,vADes);diffuseColor.a=mix(diffuseColor.a,1.0,amStippleA(vAFlat,vADes));\n#include <opaque_fragment>');
   };
   const mesh=new THREE.Mesh(geo,mat); scene.add(mesh); window.amSeeMesh=mesh;   // 557: the frame tick draws it in two layers below 100%
   if(!geo.boundingSphere) geo.computeBoundingSphere(); AM_SPK_CELL.value=2*geo.boundingSphere.radius/400;   // 413
