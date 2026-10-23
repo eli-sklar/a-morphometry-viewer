@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=59;
+const VIEWER_JS_VER=60;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -2306,7 +2306,7 @@ mat.onBeforeCompile=sh=>{
     if(amCutJob) return;   // 555: the brush waits for the whole layer's cut
     const T=types[activeT]; if(!T) return;
     if(!T.ops) T.ops=[]; if(!T.S) amSOf(T);
-    amLive={t:'balls',c:[],r:brushR,s:(mode==='add')?1:-1}; amLiveT=activeT; T.ops.push(amLive);
+    amLive={t:'balls',c:[],r:brushR,s:(mode==='add')?1:-1,by:'h'}; amLiveT=activeT; T.ops.push(amLive);   // 571: a person's act
     if(curDiff) curDiff.push(['OP',activeT,amLive]);
     amWatch={T:T, m:new Map()};
   }
@@ -2354,9 +2354,29 @@ mat.onBeforeCompile=sh=>{
     T.ops.push(op); if(op.t==='balls') amSeen.set(op,op.c.length); amMarkAt(T,op); amMarkDraw(); }
   function amSUpd(ti,f){ const T=types[ti]; if(T&&T.S) T.S[f]=isType(ti,f)?1:0; }
   // the sheet: the strokes' balls and the grows' sub-faces, in their order
-  function amOpsOut(T){ return (T.ops||[]).map(op=>op.t==='balls'
+  function amOpsOut(T){ return (T.ops||[]).map(op=>amOpSrc(op.t==='balls'
       ? {t:'balls', r:Math.round(op.r*1e5)/1e5, s:op.s, c:op.c.map(v=>Math.round(v*1e5)/1e5)}
-      : {t:'faces', f:[...op.m.keys()], v:[...op.m.values()]}).filter(o=>o.t!=='balls'||o.c.length); }
+      : {t:'faces', f:[...op.m.keys()], v:[...op.m.values()]}, op)).filter(o=>o.t!=='balls'||o.c.length); }
+  function amOpSrc(dst,src){
+    // 571: who made an act, carried from one form of it to the next (the sheet, the screen, the sheet
+    // again) — by:'h' a person; by:'a' Ada, with pr, the id of her record in the sheet's prov table. Only
+    // these two are believed: anything else, or Ada without a record id, leaves the act without a source,
+    // which reads as "unknown — from before the record" and is never turned into a person's act
+    if(src&&src.by==='h') dst.by='h';
+    else if(src&&src.by==='a'&&typeof src.pr==='string'&&/^R[\w-]{1,40}$/.test(src.pr)){ dst.by='a'; dst.pr=src.pr; }
+    return dst; }
+  var amProv=Object.create(null);   // 571: Ada's records by id — the rule and its parameters, how it was approved and what was shown
+  function amProvIn(j){
+    amProv=Object.create(null); const P=j&&j.prov;
+    if(P&&typeof P==='object'&&!Array.isArray(P))
+      for(const k of Object.keys(P)) if(/^R[\w-]{1,40}$/.test(k)&&P[k]&&typeof P[k]==='object'&&!Array.isArray(P[k])) amProv[k]=P[k]; }
+  function amProvOut(o){
+    // the records an act still points at, and only when Ada made an act: then the sheet needs reader 9 —
+    // an older reader would rebuild the acts without their source and drop the table without a word.
+    // A person's sheet keeps the reader it had and still opens on the iPad that is out there now
+    const keep={}; let ada=false;
+    for(const T of types) for(const op of (T.ops||[])) if(op.by==='a'){ ada=true; if(amProv[op.pr]) keep[op.pr]=amProv[op.pr]; }
+    if(ada){ o.prov=keep; o.minReader=Math.max(o.minReader||1,9); } }
   // the marked parts each layer carries to the report (324): the part of every sub-face on the
   // line, and its triangles in the sub-face's own barycentrics
   function amMarkDerived(T,ti){
@@ -4735,7 +4755,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const visited=new Uint8Array(N); const q=[seed]; visited[seed]=1; let head=0, added=0; const CAP=80000;
     const M=types[activeT].manual;
     beginH();
-    const gop={t:'faces', m:new Map()};          // 324: the grow, as an act in the layer's order
+    const gop={t:'faces', m:new Map(), by:'h'};   // 324: the grow, as an act in the layer's order; 571: a person's
     while(head<q.length && added<CAP){const s=q[head++];
       gop.m.set(s,1);
       if(M[s]!==1){recH(activeT,s);M[s]=1;amSUpd(activeT,s);recolorFace(s);} added++;
@@ -5529,6 +5549,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         return {id:T.id,name:T.name,color:T.hex,n:n};});
     }
     amLabOut(o);                         // 355
+    amProvOut(o);                        // 571: Ada's records, and reader 9 only when she made an act
     return o;
   }
   function amSheetHost(){ return {cnt:CNT?b64u8(CNT):null, volLayers:VOL_LAYERS, jobId:AM.jobId, exportedBy:'A-morphometry iPad'}; }   // 349: the product's own fields for the shared getSheet
@@ -6198,7 +6219,7 @@ const amPal=(function(){
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
-  const AM_SHEET_READER = 8;   // 433: one brush, a level per layer   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
+  const AM_SHEET_READER = 9;   // 433: one brush, a level per layer · 571: Ada's acts and their records   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
   const AM_SUB_SCHEME = (am.subScheme===2)?2:1;   // 539: 1 — one k; 2 — a target size, k_f = sqrt(cnt) (the work says which)
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -6318,10 +6339,10 @@ const amPal=(function(){
       // 324: the strokes and the grows come back in their order; a sheet from before them has
       // its marks as one face-level act, so a new eraser stroke cuts into them smoothly too
       T.ops=[];
-      if(Array.isArray(src.ops)){ for(const o of src.ops){
-          if(o&&o.t==='balls'&&Array.isArray(o.c)&&o.c.length) T.ops.push({t:'balls',r:(+o.r>0)?+o.r:0.1,s:(o.s<0)?-1:1,c:o.c.slice()});
+      if(Array.isArray(src.ops)){ for(const o of src.ops){   // 571: each act with its source (amOpSrc)
+          if(o&&o.t==='balls'&&Array.isArray(o.c)&&o.c.length) T.ops.push(amOpSrc({t:'balls',r:(+o.r>0)?+o.r:0.1,s:(o.s<0)?-1:1,c:o.c.slice()},o));
           else if(o&&o.t==='faces'&&Array.isArray(o.f)){ const m=new Map();
-            o.f.forEach((f,i)=>amEach(MAP,f,t=>m.set(t,(o.v&&o.v[i]<0)?-1:1))); if(m.size) T.ops.push({t:'faces',m:m}); } } }
+            o.f.forEach((f,i)=>amEach(MAP,f,t=>m.set(t,(o.v&&o.v[i]<0)?-1:1))); if(m.size) T.ops.push(amOpSrc({t:'faces',m:m},o)); } } }
       else { const m=new Map(); for(let t=0;t<N;t++) if(T.manual[t]!==0) m.set(t,T.manual[t]); if(m.size) T.ops.push({t:'faces',m:m}); }
       if((src.faceThr||[]).length){T.faceThr=new Float32Array(N).fill(NaN);
         for(const pr of src.faceThr) amEach(MAP,pr[0],t=>{T.faceThr[t]=pr[1];});}
@@ -6330,6 +6351,7 @@ const amPal=(function(){
         for(let fo=0;fo<FO;fo++) for(let t=OFF[fo];t<OFF[fo+1];t++) T.prob[t]=src.prob[fo];
         T.hasProb=true;}
     };
+    amProvIn(sh);                                         // 571: Ada's records, before the acts that point at them
     if(Array.isArray(sh.types)&&sh.types.length){          // v3 sheet: full multi-type state
       loadT(T0,sh.types[0]); if(sh.types[0].id)T0.id=sh.types[0].id;
       for(let i=1;i<sh.types.length;i++){const T=mkType('','#0d47a1');loadT(T,sh.types[i]);
