@@ -259,8 +259,11 @@ function amTagCard(o){
    closed, saved and quit (22:18-22:20). This one lives in the page: every button says what
    it does, the page keeps running, Escape or a click outside is always the answer that
    changes nothing, and no key reaches the screen underneath while it is open. */
+var amDialogs=[];   // 570: the windows open now, as they read — Ada's bridge returns them; nothing outside a click closes one
 function amAsk(text,buttons,safe){
   return new Promise(res=>{
+    const L=(typeof amDialogs!=='undefined')?amDialogs:[];   // a test that lifts amAsk alone has no list beside it
+    const rec={text:String(text), buttons:buttons.map(b=>String(b.t))}; L.push(rec);
     const wrap=document.createElement('div');
     wrap.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2147483000;'
       +'display:flex;align-items:center;justify-content:center;direction:rtl';
@@ -278,7 +281,7 @@ function amAsk(text,buttons,safe){
     const row=document.createElement('div');
     row.style.cssText='display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-start;flex:0 0 auto';
     let focusEl=null;
-    const done=v=>{window.removeEventListener('keydown',key,true);wrap.remove();res(v);};
+    const done=v=>{window.removeEventListener('keydown',key,true);wrap.remove();const k=L.indexOf(rec);if(k>=0)L.splice(k,1);res(v);};
     function key(e){
       if((e.key||'')==='Escape'){e.preventDefault();done(safe);}
       e.stopImmediatePropagation(); e.stopPropagation();   // nothing reaches the screen underneath
