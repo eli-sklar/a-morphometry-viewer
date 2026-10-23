@@ -5553,6 +5553,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     }
     amLabOut(o);                         // 355
     amProvOut(o);                        // 571: Ada's records, and reader 9 only when she made an act
+    if(withDerived&&typeof amAdaOpenCount==='function') o.adaOpen=amAdaOpenCount();   // 571: the report is refused while a proposal waits
     return o;
   }
   function amSheetHost(){ return {cnt:CNT?b64u8(CNT):null, volLayers:VOL_LAYERS, jobId:AM.jobId, exportedBy:'A-morphometry iPad'}; }   // 349: the product's own fields for the shared getSheet
