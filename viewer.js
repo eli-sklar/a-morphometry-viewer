@@ -2395,8 +2395,8 @@ mat.onBeforeCompile=sh=>{
   // the iPad draws every frame; the frame asks the line first (317)
   window.amMarkTick=()=>{ if(amMarkDue) amMarkTick(); };
   function recolorFace(f){
-    if(typeof amAdaSideOn!=='undefined'&&amAdaSideOn) return;   // 626: Ada counts an "after" on a side state — nothing is painted from it
     amColMark(f);   // 494: what goes to the graphics card at the frame — this sub-face's colour, cover and design
+    if(typeof amAdaSideOn!=='undefined'&&amAdaSideOn) return;   // 626: Ada counts an "after" on a side state — nothing is painted from it
     let r=null, a=0, d=0; _vis.length=0;
     // 329: the smoothed-surface brush, while it is down — the sub-faces it has taken
     if(typeof smLive!=='undefined'&&smLive&&smLive[f]&&mode!=='rem'&&!(typeof smLiveT!=='undefined'&&smLiveT&&smLiveT.band.has(f))){   // 389: an erasure is drawn by its own red (smRed), not face by face
