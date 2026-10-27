@@ -396,7 +396,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=59;
+const VIEWER_JS_VER=60;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -1447,7 +1447,8 @@ mat.onBeforeCompile=sh=>{
   // as in the measurement screen. `T.am` stays as the tool last used on the layer.
   const AM_BRUSH='brush', AM_POLY='poly';
   let areaTool=AM_BRUSH;
-  function mkType(name,hex){const T={id:'t'+(tSeq++),name:name,hex:hex,color:hex2rgb(hex),
+  function mkType(name,hex){let id; do{ id='t'+(tSeq++); }while(types.some(x=>x.id===id));   // 595
+    const T={id:id,name:name,hex:hex,color:hex2rgb(hex),
     manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,design:0.6,
     designU:{value:0.6},area:0,
     am:AM_BRUSH};
@@ -2526,7 +2527,8 @@ mat.onBeforeCompile=sh=>{
   const lenTypes=[]; let activeL=-1, lSeq=0;
   const lines=[]; let curLine=null; const MIN_SEG=0.002;
   let lineW=0.008;                     // tube radius; brush slider drives it in len kind
-  function mkLenType(name,hex){const T={design:0.0,designU:{value:0.0},id:'l'+(lSeq++),name:name,hex:hex,op:1.0};lenTypes.push(T);return T;}
+  function mkLenType(name,hex){let id; do{ id='l'+(lSeq++); }while(lenTypes.some(x=>x.id===id));   // 595
+    const T={design:0.0,designU:{value:0.0},id:id,name:name,hex:hex,op:1.0};lenTypes.push(T);return T;}
   /* ---- the ruler (decision 251), and it is the EDITOR'S code, character for character.
      The two environments already learned this lesson with the shader: three copies of one
      shader must stay one shader, and S21 holds them to it. The ruler is the same kind of
@@ -2629,7 +2631,8 @@ mat.onBeforeCompile=sh=>{
   const rulSegs=[];                // {t, a, b}  — ids, undirected
   let rulLast=null;
   // `w`: the line's width in pixels (25/09); the design (the dash) is absent = solid
-  function mkRulType(name,hex){const T={id:'r'+(rSeq++),name:name,hex:hex,op:1.0,w:AM_RUL_W0};
+  function mkRulType(name,hex){let id; do{ id='r'+(rSeq++); }while(rulTypes.some(x=>x.id===id));   // 595
+    const T={id:id,name:name,hex:hex,op:1.0,w:AM_RUL_W0};
     rulTypes.push(T);return T;}
   const SCREEN_FIXED=[];
   const RUL_PT_K=0.006, RUL_LAB_K=0.040;
@@ -4109,7 +4112,12 @@ float amStippleA(float a, float lvl){
   // per-layer diamond DIAMETER in true metres + per-layer opacity (12/08) — mirror of
   // the desktop editor, and both ride in the sheet so devices render identically
   const cntDefSize=()=>Math.max(0.024,bs.radius*0.018);
-  function mkCntType(name,hex){const T={id:'c'+(cSeq++),name:name,hex:hex,size:cntDefSize(),op:1.0,
+  // 595: a layer's id is never one already in use — a loaded sheet sets its own ids and does not move the counter
+  // (a sheet whose one layer is t1 left tSeq at 1, and the next layer was t1 again: its chip 0.00, its strokes nowhere).
+  // A sheet that already holds two layers of one id loads as it is — each keeps its own marks (they live on the layer,
+  // not by id); what is looked up by id (chip, polygons, smoothing) finds the first.
+  function mkCntType(name,hex){let id; do{ id='c'+(cSeq++); }while(cntTypes.some(x=>x.id===id));
+    const T={id:id,name:name,hex:hex,size:cntDefSize(),op:1.0,
     design:0.6,designU:{value:0.6}};cntTypes.push(T);return T;}
   function xObj(m){const T=cntTypes.find(x=>x.id===m.t);
     // a standing diamond with VOLUME (round 4): a flat sprite sank into scan bumps.
