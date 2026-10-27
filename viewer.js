@@ -308,7 +308,7 @@ function amTell(text,label){ return amAsk(text,[{t:label||'הבנתי',v:true,pr
 // the text selected, ready to copy — what the last-resort prompt() did, without stopping
 function amCopyBox(text,str){
   return new Promise(res=>{
-    const p=amAsk(text,[{t:'סגור',v:true,primary:true}],true);
+    const p=amAsk(text,[{t:'סגירה',v:true,primary:true}],true);
     setTimeout(()=>{
       const boxes=document.querySelectorAll('div[style*="2147483000"] > div');
       const box=boxes[boxes.length-1]; if(!box){return;}
@@ -327,7 +327,7 @@ function amAboutHtml(){
   // the version line is FETCHED or read from the file's stamp, never typed: it used to be a hand-typed "1.0" while
   // APP_VERSION said 1.1 — two claims, both unverifiable (01/09). Until it is filled it reads "A-morphometry".
   return '\n  <div class="box">'
-    +'\n    <button class="x" id="infoClose" title="סגור">✕</button>'
+    +'\n    <button class="x" id="infoClose" title="סגירה">✕</button>'
     +'\n    <p>הפלנימטר הקוטבי הומצא ב־1854 בידי המתמטיקאי השוויצרי יאקוב אמסלר (אך הרעיון קדם לו: הפלנימטר הראשון תוכנן כבר ב־1814 בידי המודד הבווארי יוהאן מרטין הרמן, במנגנון של גלגל המתגלגל על חרוט, ואמסלר הוא שפישט אותו לצורה הקוטבית המעשית בת שתי הזרועות).</p>'
     +'\n    <p>זהו מכשיר מכני קטן שמודד את שטחה של כל צורה — סדירה או אמורפית — פשוט על ידי הובלת חוד המעקב לאורך קו המתאר שלה. הקסם הוא גלגל מדידה יחיד: הוא מתגלגל רק כשהוא נע בניצב לצירו, ומחליק כשהוא נע במקביל אליו — וכך הוא מבצע אינטגרציה מכנית: סיבובו המצטבר פרופורציוני לאינטגרל <span class="math">∮<sub>C</sub> (x&thinsp;dy − y&thinsp;dx)</span> על היקף הצורה.</p>'
     +'\n    <p>בתום הקפה מלאה (נגד כיוון השעון), על פי משפט גרין, <span class="math">∮<sub>C</sub> (x&thinsp;dy − y&thinsp;dx) = ∬<sub>S</sub> 2&thinsp;dx&thinsp;dy = 2S</span> — האינטגרל לאורך גבולה של הצורה נותן פעמיים את שטחה. כיול המכשיר מגלם את קבוע הפרופורציה, כך שהקריאה מוסרת את השטח עצמו.</p>'
@@ -399,7 +399,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=61;
+const VIEWER_JS_VER=62;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -424,7 +424,7 @@ amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{
     W.style.cssText='position:fixed;inset:0;z-index:2147483500;background:#141210;color:#d8cdb8;direction:rtl;overflow:auto;'
       +'padding:14px;font:14px system-ui,Arial,sans-serif;-webkit-user-select:text;user-select:text';
     const head=document.createElement('div'); head.style.cssText='font-weight:600;margin-bottom:6px';
-    head.textContent='בדיקת מקלדת — נגיעה באצבע בכל שדה בתורו, לחכות שנייה, לסגור את המקלדת, ובסוף "העתק"';
+    head.textContent='בדיקת מקלדת — נגיעה באצבע בכל שדה בתורו, לחכות שנייה, לסגור את המקלדת, ובסוף "העתקה"';
     W.appendChild(head);
     const log=document.createElement('pre');
     log.style.cssText='white-space:pre-wrap;direction:ltr;text-align:left;font:11px ui-monospace,Menlo,monospace;background:#1c1915;padding:8px;max-height:30vh;overflow:auto';
@@ -465,7 +465,7 @@ amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{
     W.appendChild(log);
     const bar=document.createElement('div'); bar.style.cssText='display:flex;gap:8px;margin-top:10px';
     const cp=document.createElement('button'), cl=document.createElement('button');
-    cp.textContent='העתק'; cl.textContent='סגור'; cp.style.cssText=btnCss; cl.style.cssText=btnCss;
+    cp.textContent='העתקה'; cl.textContent='סגירה'; cp.style.cssText=btnCss; cl.style.cssText=btnCss;
     cp.onclick=()=>{ const t=L.join('\n');
       const p=(navigator.clipboard&&navigator.clipboard.writeText)?navigator.clipboard.writeText(t):Promise.reject(new Error('no clipboard'));
       p.then(()=>{ cp.textContent='הועתק ✓'; },()=>{ amCopyBox('להעתקה — לסמן ולהעתיק:',t); }); };
@@ -631,7 +631,7 @@ $('file').addEventListener('change',e=>{
   // into the open work; a .glb is a work package — it boots the engine
   if(/\.json$/i.test(f.name||'')){
     if(!window.__am){
-      $('err').textContent='זהו גיליון, לא קובץ עבודה. פתחו קודם את קובץ העבודה (.glb) — ואז טענו את הגיליון.';
+      $('err').textContent='זהו גיליון, לא קובץ עבודה. יש לפתוח קודם את קובץ העבודה (.glb), ואז לטעון את הגיליון.';
       return;
     }
     f.text().then(t=>{window.__am.applySheet(JSON.parse(t));})
@@ -848,7 +848,7 @@ function checkReady(tries){
       } else if(tries>0){
         setTimeout(()=>checkReady(tries-1),3000);
       } else {
-        $('ready').textContent='טרם נשמר לעבודה ללא רשת — הישארו מחוברים רגע ופתחו שוב';
+        $('ready').textContent='טרם נשמר לעבודה ללא רשת — כדאי להישאר מחוברים לרשת עוד רגע ולפתוח שוב';
         $('ready').style.color='#b8934a';
       }
     }).catch(()=>{$('ready').textContent='';});
@@ -874,7 +874,7 @@ function load(buf){
   const g=parseGLB(buf);
   const am=g.json.asset&&g.json.asset.extras&&g.json.asset.extras.amWork;
   if(!am) throw new Error('הקובץ אינו נושא נתוני עבודה (amWork).');
-  if(am.schemaVersion>3) throw new Error('הקובץ נוצר בגרסה חדשה מדי — עדכנו את גרסת האייפד.');
+  if(am.schemaVersion>3) throw new Error('הקובץ נוצר בגרסה חדשה מדי — יש לעדכן את גרסת האייפד.');
   AM=am;
   const acc=g.json.accessors, app=am.appData;
   const pos=bview(g,g.bin,acc[0].bufferView,Float32Array);
