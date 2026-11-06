@@ -5438,7 +5438,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // through here and a field this file does not carry comes back empty.
   // volLayers holds each volume layer's name, colour and closure method
   // (decision 142); dropping it would leave records pointing at nothing.
-  let VOL_LAYERS=[];
+  let VOL_LAYERS=[], VOL_MARK=null;      // 644: VOL_MARK - a volume marking the sheet brought, carried on
   /* ---- sheet export: field-for-field the desktop getSheet(withDerived=true) --- */
   function typeState(T){
     const m=[], ov=[];
@@ -5520,6 +5520,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
                w:Math.round((L.w||0.008)*1000)/1000,
                pts:L.pts.map(v=>Math.round(v*1000)/1000)})),
              membranes:MEMBRANES, volLayers:H.volLayers,
+             // 644 (Eli, 06/11: "לשמור"): the volume marking not measured yet — the editor's, or the one an iPad carries on
+             ...(H.volMark?{volMark:H.volMark}:{}),
              // 251: a ruler demands reader 3. Not a formality — the iPad writes sheets
              // too, and at reader 2 it would open a work with a ruler, ignore the three
              // fields it does not know, and DROP THE RULER the moment it saved. Refusing
@@ -5528,7 +5530,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
              // one would drop them without a word and write the sheet back without them
              // 332: a sheet with tags needs a reader that knows them — an older one would
              // drop them without a word
-             minReader:(SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1)))))),   // 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
+             // 644: a sheet with a volume marking needs reader 10 — an older one would drop the marking without a word
+             minReader:Math.max(H.volMark?10:1, (SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1))))))),   // 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
              tagTypes:tagTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid})),
              tags:tags.map(g=>({id:g.id,t:g.t,p:g.p.slice(),nrm:g.nrm?g.nrm.slice():null,
                                 title:g.title,text:g.text,img:g.img||null})),
@@ -5566,7 +5569,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(typeof amAdaSheetPlain==='function') amAdaSheetPlain(o);   // 625: Ada off here — the sheet as before her
     return o;
   }
-  function amSheetHost(){ return {cnt:CNT?b64u8(CNT):null, volLayers:VOL_LAYERS, jobId:AM.jobId, exportedBy:'A-morphometry iPad'}; }   // 349: the product's own fields for the shared getSheet
+  // 644: the iPad has no volume brush — a volume marking the sheet brought is carried on as it came, never dropped
+  function amSheetHost(){ return {cnt:CNT?b64u8(CNT):null, volLayers:VOL_LAYERS, volMark:VOL_MARK, jobId:AM.jobId, exportedBy:'A-morphometry iPad'}; }   // 349: the product's own fields for the shared getSheet
   $('mExport').onclick=async()=>{
     await new Promise(res=>amCutWhenDone(res));   // 555: the sheet with the line waits for the cut
     const sheet=getSheet(true);
@@ -6233,7 +6237,7 @@ const amPal=(function(){
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
-  const AM_SHEET_READER = 9;   // 433: one brush, a level per layer · 571: Ada's acts and their records   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
+  const AM_SHEET_READER = 10;  // 644: the volume marking, carried (volMark) · 433: one brush, a level per layer · 571: Ada's acts and their records   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
   const AM_SUB_SCHEME = (am.subScheme===2)?2:1;   // 539: 1 — one k; 2 — a target size, k_f = sqrt(cnt) (the work says which)
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -6332,6 +6336,7 @@ const amPal=(function(){
     }
     MEMBRANES = Array.isArray(sh.membranes) ? sh.membranes : [];
     VOL_LAYERS = Array.isArray(sh.volLayers) ? sh.volLayers : [];
+    VOL_MARK = (sh.volMark && typeof sh.volMark === 'object') ? sh.volMark : null;      // 644: carried, as it came
     for(const L of [...lines]) delLine(L);
     for(const m of [...xmarks]) delX(m);
     lenTypes.length=0; activeL=-1;
