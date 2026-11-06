@@ -2052,7 +2052,7 @@ mat.onBeforeCompile=sh=>{
   // the faces already on the line just beyond as the ones they may be reached from (317)
   // 555: as steps — the same code in the same order, pausing (`yield`, with how far it has come, 0..1) so the whole layer's
   // cut can be spread over frames (amCutStep); amMarkLocal runs it to the end at once, exactly as before
-  function* amMarkLocalG(T,pts,rmax){
+  function* amMarkLocalG(T,pts,rmax,keep){
     let yk=0;
     if(!T.band){ T.band=new Set(); T.pieces=new Map(); }
     if(!amHasBalls(T)){ for(const f of T.band) recolorFace(f); T.band.clear(); T.pieces.clear(); return; }
@@ -2092,6 +2092,11 @@ mat.onBeforeCompile=sh=>{
     // 550: the strokes that can reach the faces asked — the place is their corners' box
     const cand=[], zl=[Infinity,Infinity,Infinity], zh=[-Infinity,-Infinity,-Infinity];
     for(const f of region){ cand.push(f); if((++yk&16383)===0) yield 0.21; } for(const f of seeds) cand.push(f);
+    // 638: the line is reached from the sub-faces marked at the start (S) or from the line outside the region. A face-level
+    // act that makes the line's marked pieces whole cuts that chain inside its small region: the thinner pieces beside them
+    // fell off the line and were counted empty until the whole layer was cut again (the editor's test, 06/11: an accepted
+    // fill of 36 pieces took 40 of their neighbours, -0.0135 m² instead of +0.0245). Those on the line before the act are seeds
+    if(keep) for(const f of region) if(T.band.has(f)) seeds.add(f);
     for(const f of cand){ if((++yk&4095)===0) yield 0.22; const o=f*9; for(let c=0;c<9;c+=3) for(let k=0;k<3;k++){ const v=pos[o+c+k]; if(v<zl[k]) zl[k]=v; if(v>zh[k]) zh[k]=v; } }
     { const ops=T.ops; for(let k=0;k<ops.length;){ if(ops[k].t!=='faces'){ k++; continue; } let j=k; while(j<ops.length&&ops[j].t==='faces') j++;
         if(j-k>1){ const fg=amFacesRunG(ops.slice(k,j)); while(!fg.next().done) yield 0.23; } k=j; } }
@@ -2102,7 +2107,7 @@ mat.onBeforeCompile=sh=>{
     for(const f of plan.cuts.keys()){ if((++nc&7)===0) yield 0.86+0.14*nc/NC; if(!region.has(f)) continue; amStash(T,f); const was=T.band.has(f); T.band.add(f);
       T.pieces.set(f,amPiecesOf(f,en)); if(!was) recolorFace(f); }
   }
-  function amMarkLocal(T,pts,rmax){ const g=amMarkLocalG(T,pts,rmax); while(!g.next().done){} }
+  function amMarkLocal(T,pts,rmax,keep){ const g=amMarkLocalG(T,pts,rmax,keep); while(!g.next().done){} }
   // four rows (a, b0..b1) of a new cell's cube: the region's faces, and of the ring only those on the line — the same as the
   // loop it was, in the same order
   function amRegionSlab(T,ix,iy,iz,a,b0,b1,span,ring,region,outer){
@@ -2113,7 +2118,9 @@ mat.onBeforeCompile=sh=>{
   }
   function amOpPts(op){ if(op.t==='balls') return op.c;
     const p=[]; for(const f of op.m.keys()) p.push(cen[f*3],cen[f*3+1],cen[f*3+2]); return p; }
-  function amMarkAt(T,op){ const p=amOpPts(op); if(p.length) amMarkLocal(T,p,op.t==='balls'?op.r:0); }
+  // 638: a face-level act (an accepted proposal, a grow, an erase) moves no line — it turns whole sub-faces on or off; a
+  // sub-face its cut finds on the line before it, still crossed, stays on it (amMarkLocalG `keep`)
+  function amMarkAt(T,op){ const p=amOpPts(op); if(p.length) amMarkLocal(T,p,op.t==='balls'?op.r:0,op.t==='faces'); }
   // the whole layer: after a threshold, a learning, a load — every stroke's dabs at once
   function* amMarkFullG(T){   // 555: as steps (amMarkLocalG); amMarkFull runs it to the end at once
     if(T.band) for(const f of T.band) recolorFace(f);
