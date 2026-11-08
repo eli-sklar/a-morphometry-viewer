@@ -5352,12 +5352,16 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // 513: one learning for the active layer — the examples (its marks; other layers' positives neutral; outside the orange
   // zone a sampled clean negative), 500 steps of the logistic head, and the probability of every face — the arithmetic of
   // the two copies it replaces, step for step. o: {types, activeT, N, FO, FACEOF, OFF, roi, roiCount, qfeat, stats (a
-  // holder: {v}), progress(f,next), cancelled(), sliceMs (40 when not given)}. Answers {few:true,npos,nneg} (too few examples, nothing computed),
+  // holder: {v}), progress(f,next), cancelled(), sliceMs (40 when not given), pos/neg (663: sub-faces — the labels instead of
+  // the layer's marks)}. Answers {few:true,npos,nneg} (too few examples, nothing computed),
   // null (cancelled — nothing written), or {prob: Float32Array(N), npos, nneg} for the caller to put on the layer.
   async function amLearnRun(o){
     const T=o.types[o.activeT], N=o.N, FO=o.FO, FACEOF=o.FACEOF, OFF=o.OFF;
     const cnt=new Int32Array(FO);
-    for(let s=0;s<N;s++){const m=T.manual[s]; if(m!==0) cnt[FACEOF[s]]+=m;}
+    if(o.pos||o.neg){   // 663: examples given (Ada's, sub-faces): they are the labels, not the layer's marks
+      for(const s of o.pos||[]) cnt[FACEOF[s]]+=1;
+      for(const s of o.neg||[]) cnt[FACEOF[s]]-=1; }
+    else for(let s=0;s<N;s++){const m=T.manual[s]; if(m!==0) cnt[FACEOF[s]]+=m;}
     const otherPos=new Uint8Array(FO);
     for(let tj=0;tj<o.types.length;tj++){ if(tj===o.activeT)continue; const M=o.types[tj].manual;
       for(let s=0;s<N;s++) if(M[s]===1) otherPos[FACEOF[s]]=1; }
