@@ -1886,7 +1886,7 @@ mat.onBeforeCompile=sh=>{
       if(en._ix===undefined) en._ix=en.ops.length>1?ccIndex(en.ops):null;
       const S=en.S||(()=>{const a=new Uint8Array(N); for(const f of en.faces) if(f<N) a[f]=1; return a;})();
       const [lo,hi]=ccBBox(en);
-      const fv=new Map(), mixed=new Set(), bitten=new Set();
+      const fv=new Map(), mixed=new Set(), bitten=new Set(), whole=[];   // 670: whole ones the layer marks
       // `cand`: only these faces are looked at (26/09: the red while the hand paints)
       const nC=cand?cand.length:N;
       for(let q=0;q<nC;q++){ if((q&63)===63) yield 0.8*q/nC;
@@ -1904,7 +1904,8 @@ mat.onBeforeCompile=sh=>{
                           Math.hypot(P[0][0]-P[2][0],P[0][1]-P[2][1],P[0][2]-P[2][2]));
         if(Math.min(Math.abs(v[0]),Math.abs(v[1]),Math.abs(v[2]))<el)
           for(let i=0;i<3;i++) if(ccEdgeCrossings(P[i],P[(i+1)%3],v[i],v[(i+1)%3],en).length){
-            mixed.add(f); fv.set(f,v); bitten.add(f); break; } }
+            mixed.add(f); fv.set(f,v); bitten.add(f); break; }
+        if(n===3&&S[f]&&!mixed.has(f)) whole.push(f); }
       if(!cand){ for(const f of en.faces) if(f<N&&!mixed.has(f)) removed[f]=1; }   // whole, as before
       // the crossed edges of the mixed faces, keyed by their welded ends
       const edges=new Map(), nrm=new Map();
@@ -1928,7 +1929,20 @@ mat.onBeforeCompile=sh=>{
       const band=new Set(), q=[];
       // `seeds`: faces already known to be on the line just outside the region asked about —
       // the neighbours a face in it may be reached from (26/09)
-      for(const f of mixed) if(S[f]||(seeds&&seeds.has(f))){band.add(f);q.push(f);}
+      // 670 (found in 651's gate, 08/11): the line grew only from a mixed sub-face the layer marks (S) — and a sub-face the
+      // layer marks WHOLE (a block: an accepted proposal, a grow, a threshold) is wholly inside, not mixed: a stroke's end
+      // past the block's edge, with no marked mixed sub-face of its own, fell off the line with its pieces — at every open
+      // of the work too (the whole cut), and the area went DOWN as marks were added. Such a whole sub-face carries the line
+      // one step: a mixed sub-face beside it (a shared edge, the normals agreeing — CC_FOLD, as everywhere on the line) is
+      // on it. Only a whole one the layer marks: a stroke still marks only the surface it was painted on (324)
+      const byWhole=new Set();
+      for(const f of whole){ const k=[vkey(f,0),vkey(f,1),vkey(f,2)];
+        const a=ccCorner(f,0),b=ccCorner(f,1),c=ccCorner(f,2), ux=b[0]-a[0],uy=b[1]-a[1],uz=b[2]-a[2],wx=c[0]-a[0],wy=c[1]-a[1],wz=c[2]-a[2];
+        const nx=uy*wz-uz*wy,ny=uz*wx-ux*wz,nz=ux*wy-uy*wx,nl=Math.hypot(nx,ny,nz)||1;
+        for(let i=0;i<3;i++){ const j=(i+1)%3, ek=k[i]<k[j]?k[i]+'|'+k[j]:k[j]+'|'+k[i];
+          for(const g of (edges.get(ek)||[])){ if(S[g]||byWhole.has(g)) continue; const n2=nrm.get(g);
+            if(Math.abs(nx*n2[0]+ny*n2[1]+nz*n2[2])/nl>CC_FOLD) byWhole.add(g); } } }
+      for(const f of mixed) if(S[f]||(seeds&&seeds.has(f))||byWhole.has(f)){band.add(f);q.push(f);}
       while(q.length){ if((++yk&1023)===0) yield 0.95;
         const f=q.pop(), v=fv.get(f), k=[vkey(f,0),vkey(f,1),vkey(f,2)], n1=nrm.get(f);
         for(let i=0;i<3;i++){ const j=(i+1)%3; if(!crossedEdge(f,i)) continue;
