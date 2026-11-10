@@ -5386,13 +5386,13 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       for(const s of o.pos||[]){ const u=uof[s]; if(u>=0) lab[u]=1; }
       for(const s of o.neg||[]){ const u=uof[s]; if(u>=0) lab[u]=-1; } }
     else{ const M=T.manual; for(let u=0;u<U;u++){ const m=M[su[u]]; if(m!==0) lab[u]=m>0?1:-1; } }
-    const other=new Uint8Array(U);
+    const otherPos=new Uint8Array(U);   // other layers' positives: neutral
     for(let tj=0;tj<o.types.length;tj++){ if(tj===o.activeT) continue; const M=o.types[tj].manual;
-      for(let u=0;u<U;u++) if(M[su[u]]===1) other[u]=1; }
+      for(let u=0;u<U;u++) if(M[su[u]]===1) otherPos[u]=1; }
     let P=[], Q=[];
     for(let u=0;u<U;u++){ if(lab[u]>0) P.push(u); else if(lab[u]<0) Q.push(u); }
     if(o.roiCount>0){
-      const out=[]; for(let u=0;u<U;u++) if(!o.roi[su[u]]&&!lab[u]&&!other[u]) out.push(u);
+      const out=[]; for(let u=0;u<U;u++) if(!o.roi[su[u]]&&!lab[u]&&!otherPos[u]) out.push(u);
       const cap=Math.min(out.length, Math.max(300, P.length*3)), took=new Uint8Array(out.length); let s=AM_LEARN_SEED;
       for(let i=0;i<cap;i++){ s=amLearnRnd(s); const j=s%out.length; if(took[j]) continue; took[j]=1; Q.push(out[j]); }
       Q.sort((a,b)=>a-b);
