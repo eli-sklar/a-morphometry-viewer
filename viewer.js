@@ -886,7 +886,6 @@ function load(buf){
   const uv=bview(g,g.bin,acc[1].bufferView,Float32Array);
   const area=bview(g,g.bin,app.area,Float32Array);
   const qprob=bview(g,g.bin,app.prob,Uint8Array);
-  const qfeat=bview(g,g.bin,app.feat,Int8Array);
   const sfb=(app.sfeat!==undefined)?bview(g,g.bin,app.sfeat,Uint8Array):null;   // 675ב: the learning's channels a sub-face
   const lum=bview(g,g.bin,app.lum,Uint8Array);
   const CNT=(app.cnt!==undefined)?bview(g,g.bin,app.cnt,Uint8Array):null;
@@ -908,7 +907,7 @@ function load(buf){
     tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
     tex.generateMipmaps=false;                  // max sharpness, same as the desktop editor
     tex.needsUpdate=true;
-    engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet,sfb);
+    engine(am,pos,uv,area,qprob,lum,CNT,roi0,tex,sheet,sfb);
     $('hello').style.display='none';
     $('bar').style.display='block';           // 322: rows of zones, not one flex row
     $('side').style.display='flex';
@@ -919,9 +918,8 @@ function load(buf){
 }
 
 /* ================= the marking engine (port of the desktop editor IIFE) ======= */
-function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet,sfb){
-  const N=am.Nsub, SPF=am.spf, SUBK=am.sub, FO=am.Fo, NF=app_nfeat();
-  function app_nfeat(){return am.appData.nfeat;}
+function engine(am,pos,uv,area,qprob,lum,CNT,roi0,tex,sheet,sfb){
+  const N=am.Nsub, SPF=am.spf, SUBK=am.sub, FO=am.Fo;    // 679: the package no longer carries the twelve features
   const OFF=new Uint32Array(FO+1);
   for(let fo=0;fo<FO;fo++) OFF[fo+1]=OFF[fo]+(CNT?CNT[fo]:SPF);
   const FACEOF=new Uint32Array(N);
