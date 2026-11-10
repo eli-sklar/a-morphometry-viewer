@@ -887,6 +887,7 @@ function load(buf){
   const area=bview(g,g.bin,app.area,Float32Array);
   const qprob=bview(g,g.bin,app.prob,Uint8Array);
   const qfeat=bview(g,g.bin,app.feat,Int8Array);
+  const sfb=(app.sfeat!==undefined)?bview(g,g.bin,app.sfeat,Uint8Array):null;   // 675ב: the learning's channels a sub-face
   const lum=bview(g,g.bin,app.lum,Uint8Array);
   const CNT=(app.cnt!==undefined)?bview(g,g.bin,app.cnt,Uint8Array):null;
   const roi0=(app.roi0!==undefined)?bview(g,g.bin,app.roi0,Uint8Array):null;
@@ -907,7 +908,7 @@ function load(buf){
     tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
     tex.generateMipmaps=false;                  // max sharpness, same as the desktop editor
     tex.needsUpdate=true;
-    engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet);
+    engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet,sfb);
     $('hello').style.display='none';
     $('bar').style.display='block';           // 322: rows of zones, not one flex row
     $('side').style.display='flex';
@@ -918,7 +919,7 @@ function load(buf){
 }
 
 /* ================= the marking engine (port of the desktop editor IIFE) ======= */
-function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet){
+function engine(am,pos,uv,area,qprob,qfeat,lum,CNT,roi0,tex,sheet,sfb){
   const N=am.Nsub, SPF=am.spf, SUBK=am.sub, FO=am.Fo, NF=app_nfeat();
   function app_nfeat(){return am.appData.nfeat;}
   const OFF=new Uint32Array(FO+1);
@@ -5333,75 +5334,86 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   /* ---- auto-complete (logistic head on quadratic feature expansion) ---- */
   // 513: the learning's 90 means and spreads, once a session (the features themselves are expanded when asked)
   const LSTATS={v:null};
-  // 513: the 90 features of face `fo` (its 12, their squares, their 66 products) — as buildEX stored them: the 12 through a
-  // Float32Array (q/25), and every square and product rounded to float32 as its store did; with `st` (amLearnStats),
-  // normalised as buildEX normalised them ((x - mean) / spread, rounded to float32). `out`: a Float64Array(90).
-  function amLearnRow(q,fo,out,st){
-    const f=amLearnRow.f||(amLearnRow.f=new Float32Array(12)); let c=0;
-    for(let k=0;k<12;k++) f[k]=q[fo*12+k]/25;
-    for(let k=0;k<12;k++) out[c++]=f[k];
-    for(let k=0;k<12;k++) out[c++]=Math.fround(f[k]*f[k]);
-    for(let a=0;a<12;a++) for(let b=a+1;b<12;b++) out[c++]=Math.fround(f[a]*f[b]);
-    if(st){ const M=st.mean, S=st.std; for(let k=0;k<90;k++) out[k]=Math.fround((out[k]-M[k])/S[k]); }
+  let SFEAT=null;                                  // 675ב: {sq, su, uof, U}, read from the package at the first learning
+  // 675ב: the channels a unit; the stats' sample; the examples a learning; the negatives' seed
+  const AM_LEARN_K=10, AM_LEARN_SMAX=2000000, AM_LEARN_EMAX=40000, AM_LEARN_SEED=675;
+  // 675ב: the seeded generator — the 31-bit LCG (1103515245, 12345); Python: ((s*1103515245+12345) & 0xffffffff) & 0x7fffffff
+  function amLearnRnd(s){ return ((Math.imul(s,1103515245)+12345)>>>0)&0x7fffffff; }
+  // the columns of unit `u` (its K channels, their squares, their products a<b) — the channels through a Float32Array
+  // (q/25), every square and product rounded to float32; with `st` (amLearnStats) normalised ((x - mean) / spread, rounded
+  // to float32). `out`: a Float64Array(2K + K(K-1)/2) — 65 for the ten.
+  function amLearnRow(q,u,out,st,K){
+    K=K||AM_LEARN_K;
+    const f=(amLearnRow.f&&amLearnRow.f.length===K)?amLearnRow.f:(amLearnRow.f=new Float32Array(K)); let c=0;
+    for(let k=0;k<K;k++) f[k]=q[u*K+k]/25;
+    for(let k=0;k<K;k++) out[c++]=f[k];
+    for(let k=0;k<K;k++) out[c++]=Math.fround(f[k]*f[k]);
+    for(let a=0;a<K;a++) for(let b=a+1;b<K;b++) out[c++]=Math.fround(f[a]*f[b]);
+    if(st){ const M=st.mean, S=st.std; for(let k=0;k<c;k++) out[k]=Math.fround((out[k]-M[k])/S[k]); }
     return out;
   }
-  // 513: the 90 means and spreads buildEX computed over every face — the same sums in the same order (float64 over the
-  // float32 values), in two passes, giving the page back every ~40 ms (`ms`; `tick(done)` answers false to stop: cancelled).
-  async function amLearnStats(q,FO,tick,ms){
-    const lim=(ms==null)?40:ms;
-    const mean=new Float64Array(90), std=new Float64Array(90), r=new Float64Array(90);
+  // the means and spreads of the columns over a stride sample of the U units (every ceil(U/SMAX)-th, from 0) — float64 sums
+  // over the float32 values, in two passes, giving the page back every ~40 ms (`ms`; `tick(done)` false: cancelled).
+  async function amLearnStats(q,U,K,tick,ms){
+    K=K||AM_LEARN_K; const NE=2*K+K*(K-1)/2, lim=(ms==null)?40:ms, step=Math.max(1,Math.ceil(U/AM_LEARN_SMAX));
+    const mean=new Float64Array(NE), std=new Float64Array(NE), r=new Float64Array(NE); let n=0;
     let t=performance.now();
     for(let pass=0;pass<2;pass++){
-      for(let fo=0;fo<FO;fo++){
-        amLearnRow(q,fo,r,null);
-        if(pass===0){ for(let k=0;k<90;k++) mean[k]+=r[k]; }
-        else{ for(let k=0;k<90;k++){ const d=r[k]-mean[k]; std[k]+=d*d; } }
-        if((fo&4095)===0&&performance.now()-t>=lim){ if(!(await tick(pass*FO+fo))) return null; t=performance.now(); }
+      for(let u=0;u<U;u+=step){
+        amLearnRow(q,u,r,null,K);
+        if(pass===0){ for(let k=0;k<NE;k++) mean[k]+=r[k]; n++; }
+        else{ for(let k=0;k<NE;k++){ const d=r[k]-mean[k]; std[k]+=d*d; } }
+        if(((u/step)&4095)===0&&performance.now()-t>=lim){ if(!(await tick(pass*U+u))) return null; t=performance.now(); }
       }
-      if(pass===0) for(let k=0;k<90;k++) mean[k]/=FO;
+      if(pass===0) for(let k=0;k<NE;k++) mean[k]/=n;
     }
-    for(let k=0;k<90;k++) std[k]=Math.sqrt(std[k]/FO)+1e-6;
+    for(let k=0;k<NE;k++) std[k]=Math.sqrt(std[k]/n)+1e-6;
     return {mean,std};
   }
-  // 513: one learning for the active layer — the examples (its marks; other layers' positives neutral; outside the orange
-  // zone a sampled clean negative), 500 steps of the logistic head, and the probability of every face — the arithmetic of
-  // the two copies it replaces, step for step. o: {types, activeT, N, FO, FACEOF, OFF, roi, roiCount, qfeat, stats (a
-  // holder: {v}), progress(f,next), cancelled(), sliceMs (40 when not given), pos/neg (663: sub-faces — the labels instead of
-  // the layer's marks)}. Answers {few:true,npos,nneg} (too few examples, nothing computed),
-  // null (cancelled — nothing written), or {prob: Float32Array(N), npos, nneg} for the caller to put on the layer.
+  // at most `max` of the list, by a stride (every ceil(n/max)-th, from 0) — the same in every copy
+  function amLearnPick(a,max){ if(a.length<=max) return a; const step=Math.ceil(a.length/max), out=[]; for(let i=0;i<a.length;i+=step) out.push(a[i]); return out; }
+  // one learning for the active layer. o: {types, activeT, N, roi, roiCount, sq (Int8Array U*K: the units' channels), su
+  // (Int32Array U: each unit's sub-face, ascending), uof (Int32Array N: a sub-face's unit, -1 none), K (10), stats (a
+  // holder: {v}), progress(f,next), cancelled(), sliceMs, pos/neg (663: sub-faces — the labels instead of the layer's marks)}.
+  // The examples: the layer's marks a sub-face (+1 marked, -1 erased by hand), or pos/neg; other layers' marks neutral;
+  // outside the orange zone, units nothing marks, drawn as clean negatives (at least 300, three per positive). Answers
+  // {few:true,npos,nneg} (too few — nothing computed), null (cancelled — nothing written), or {prob: Float32Array(N) — 0
+  // where there are no channels, npos, nneg}.
   async function amLearnRun(o){
-    const T=o.types[o.activeT], N=o.N, FO=o.FO, FACEOF=o.FACEOF, OFF=o.OFF;
-    const cnt=new Int32Array(FO);
-    if(o.pos||o.neg){   // 663: examples given (Ada's, sub-faces): they are the labels, not the layer's marks
-      for(const s of o.pos||[]) cnt[FACEOF[s]]+=1;
-      for(const s of o.neg||[]) cnt[FACEOF[s]]-=1; }
-    else for(let s=0;s<N;s++){const m=T.manual[s]; if(m!==0) cnt[FACEOF[s]]+=m;}
-    const otherPos=new Uint8Array(FO);
-    for(let tj=0;tj<o.types.length;tj++){ if(tj===o.activeT)continue; const M=o.types[tj].manual;
-      for(let s=0;s<N;s++) if(M[s]===1) otherPos[FACEOF[s]]=1; }
-    const Xi=[],yi=[]; const labeled=new Uint8Array(FO);
-    for(let fo=0;fo<FO;fo++){ if(cnt[fo]>0){Xi.push(fo);yi.push(1);labeled[fo]=1;} else if(cnt[fo]<0){Xi.push(fo);yi.push(0);labeled[fo]=1;} }
-    let npos=0; for(const y of yi) npos+=y; let nneg=yi.length-npos;
+    const T=o.types[o.activeT], N=o.N, K=o.K||AM_LEARN_K, NE=2*K+K*(K-1)/2, q=o.sq, su=o.su, uof=o.uof, U=su.length;
+    const lab=new Int8Array(U);
+    if(o.pos||o.neg){
+      for(const s of o.pos||[]){ const u=uof[s]; if(u>=0) lab[u]=1; }
+      for(const s of o.neg||[]){ const u=uof[s]; if(u>=0) lab[u]=-1; } }
+    else{ const M=T.manual; for(let u=0;u<U;u++){ const m=M[su[u]]; if(m!==0) lab[u]=m>0?1:-1; } }
+    const other=new Uint8Array(U);
+    for(let tj=0;tj<o.types.length;tj++){ if(tj===o.activeT) continue; const M=o.types[tj].manual;
+      for(let u=0;u<U;u++) if(M[su[u]]===1) other[u]=1; }
+    let P=[], Q=[];
+    for(let u=0;u<U;u++){ if(lab[u]>0) P.push(u); else if(lab[u]<0) Q.push(u); }
     if(o.roiCount>0){
-      const rf=new Uint8Array(FO); for(let s=0;s<N;s++) if(o.roi[s]) rf[FACEOF[s]]=1;
-      const out=[]; for(let fo=0;fo<FO;fo++) if(!rf[fo]&&!labeled[fo]&&!otherPos[fo]) out.push(fo);
-      const cap=Math.min(out.length, Math.max(300, npos*3));
-      for(let i=0;i<cap;i++){const fo=out[(Math.random()*out.length)|0]; if(labeled[fo])continue; labeled[fo]=1; Xi.push(fo); yi.push(0); nneg++;}
+      const out=[]; for(let u=0;u<U;u++) if(!o.roi[su[u]]&&!lab[u]&&!other[u]) out.push(u);
+      const cap=Math.min(out.length, Math.max(300, P.length*3)), took=new Uint8Array(out.length); let s=AM_LEARN_SEED;
+      for(let i=0;i<cap;i++){ s=amLearnRnd(s); const j=s%out.length; if(took[j]) continue; took[j]=1; Q.push(out[j]); }
+      Q.sort((a,b)=>a-b);
     }
+    const npos=P.length, nneg=Q.length;
     if(npos<15||nneg<15) return {few:true,npos,nneg};
-    // the work's units, for the fraction: two passes over the faces (once a session), the steps over the examples, the
-    // prediction over the faces — each face-row about one unit
-    const st0=o.stats.v, uStats=st0?0:2*FO, uTrain=500*Xi.length*2, uPred=2*FO, U=Math.max(1,uStats+uTrain+uPred);
-    const say=(u,un)=>{ if(o.progress) o.progress(u/U, un/U); };
+    P=amLearnPick(P,AM_LEARN_EMAX/2); Q=amLearnPick(Q,AM_LEARN_EMAX/2);
+    const Xi=P.concat(Q), yi=P.map(()=>1).concat(Q.map(()=>0)), np_=P.length, nn_=Q.length;
+    // the work's units, for the fraction: the sample's two passes (once a session), the steps over the examples, the
+    // prediction over the units — each row about one unit
+    const S0=Math.ceil(U/Math.max(1,Math.ceil(U/AM_LEARN_SMAX)));
+    const st0=o.stats.v, uStats=st0?0:2*S0, uTrain=500*Xi.length*2, uPred=2*U, UU=Math.max(1,uStats+uTrain+uPred);
+    const say=(u,un)=>{ if(o.progress) o.progress(u/UU, un/UU); };
     const go=async(u,un)=>{ say(u,un); await new Promise(r=>setTimeout(r,0)); return !o.cancelled(); };
     let st=st0; const lim=(o.sliceMs==null)?40:o.sliceMs;
-    if(!st){ st=await amLearnStats(o.qfeat,FO,d=>go(d,Math.min(uStats,d+FO/8)),lim);
+    if(!st){ st=await amLearnStats(q,U,K,d=>go(d*S0/Math.max(1,U),Math.min(uStats,d*S0/Math.max(1,U)+S0/8)),lim);
       if(!st) return null; o.stats.v=st; }
-    // the examples' rows, normalised once — the same float32 numbers buildEX's array held for them
-    const NE=90, X=new Float32Array(Xi.length*NE), r=new Float64Array(NE);
-    for(let n=0;n<Xi.length;n++){ amLearnRow(o.qfeat,Xi[n],r,st); for(let k=0;k<NE;k++) X[n*NE+k]=r[k]; }
+    const X=new Float32Array(Xi.length*NE), r=new Float64Array(NE);
+    for(let n=0;n<Xi.length;n++){ amLearnRow(q,Xi[n],r,st,K); for(let k=0;k<NE;k++) X[n*NE+k]=r[k]; }
     const w=new Float64Array(NE); let bw=0;
-    const wpos=yi.length/(2*npos), wneg=yi.length/(2*nneg), lr=0.3, lam=0.02;
+    const wpos=yi.length/(2*np_), wneg=yi.length/(2*nn_), lr=0.3, lam=0.02;
     let t=performance.now();
     for(let it=0;it<500;it++){
       const gw=new Float64Array(NE); let gb=0;
@@ -5410,22 +5422,45 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         const p=1/(1+Math.exp(-z)); const e=(p-yi[n])*(yi[n]?wpos:wneg);
         for(let k=0;k<NE;k++) gw[k]+=e*X[o2+k]; gb+=e;}
       const m=Xi.length; for(let k=0;k<NE;k++) w[k]-=lr*(gw[k]/m+lam*w[k]); bw-=lr*gb/m;
-      // the clock asked every 10 steps (a step is ~2 ms)
       if((it%10)===9&&performance.now()-t>=lim){ const u=uStats+(it+1)*Xi.length*2; if(!(await go(u,u+Xi.length*20))) return null; t=performance.now(); }
     }
     const prob=new Float32Array(N); t=performance.now();
-    for(let fo=0;fo<FO;fo++){ amLearnRow(o.qfeat,fo,r,st); let z=bw; for(let k=0;k<NE;k++) z+=w[k]*r[k];
-      const p=1/(1+Math.exp(-z)); for(let s=OFF[fo];s<OFF[fo+1];s++) prob[s]=p;
-      if((fo&4095)===0&&performance.now()-t>=lim){ const u=uStats+uTrain+2*fo; if(!(await go(u,u+FO/4))) return null; t=performance.now(); }
+    for(let u=0;u<U;u++){ amLearnRow(q,u,r,st,K); let z=bw; for(let k=0;k<NE;k++) z+=w[k]*r[k];
+      prob[su[u]]=Math.round(65535/(1+Math.exp(-z)))/65535;   // 677: the sheet's u16 — the screen holds what it saves
+      if((u&4095)===0&&performance.now()-t>=lim){ const v=uStats+uTrain+2*u; if(!(await go(v,v+U/4))) return null; t=performance.now(); }
     }
-    say(U,U);
+    say(UU,UU);
     return {prob,npos,nneg};
+  }
+  // 675ב: the channels as a learning reads them, from the work's sfeat (the compute set's faces ascending, and their
+  // sub-faces' rows in order): {sq, su, uof} — or null when they do not fit this layout (another number of sub-faces)
+  function amSfeatOf(q,faces,OFF,N){
+    let U=0; for(let i=0;i<faces.length;i++){ const f=faces[i]; U+=OFF[f+1]-OFF[f]; }
+    if(U*AM_LEARN_K!==q.length) return null;
+    const su=new Int32Array(U), uof=new Int32Array(N).fill(-1); let u=0;
+    for(let i=0;i<faces.length;i++){ const f=faces[i]; for(let s=OFF[f];s<OFF[f+1];s++){ su[u]=s; uof[s]=u; u++; } }
+    return {sq:q, su:su, uof:uof};
+  }
+  // 678: the work's channels as the server sends them and the work package carries them — 'AMSF', then version, K, faces,
+  // units, nsub (little-endian uint32), the faces (uint32), the rows (int8) — read for this layout (amSfeatOf); null when
+  // they do not fit it
+  function amSfeatParse(buf,OFF,N){
+    if(!buf||buf.byteLength<24) return null;
+    const b=new Uint8Array(buf), dv=new DataView(buf);
+    if(b[0]!==65||b[1]!==77||b[2]!==83||b[3]!==70) return null;
+    const K=dv.getUint32(8,true), F=dv.getUint32(12,true), M=dv.getUint32(16,true), nsub=dv.getUint32(20,true);
+    if(K!==AM_LEARN_K||nsub!==N||buf.byteLength!==24+4*F+M*K) return null;
+    const faces=new Uint32Array(buf.slice(24,24+4*F)), q=new Int8Array(buf,24+4*F,M*K);
+    const r=amSfeatOf(q,faces,OFF,N); if(r) r.U=M; return r;
   }
   // 513 (Eli, 14/10: "תתחילו בשניהם"; the iPad too): the planimeter on the waiting screen after 1.5 s, driven by the
   // work done, and "ביטול" on it — nothing is written until the end, so a cancelled learning leaves the screen as it was
   let LEARN_OP=null;
   async function autoComplete(){
     if(LEARN_OP)return;
+    // 675ב: the channels the package carries (a package from before 675ב has none: the learning says so)
+    if(!SFEAT){ SFEAT=sfb?amSfeatParse(sfb.slice().buffer,OFF,N):null; if(SFEAT) LSTATS.v=null; }
+    if(!SFEAT||!SFEAT.U){ amTell(sfb?'מאפייני הלמידה שבחבילה אינם תואמים את המודל.':'לחבילה הזאת אין מאפייני למידה — אפשר לייצא אותה מחדש מהתוכנה במחשב.'); return; }
     const T=types[activeT], op={}; LEARN_OP=op;
     const veil=$('amLoad'), cb=$('amLoadCancel'); let shown=false;
     const tv=setTimeout(()=>{ if(veil.style.display!=='none')return; shown=true;
@@ -5438,7 +5473,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     amCutCancel();   // 555: the learning recolours all after it, and the cut starts again then
     let r=null,ok=false;
     try{
-      r=await amLearnRun({types:types,activeT:activeT,N:N,FO:FO,FACEOF:FACEOF,OFF:OFF,roi:roi,roiCount:roiCount,qfeat:qfeat,stats:LSTATS,
+      r=await amLearnRun({types:types,activeT:activeT,N:N,roi:roi,roiCount:roiCount,sq:SFEAT.sq,su:SFEAT.su,uof:SFEAT.uof,K:AM_LEARN_K,stats:LSTATS,
         progress:(f,nx)=>{ if(shown&&window.__pmProgress)window.__pmProgress(f,nx); },
         cancelled:()=>LEARN_OP!==op});
       ok=true;
@@ -5465,6 +5500,16 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // (decision 142); dropping it would leave records pointing at nothing.
   let VOL_LAYERS=[], VOL_MARK=null;      // 644: VOL_MARK - a volume marking the sheet brought, carried on
   /* ---- sheet export: field-for-field the desktop getSheet(withDerived=true) --- */
+  // 677: a layer's probabilities as the sheet carries them — uint16 a sub-face (round(p * 65535)), base64; kept with the
+  // array it was made from, so the autosave encodes a layer once a learning
+  function amProbS(p){
+    if(amProbS.m&&amProbS.m.get(p)) return amProbS.m.get(p);
+    const u=new Uint16Array(p.length); for(let i=0;i<p.length;i++) u[i]=Math.round(p[i]*65535);
+    const b=new Uint8Array(u.buffer); let s=''; for(let i=0;i<b.length;i+=32768) s+=String.fromCharCode.apply(null,b.subarray(i,i+32768));
+    const out=btoa(s); if(!amProbS.m) amProbS.m=new WeakMap(); amProbS.m.set(p,out); return out; }
+  // 677: a sheet layer's probS into the layer's array (Float32Array N), or false when it does not fit (another N)
+  function amProbSIn(str,out){ const u=new Uint16Array(dec(str)); if(u.length!==out.length) return false;
+    for(let i=0;i<u.length;i++) out[i]=u[i]/65535; if(amProbS.m) amProbS.m.delete(out); return true; }
   function typeState(T){
     const m=[], ov=[];
     for(let f=0;f<N;f++){
@@ -5477,8 +5522,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
             ops:amOpsOut(T),     // 324: the strokes' balls and the grows, in their order
             ...(smLevelOf(T)?{sm:smLevelOf(T)}:{}),   // 433: the layer's smoothing level
             hasProb:T.hasProb,
-            prob:T.hasProb?(()=>{const p=new Array(FO);
-              for(let fo=0;fo<FO;fo++)p[fo]=Math.round(T.prob[OFF[fo]]*1000)/1000;return p;})():null};
+            // 677 (675ב learns a sub-face): the probabilities a sub-face, uint16 in base64 — encoded once a learning
+            probS:T.hasProb&&T.prob?amProbS(T.prob):null};
   }
   function getSheet(withDerived){
     smSyncNow();   // 433: the regions are the brush's marking as it is now
@@ -5556,7 +5601,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
              // 332: a sheet with tags needs a reader that knows them — an older one would
              // drop them without a word
              // 644: a sheet with a volume marking needs reader 10 — an older one would drop the marking without a word
-             minReader:Math.max(H.volMark?10:1, (SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1))))))),   // 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
+             minReader:Math.max(H.volMark?10:1, types.some(T=>T.hasProb&&T.prob)?11:1, (SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1))))))),   // 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
              tagTypes:tagTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid})),
              tags:tags.map(g=>({id:g.id,t:g.t,p:g.p.slice(),nrm:g.nrm?g.nrm.slice():null,
                                 title:g.title,text:g.text,img:g.img||null})),
@@ -6262,7 +6307,7 @@ const amPal=(function(){
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
-  const AM_SHEET_READER = 10;  // 644: the volume marking, carried (volMark) · 433: one brush, a level per layer · 571: Ada's acts and their records   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
+  const AM_SHEET_READER = 11;  // 677: a learned layer's probabilities a sub-face (probS) ·  // 644: the volume marking, carried (volMark) · 433: one brush, a level per layer · 571: Ada's acts and their records   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
   const AM_SUB_SCHEME = (am.subScheme===2)?2:1;   // 539: 1 — one k; 2 — a target size, k_f = sqrt(cnt) (the work says which)
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -6390,7 +6435,10 @@ const amPal=(function(){
       else { const m=new Map(); for(let t=0;t<N;t++) if(T.manual[t]!==0) m.set(t,T.manual[t]); if(m.size) T.ops.push({t:'faces',m:m}); }
       if((src.faceThr||[]).length){T.faceThr=new Float32Array(N).fill(NaN);
         for(const pr of src.faceThr) amEach(MAP,pr[0],t=>{T.faceThr[t]=pr[1];});}
-      if(src.hasProb&&src.prob&&src.prob.length===FO){
+      if(src.hasProb&&typeof src.probS==='string'){          // 677: a sub-face each (675ב)
+        if(!T.prob||(T.prob===prob&&T!==types[0]))T.prob=new Float32Array(N);
+        if(amProbSIn(src.probS,T.prob)) T.hasProb=true; }
+      else if(src.hasProb&&src.prob&&src.prob.length===FO){
         if(!T.prob||(T.prob===prob&&T!==types[0]))T.prob=new Float32Array(N);
         for(let fo=0;fo<FO;fo++) for(let t=OFF[fo];t<OFF[fo+1];t++) T.prob[t]=src.prob[fo];
         T.hasProb=true;}
