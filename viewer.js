@@ -1887,6 +1887,7 @@ mat.onBeforeCompile=sh=>{
       const S=en.S||(()=>{const a=new Uint8Array(N); for(const f of en.faces) if(f<N) a[f]=1; return a;})();
       const [lo,hi]=ccBBox(en);
       const fv=new Map(), mixed=new Set(), bitten=new Set(), whole=[];   // 670: whole ones the layer marks
+      const erased=new Set(); for(const op of en.ops) if(op.t==='faces') for(const [f,v] of op.m) if(v<0) erased.add(f); else erased.delete(f);   // 670e
       // `cand`: only these faces are looked at (26/09: the red while the hand paints)
       const nC=cand?cand.length:N;
       for(let q=0;q<nC;q++){ if((q&63)===63) yield 0.8*q/nC;
@@ -1905,7 +1906,7 @@ mat.onBeforeCompile=sh=>{
         if(Math.min(Math.abs(v[0]),Math.abs(v[1]),Math.abs(v[2]))<el)
           for(let i=0;i<3;i++) if(ccEdgeCrossings(P[i],P[(i+1)%3],v[i],v[(i+1)%3],en).length){
             mixed.add(f); fv.set(f,v); bitten.add(f); break; }
-        if(n===3&&S[f]&&!mixed.has(f)) whole.push(f); }
+        if(!mixed.has(f)&&((n===3&&S[f])||(n===0&&erased.has(f)))) whole.push(f); }   // 670e: or erased whole by the layer
       if(!cand){ for(const f of en.faces) if(f<N&&!mixed.has(f)) removed[f]=1; }   // whole, as before
       // the crossed edges of the mixed faces, keyed by their welded ends
       const edges=new Map(), nrm=new Map();
@@ -1935,6 +1936,10 @@ mat.onBeforeCompile=sh=>{
       // of the work too (the whole cut), and the area went DOWN as marks were added. Such a whole sub-face carries the line
       // one step: a mixed sub-face beside it (a shared edge, the normals agreeing — CC_FOLD, as everywhere on the line) is
       // on it. Only a whole one the layer marks: a stroke still marks only the surface it was painted on (324)
+      // 670e (670's open case, 09/11): the same at a block ERASED whole (a face-level erase — an accepted delete, a hand's): the
+      // sub-faces it erased are wholly outside, not mixed, and at the whole cut (an open of the work) a stroke's sliver just past
+      // its edge, with no marked mixed sub-face of its own, fell off the line (live, the line before the erase kept it). Such an
+      // erased sub-face carries the line one step too, under the same rule
       const byWhole=new Set();
       for(const f of whole){ const k=[vkey(f,0),vkey(f,1),vkey(f,2)];
         const a=ccCorner(f,0),b=ccCorner(f,1),c=ccCorner(f,2), ux=b[0]-a[0],uy=b[1]-a[1],uz=b[2]-a[2],wx=c[0]-a[0],wy=c[1]-a[1],wz=c[2]-a[2];
