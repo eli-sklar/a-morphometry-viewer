@@ -1890,9 +1890,12 @@ mat.onBeforeCompile=sh=>{
       // `cand`: only these faces are looked at (26/09: the red while the hand paints)
       const nC=cand?cand.length:N;
       for(let q=0;q<nC;q++){ if((q&63)===63) yield 0.8*q/nC;
-        const f=cand?cand[q]:q; if(f>=N) continue; const o=f*9; let inb=false; en.cur=f;
-        for(let c=0;c<3&&!inb;c++){ const x=pos[o+c*3],y=pos[o+c*3+1],z=pos[o+c*3+2];
-          if(x>=lo[0]&&x<=hi[0]&&y>=lo[1]&&y<=hi[1]&&z>=lo[2]&&z<=hi[2]) inb=true; }
+        const f=cand?cand[q]:q; if(f>=N) continue; const o=f*9; let inb=true; en.cur=f;
+        // 682א (S37's erase on a stroke, 11/11): the face is asked when its BOX meets the shape's box — not when one of its corners
+        // lies in it: a dab's bulge past an edge whose ends are both outside the box (r=0.3 on a vertex, the next corners at 0.333)
+        // was skipped, and its piece fell off the line (live: the box is the stroke's; at an open, the layer's — the two differed)
+        for(let k=0;k<3&&inb;k++){ const a0=pos[o+k],a1=pos[o+3+k],a2=pos[o+6+k];
+          if(Math.max(a0,a1,a2)<lo[k]||Math.min(a0,a1,a2)>hi[k]) inb=false; }
         if(!inb) continue;
         const v=[0,1,2].map(c=>ccField(en,pos[o+c*3],pos[o+c*3+1],pos[o+c*3+2]));
         const n=(v[0]<=0)+(v[1]<=0)+(v[2]<=0);
