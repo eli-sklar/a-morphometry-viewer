@@ -4536,6 +4536,15 @@ float amStippleA(float a, float lvl){
     amSnapT=setTimeout(()=>amCutWhenDone(()=>{ try{ snapPut(getSheet(false)); }catch(_){} }),1500);   // 555: after the cut
   }
   function applyDiff(diff){const inv=[];
+    // 695 (found in 651ב's gate, 12/11; Eli: "מאושרים כולם לפי ההמלצות"): a step is walked from its end, and a step that
+    // recorded its sub-faces' marks first and its act last (an accepted proposal, a grow) had its act taken out — and its
+    // line cut again (amOpOut) — while the marks were still the step's own; only then the marks came back, with no cut
+    // after them. The line near them fell (a sub-face on it that the layer does not mark is no seed), and the screen held
+    // a wrong area until the layer was cut whole (an open of the work): a stroke deleted by a proposal and taken back
+    // showed 0.305 m² for 0.280. The same forward, where the acts come before the marks. So: the acts of the step that
+    // were put in or taken out before a mark of it moved are cut once more at its end, with every mark in its place. A
+    // brush stroke going back (its marks first, then its act) is cut once, as it was
+    const acts=[]; let stale=0;
     for(let i=diff.length-1;i>=0;i--){const d=diff[i];
       if(d[0]==='L+'){inv.push(['L-',d[1]]);delLine(d[1]);}
       else if(d[0]==='L-'){inv.push(['L+',d[1]]);addLine(d[1]);}
@@ -4566,8 +4575,8 @@ float amStippleA(float a, float lvl){
       else if(d[0]==='SML'){const T=types.find(q=>q.id===d[1].at); inv.push(['SML',{at:d[1].at,from:d[1].to,to:d[1].from}]);   // 433: the layer's level
         if(T){T.sm=d[1].from; T._smSig=null; smSyncNow();}}
       // 324: a stroke's balls, or a grow, leave with its undo and come back with its redo
-      else if(d[0]==='OP'){inv.push(['OP-',d[1],d[2]]);amOpOut(d[1],d[2]);}
-      else if(d[0]==='OP-'){inv.push(['OP',d[1],d[2]]);amOpIn(d[1],d[2]);}
+      else if(d[0]==='OP'){inv.push(['OP-',d[1],d[2]]);amOpOut(d[1],d[2]);acts.push(d);}
+      else if(d[0]==='OP-'){inv.push(['OP',d[1],d[2]]);amOpIn(d[1],d[2]);acts.push(d);}
       // 321: an erased run or ring comes back in its place; redo takes it again
       else if(d[0]==='RD'){inv.push(['RA',d[1]]);amRulIn(d[1]);}
       else if(d[0]==='RA'){inv.push(['RD',d[1]]);amRulOut(d[1]);}
@@ -4585,7 +4594,8 @@ float amStippleA(float a, float lvl){
       else if(d[0]==='VA'){inv.push(['VD',d[1]]);volDelete(d[1].rec.id);}
       else if(d[0]==='H+'){inv.push(['H-',d[1]]);holeRemove(d[1].id);}
       else if(d[0]==='H-'){inv.push(['H+',d[1]]);holeAdd(d[1]);}
-      else {const ti=d[0],f=d[1],o=d[2];inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;amSUpd(ti,f);recolorFace(f);}}
+      else {const ti=d[0],f=d[1],o=d[2];inv.push([ti,f,types[ti].manual[f]]);types[ti].manual[f]=o;amSUpd(ti,f);recolorFace(f);stale=acts.length;}}
+    if(stale){ for(let k=0;k<stale;k++){ const T=types[acts[k][1]]; if(T) amMarkAt(T,acts[k][2]); } amMarkDraw(); }   // 695
     inv.reverse(); colAttr.needsUpdate=true;flatAttr.needsUpdate=true;desAttr.needsUpdate=true;updateArea();return inv;}
   const undo=()=>{if(undoStack.length&&!(typeof amCutJob!=='undefined'&&amCutJob)){redoStack.push(applyDiff(undoStack.pop()));updateHB();}};
   const redo=()=>{if(redoStack.length&&!(typeof amCutJob!=='undefined'&&amCutJob)){undoStack.push(applyDiff(redoStack.pop()));updateHB();}};
