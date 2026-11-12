@@ -5537,7 +5537,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   const LSTATS={v:null};
   let SFEAT=null;                                  // 675ב: {sq, su, uof, U}, read from the package at the first learning
   // 675ב: the channels a unit; the stats' sample; the examples a learning; the negatives' seed
-  const AM_LEARN_K=10, AM_LEARN_SMAX=2000000, AM_LEARN_EMAX=40000, AM_LEARN_SEED=675;
+  // 693: the density filter after the learning — the ball's radius (m), the share of its area that must be marked (0 turns
+  // the filter off), and the threshold an addition is chosen by (the layer's own, as it starts)
+  const AM_LEARN_K=10, AM_LEARN_SMAX=2000000, AM_LEARN_EMAX=40000, AM_LEARN_SEED=675, AM_LEARN_DENSE_R=0.08, AM_LEARN_DENSE_P=0.4, AM_LEARN_DENSE_T=0.5;
   // 675ב: the seeded generator — the 31-bit LCG (1103515245, 12345); Python: ((s*1103515245+12345) & 0xffffffff) & 0x7fffffff
   function amLearnRnd(s){ return ((Math.imul(s,1103515245)+12345)>>>0)&0x7fffffff; }
   // the columns of unit `u` (its K channels, their squares, their products a<b) — the channels through a Float32Array
@@ -5580,6 +5582,31 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // outside the orange zone, units nothing marks, drawn as clean negatives (at least 300, three per positive). Answers
   // {few:true,npos,nneg} (too few — nothing computed), null (cancelled — nothing written), or {prob: Float32Array(N) — 0
   // where there are no channels, npos, nneg}.
+  // 693 (Eli, 12/11: "ההחלטה (693) - מאשר"; measured in 692): after the learning, an ADDITION — a sub-face the learning
+  // chose (above AM_LEARN_DENSE_T) that is no example — stays only when at least P of the AREA of the sub-faces whose centres
+  // lie within R of its own centre is marked (chosen, or a positive example); the others get 0. One pass, by the marking as
+  // the learning left it: an example is never touched and nothing is added. An addition in a neighbourhood that is hardly
+  // marked is nearly always a thin margin or a wrong fragment (concrete scans 2 / 5 / 6 / 1: +0.039 / +0.016 / +0.048 /
+  // +0.002, none hurt; r = 8 cm, p = 0.4 — the careful setting). Once, at the end of the learning: a later move of the
+  // layer's threshold works on what is left. The rule only takes away: a dense cluster of wrong ones stays, and a repair
+  // the learning missed is not filled. ex: Uint8Array(N), 1 at a positive example. geo: {cen, area, grid, cell, key} — the
+  // screen's centres, areas and its grid of the centres; without it (a learning with no model beside it) nothing is
+  // filtered. tick(): gives the page back now and then; false — cancelled. Answers how many were taken, or null (cancelled)
+  async function amLearnDense(prob,ex,N,geo,R,P,tick){
+    if(!geo||!(P>0)) return 0;
+    const cen=geo.cen, area=geo.area, grid=geo.grid, C=geo.cell, key=geo.key, T=AM_LEARN_DENSE_T, R2=R*R, s=Math.ceil(R/C), drop=[];
+    let t=performance.now(), n=0;
+    for(let f=0;f<N;f++){ if(!(prob[f]>T)||ex[f]) continue;
+      const x=cen[f*3], y=cen[f*3+1], z=cen[f*3+2], ix=Math.floor(x/C), iy=Math.floor(y/C), iz=Math.floor(z/C); let tot=0, mk=0;
+      for(let a=ix-s;a<=ix+s;a++) for(let b=iy-s;b<=iy+s;b++) for(let c=iz-s;c<=iz+s;c++){ const L=grid.get(key(a,b,c)); if(!L) continue;
+        for(const g of L){ if(g>=N) continue; const gx=cen[g*3], gy=cen[g*3+1], gz=cen[g*3+2];
+          if(Math.floor(gx/C)!==a||Math.floor(gy/C)!==b||Math.floor(gz/C)!==c) continue;   // the grid's key may hold two cells: each sub-face once
+          const dx=gx-x, dy=gy-y, dz=gz-z; if(dx*dx+dy*dy+dz*dz>R2) continue;
+          tot+=area[g]; if(prob[g]>T||ex[g]) mk+=area[g]; } }
+      if(mk<P*tot) drop.push(f);
+      if((++n&1023)===0&&tick&&performance.now()-t>=40){ if(!(await tick())) return null; t=performance.now(); } }
+    for(const f of drop) prob[f]=0;
+    return drop.length; }
   async function amLearnRun(o){
     const T=o.types[o.activeT], N=o.N, K=o.K||AM_LEARN_K, NE=2*K+K*(K-1)/2, q=o.sq, su=o.su, uof=o.uof, U=su.length;
     const lab=new Int8Array(U);
@@ -5630,8 +5657,14 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       prob[su[u]]=Math.round(65535/(1+Math.exp(-z)))/65535;   // 677: the sheet's u16 — the screen holds what it saves
       if((u&4095)===0&&performance.now()-t>=lim){ const v=uStats+uTrain+2*u; if(!(await go(v,v+U/4))) return null; t=performance.now(); }
     }
+    // 693: the additions in a neighbourhood hardly marked go — once, here. o.geo: the model beside the channels; o.dense: P
+    // (the gate's control; none — AM_LEARN_DENSE_P)
+    const ex=new Uint8Array(N);
+    if(o.pos||o.neg){ for(const s of o.pos||[]) if(s>=0&&s<N) ex[s]=1; } else { const M=T.manual; for(let f=0;f<N;f++) if(M[f]===1) ex[f]=1; }
+    const dropped=await amLearnDense(prob,ex,N,o.geo,AM_LEARN_DENSE_R,(o.dense==null)?AM_LEARN_DENSE_P:o.dense,()=>go(UU,UU));
+    if(dropped===null) return null;
     say(UU,UU);
-    return {prob,npos,nneg};
+    return {prob,npos,nneg,dropped};
   }
   // 675ב: the channels as a learning reads them, from the work's sfeat (the compute set's faces ascending, and their
   // sub-faces' rows in order): {sq, su, uof} — or null when they do not fit this layout (another number of sub-faces)
@@ -5675,6 +5708,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     let r=null,ok=false;
     try{
       r=await amLearnRun({types:types,activeT:activeT,N:N,roi:roi,roiCount:roiCount,sq:SFEAT.sq,su:SFEAT.su,uof:SFEAT.uof,K:AM_LEARN_K,stats:LSTATS,
+        geo:{cen:cen,area:area,grid:grid,cell:CELL,key:ckey},   // 693: the model beside the channels — for the density filter
         progress:(f,nx)=>{ if(shown&&window.__pmProgress)window.__pmProgress(f,nx); },
         cancelled:()=>LEARN_OP!==op});
       ok=true;
