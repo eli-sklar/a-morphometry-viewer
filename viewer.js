@@ -1703,7 +1703,7 @@ mat.onBeforeCompile=sh=>{
     const dn=va+vb+vc; if(!(dn>0)) return Math.min(D(ax,ay,az),D(bx,by,bz),D(cx,cy,cz));   // a sub-face with no area
     const v=vb/dn, w=vc/dn; return D(ax+abx*v+acx*w,ay+aby*v+acy*w,az+abz*v+acz*w);
   }
-  const CC_OWN=1e-3, CC_OWN_CELL=0.05;   // 683: a dab's centre lies ON a sub-face within 1 mm (a point hit on it; saved rounded to 0.01 mm); its centres' cells
+  const CC_OWN=0.05, CC_OWN_CELL=0.05;   // 683: how far from its own sub-face a dab's centre may lie — a point hit on the surface, but the surface may have moved since (a smoothed model; zzz: centres up to 4.8 cm off it); its centres' cells
   function ccEdgeZero(Pi,Pj,fi,fj,en){
     const less=(a,b)=>a[0]!==b[0]?a[0]<b[0]:(a[1]!==b[1]?a[1]<b[1]:a[2]<b[2]);
     const swap=less(Pj,Pi);
@@ -1968,7 +1968,7 @@ mat.onBeforeCompile=sh=>{
       // 683 (found in 682's diagnosis; Eli, 11/11: "מאשר 683 כתוכנית"): the line grew only from a sub-face the layer marks (its
       // centre inside a dab), from a block marked whole (670) or erased whole (670e) — and a small dab lying across the edge
       // between two sub-faces, no corner and no centre of either inside it, was on no line at all: not while painted, not at
-      // an open of the work. Such a dab's OWN sub-face is on the line too — the one its centre lies on (CC_OWN: a dab is a
+      // an open of the work. Such a dab's OWN sub-face is on the line too — the one its centre lies on (within CC_OWN: a dab is a
       // point of the surface), when the field crosses it and the dab does not hold its centre (a dab that does marked it as
       // it was painted: unmarked now, something cleared it — not this case, and a large brush is never asked). "Its own": of
       // ALL the sub-faces none is nearer (the distance to the triangle, ccPtTri — not to its centre) — asked or not, crossed
