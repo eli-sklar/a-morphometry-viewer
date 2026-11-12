@@ -1688,6 +1688,21 @@ mat.onBeforeCompile=sh=>{
         for(let i=0;i+2<op.p.length;i+=3) for(let k=0;k<3;k++){
           lo[k]=Math.min(lo[k],op.p[i+k]-2*op.b); hi[k]=Math.max(hi[k],op.p[i+k]+2*op.b);} } }
     return [lo,hi]; }
+  // 683: the distance from a point to the triangle at P[o..o+8] (Ericson, Real-Time Collision Detection, 5.1.5) — a dab's
+  // own sub-face is the one its centre lies on: the distance to the sub-face itself, not to its centre
+  function ccPtTri(px,py,pz,P,o){
+    const ax=P[o],ay=P[o+1],az=P[o+2],bx=P[o+3],by=P[o+4],bz=P[o+5],cx=P[o+6],cy=P[o+7],cz=P[o+8];
+    const abx=bx-ax,aby=by-ay,abz=bz-az,acx=cx-ax,acy=cy-ay,acz=cz-az,apx=px-ax,apy=py-ay,apz=pz-az;
+    const D=(x,y,z)=>Math.hypot(px-x,py-y,pz-z);
+    const d1=abx*apx+aby*apy+abz*apz, d2=acx*apx+acy*apy+acz*apz; if(d1<=0&&d2<=0) return D(ax,ay,az);
+    const bpx=px-bx,bpy=py-by,bpz=pz-bz, d3=abx*bpx+aby*bpy+abz*bpz, d4=acx*bpx+acy*bpy+acz*bpz; if(d3>=0&&d4<=d3) return D(bx,by,bz);
+    const vc=d1*d4-d3*d2; if(vc<=0&&d1>=0&&d3<=0){ const v=d1/(d1-d3); return D(ax+v*abx,ay+v*aby,az+v*abz); }
+    const cpx=px-cx,cpy=py-cy,cpz=pz-cz, d5=abx*cpx+aby*cpy+abz*cpz, d6=acx*cpx+acy*cpy+acz*cpz; if(d6>=0&&d5<=d6) return D(cx,cy,cz);
+    const vb=d5*d2-d1*d6; if(vb<=0&&d2>=0&&d6<=0){ const w=d2/(d2-d6); return D(ax+w*acx,ay+w*acy,az+w*acz); }
+    const va=d3*d6-d5*d4; if(va<=0&&(d4-d3)>=0&&(d5-d6)>=0){ const w=(d4-d3)/((d4-d3)+(d5-d6)); return D(bx+w*(cx-bx),by+w*(cy-by),bz+w*(cz-bz)); }
+    const dn=va+vb+vc; if(!(dn>0)) return Math.min(D(ax,ay,az),D(bx,by,bz),D(cx,cy,cz));   // a sub-face with no area
+    const v=vb/dn, w=vc/dn; return D(ax+abx*v+acx*w,ay+aby*v+acy*w,az+abz*v+acz*w);
+  }
   function ccEdgeZero(Pi,Pj,fi,fj,en){
     const less=(a,b)=>a[0]!==b[0]?a[0]<b[0]:(a[1]!==b[1]?a[1]<b[1]:a[2]<b[2]);
     const swap=less(Pj,Pi);
@@ -1949,7 +1964,64 @@ mat.onBeforeCompile=sh=>{
         for(let i=0;i<3;i++){ const j=(i+1)%3, ek=k[i]<k[j]?k[i]+'|'+k[j]:k[j]+'|'+k[i];
           for(const g of (edges.get(ek)||[])){ if(S[g]||byWhole.has(g)) continue; const n2=nrm.get(g);
             if(Math.abs(nx*n2[0]+ny*n2[1]+nz*n2[2])/nl>CC_FOLD) byWhole.add(g); } } }
-      for(const f of mixed) if(S[f]||(seeds&&seeds.has(f))||byWhole.has(f)){band.add(f);q.push(f);}
+      // 683 (found in 682's diagnosis; Eli, 11/11: "מאשר 683 כתוכנית"): the line grew only from a sub-face the layer marks (its
+      // centre inside a dab), from a block marked whole (670) or erased whole (670e) — and a small dab lying across the edge
+      // between two sub-faces, no corner and no centre of either inside it, was on no line at all: not while painted, not at
+      // an open of the work. A paint dab's OWN sub-face is on the line too — the one its centre lies on: the nearest of all the
+      // sub-faces to it (the distance to the triangle, ccPtTri — not to its centre), nearer than the dab's r — when the field
+      // crosses it. A centre as near to several (on an edge, on a vertex): all of them when they are one surface (the normals
+      // agree — CC_FOLD, as at every step of the line), none across a fold: the wall it was painted on is not known (324).
+      // "Of all": asked or not, crossed or not — so the answer is the same while painting (only the sub-faces near the new
+      // dabs are asked) and at an open, and a dab never seeds the far side of a thin wall its ball reaches.
+      // The guard: no seed where the field is stale — a sub-face whose centre lies within r + the seed's longest edge of the
+      // dab's centre, that the layer does not mark (S=0) while its field holds that centre inside: cleared with no act in the
+      // history (an old work's eraser — the dabs stayed). A seed there draws the rim of the cleared patch (קטע טוב: 0.03 ->
+      // 1.90 m² without the guard). Around 683's own dab the field is outside, or the layer marks what it holds
+      const own=new Set();
+      { const G=new Map();   // the paint dabs by their radius: r -> the cells of 2r -> [stroke, dab, ...]
+        for(let k=0;k<en.ops.length;k++){ const op=en.ops[k]; if(op.t!=='balls'||!(op.s>=0)||!(op.r>0)) continue;
+          let H=G.get(op.r); if(!H){ H={cs:2*op.r, m:new Map()}; G.set(op.r,H); }
+          const c=op.c; for(let i=0;i+2<c.length;i+=3){ const key=ccCellKey(Math.floor(c[i]/H.cs),Math.floor(c[i+1]/H.cs),Math.floor(c[i+2]/H.cs));
+            let L=H.m.get(key); if(!L){ L=[]; H.m.set(key,L); } L.push(k,i); } }
+        const best=new Map();   // a dab -> [its distance to the nearest crossed sub-face asked, those as near]
+        const near=(L,r,f,o)=>{ for(let w=0;w<L.length;w+=2){ const k=L[w], i=L[w+1], c=en.ops[k].c, d=ccPtTri(c[i],c[i+1],c[i+2],pos,o); if(d>=r) continue;
+            const id=k*16777216+i/3, b=best.get(id);
+            if(!b||d<b[0]-1e-7) best.set(id,[d,[f]]); else if(d<=b[0]+1e-7&&!b[1].includes(f)) b[1].push(f); } };
+        if(G.size) for(const f of mixed){ if((++yk&255)===0) yield 0.9; const o=f*9, bl=[0,0,0], bh=[0,0,0];
+          for(let a=0;a<3;a++){ bl[a]=Math.min(pos[o+a],pos[o+3+a],pos[o+6+a]); bh[a]=Math.max(pos[o+a],pos[o+3+a],pos[o+6+a]); }
+          for(const [r,H] of G){ const cs=H.cs, x0=Math.floor((bl[0]-r)/cs), x1=Math.floor((bh[0]+r)/cs), y0=Math.floor((bl[1]-r)/cs), y1=Math.floor((bh[1]+r)/cs),
+                  z0=Math.floor((bl[2]-r)/cs), z1=Math.floor((bh[2]+r)/cs);
+            // a long sub-face under a small brush: its box holds more cells than the brush has — every cell of the brush then
+            if((x1-x0+1)*(y1-y0+1)*(z1-z0+1)>H.m.size){ for(const L of H.m.values()) near(L,r,f,o); continue; }
+            for(let x=x0;x<=x1;x++) for(let y=y0;y<=y1;y++) for(let z=z0;z<=z1;z++){ const L=H.m.get(ccCellKey(x,y,z)); if(L) near(L,r,f,o); } } }
+        const onLine=f=>S[f]||byWhole.has(f)||(seeds&&seeds.has(f));
+        let reach=-1, longF=null;
+        for(const [id,b] of best){ const d=b[0], F=b[1]; if(F.every(onLine)) continue;   // nothing to add
+          if((++yk&63)===0) yield 0.92;
+          if(reach<0){ const rg=ccReachG(); let rr=rg.next(); while(!rr.done){ yield 0.92; rr=rg.next(); } reach=rr.value;
+            const lg=ccLongFacesG(); let lr=lg.next(); while(!lr.done){ yield 0.92; lr=lg.next(); } longF=lr.value; }
+          const k=Math.floor(id/16777216), op=en.ops[k], i=(id-k*16777216)*3, x=op.c[i], y=op.c[i+1], z=op.c[i+2];
+          let ok=true, el=0;
+          for(let a=0;a<F.length&&ok;a++){ const na=nrm.get(F[a]), o=F[a]*9;
+            for(let c=0;c<3;c++){ const j=(c+1)%3; el=Math.max(el,Math.hypot(pos[o+c*3]-pos[o+j*3],pos[o+c*3+1]-pos[o+j*3+1],pos[o+c*3+2]-pos[o+j*3+2])); }
+            for(let c=a+1;c<F.length&&ok;c++){ const nc=nrm.get(F[c]); if(Math.abs(na[0]*nc[0]+na[1]*nc[1]+na[2]*nc[2])<=CC_FOLD) ok=false; } }
+          if(!ok) continue;
+          // of all the sub-faces: one nearer — the dab is its, not theirs; one as near across a fold — no wall is known
+          const other=g=>{ if(F.includes(g)) return true; const o=g*9, dg=ccPtTri(x,y,z,pos,o); if(dg>d+1e-7) return true; if(dg<d-1e-7) return false;
+            const ux=pos[o+3]-pos[o],uy=pos[o+4]-pos[o+1],uz=pos[o+5]-pos[o+2],wx=pos[o+6]-pos[o],wy=pos[o+7]-pos[o+1],wz=pos[o+8]-pos[o+2];
+            const nx=uy*wz-uz*wy,ny=uz*wx-ux*wz,nz=ux*wy-uy*wx,nl=Math.hypot(nx,ny,nz)||1;
+            for(const f of F){ const n1=nrm.get(f); if(Math.abs(n1[0]*nx+n1[1]*ny+n1[2]*nz)/nl<=CC_FOLD) return false; }
+            return true; };
+          const Rn=d+reach, Rg=op.r+el, RR=Math.max(Rn,Rg);
+          for(let ix=Math.floor((x-RR)/CELL);ix<=Math.floor((x+RR)/CELL)&&ok;ix++) for(let iy=Math.floor((y-RR)/CELL);iy<=Math.floor((y+RR)/CELL)&&ok;iy++)
+            for(let iz=Math.floor((z-RR)/CELL);iz<=Math.floor((z+RR)/CELL)&&ok;iz++){ const A=grid.get(ckey(ix,iy,iz)); if(!A) continue;
+              for(const g of A){ if(g>=N) continue; const dx=cen[g*3]-x, dy=cen[g*3+1]-y, dz=cen[g*3+2]-z, q2=dx*dx+dy*dy+dz*dz;
+                if(q2<=Rn*Rn&&!other(g)){ ok=false; break; }
+                if(q2<=Rg*Rg&&!S[g]){ en.cur=g; if(ccField(en,cen[g*3],cen[g*3+1],cen[g*3+2])<0){ ok=false; break; } } } }   // the guard
+          if(ok) for(const lf of longF){ if(lf.lo[0]>x+d||lf.hi[0]<x-d||lf.lo[1]>y+d||lf.hi[1]<y-d||lf.lo[2]>z+d||lf.hi[2]<z-d) continue;
+            if(!other(lf.f)){ ok=false; break; } }   // the long ones, by their box: their centres may lie past the reach
+          if(ok) for(const f of F) own.add(f); } }
+      for(const f of mixed) if(S[f]||own.has(f)||(seeds&&seeds.has(f))||byWhole.has(f)){band.add(f);q.push(f);}
       while(q.length){ if((++yk&1023)===0) yield 0.95;
         const f=q.pop(), v=fv.get(f), k=[vkey(f,0),vkey(f,1),vkey(f,2)], n1=nrm.get(f);
         for(let i=0;i<3;i++){ const j=(i+1)%3; if(!crossedEdge(f,i)) continue;
