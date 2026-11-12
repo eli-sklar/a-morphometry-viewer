@@ -1589,7 +1589,7 @@ mat.onBeforeCompile=sh=>{
   // (2r, never finer than a 64th of the layer's) hold the dabs (how near). See ccFieldIx
   function ccIndex(ops){
     let rmax=0, farPos=Infinity, n=0;
-    for(const op of ops){ if(op.t==='faces') continue; if(op.t!=='balls') return null;
+    for(const op of ops){ if(op.t==='faces'||op.t==='minus') continue; if(op.t!=='balls') return null;
       if(op.c.length){ rmax=Math.max(rmax,op.r); if(op.s>=0) farPos=Math.min(farPos,op.r); } n+=(op.c.length/3)|0; }
     const cs=Math.max(2*rmax,1e-6);
     // the radii: one class each, with its cells
@@ -1622,7 +1622,7 @@ mat.onBeforeCompile=sh=>{
     const fstart=new Int32Array(size+1); for(let h=0;h<size;h++) fstart[h+1]=fstart[h]+fcnt[h];
     const ffill=fstart.slice(0,size), FEO=new Int32Array(n), FEI=new Int32Array(n);
     for(let t=0;t<q;t++){ const h=fslot[t], w=ffill[h]++; FEO[w]=dOp[t]; FEI[w]=dI[t]; }
-    const fops=[]; ops.forEach((op,k)=>{ if(op.t==='faces') fops.push(k); });
+    const fops=[]; ops.forEach((op,k)=>{ if(op.t==='faces'||op.t==='minus') fops.push(k); });   // 651ב: a minus stands among the strokes as a face-level act does
     return {fops:fops, cs:cs, mask:mask, KI:KI, KJ:KJ, KK:KK, used:used, start:start, EO:EO, farPos:farPos, stamp:0,
             cls:cls, cseen:new Int32Array(fcs.length), clist:new Int32Array(fcs.length), fcs:fcs,
             fmask:fmask, FI:FI, FJ:FJ, FK:FK, FC:FC, fused:fused, fstart:fstart, FEO:FEO, FEI:FEI,
@@ -1663,7 +1663,9 @@ mat.onBeforeCompile=sh=>{
     let f=(en&&en.st)?(en.st(en.cur)?-CC_BIG:CC_BIG):Infinity;
     const FOP=ix.fops; let fi=0;
     for(let q=0;q<=nt;q++){ const kb=(q<nt)?T[q]:Infinity;
-      while(fi<FOP.length&&FOP[fi]<kb){ const v=ops[FOP[fi]].m.get(en?en.cur:-1); if(v!==undefined) f=(v>0)?-CC_BIG:CC_BIG; fi++; }
+      while(fi<FOP.length&&FOP[fi]<kb){ const fo=ops[FOP[fi]];
+        if(fo.t==='minus') f=ccMinus(fo,en?en.cur:-1,f,x,y,z);
+        else{ const v=fo.m.get(en?en.cur:-1); if(v!==undefined) f=(v>0)?-CC_BIG:CC_BIG; } fi++; }
       if(q===nt) break;
       const op=ops[T[q]], r=op.r, d2=B[T[q]];
       const g=(d2>4*r*r)?r:Math.sqrt(d2)-r; f=(op.s>=0)?Math.min(f,g):Math.max(f,-g); }
@@ -1673,8 +1675,24 @@ mat.onBeforeCompile=sh=>{
     if(en._ix){ const f=ccFieldIx(en._ix,en.ops,x,y,z,en); return en.inv?-f:f; }
     let f=en.st?(en.st(en.cur)?-CC_BIG:CC_BIG):Infinity;
     for(const op of en.ops){ if(op.t==='faces'){ const v=op.m.get(en.cur); if(v!==undefined) f=(v>0)?-CC_BIG:CC_BIG; continue; }
+      if(op.t==='minus'){ f=ccMinus(op,en.cur,f,x,y,z); continue; }
       const g=ccOpField(op,x,y,z); f=(op.s>=0)?Math.min(f,g):Math.max(f,-g); }
     return en.inv?-f:f; }
+  // 651ב (Eli, 11/11: "רק את החלק החופף, בלי חורים"): the overlap of two layers is taken off one of them by an act of its own,
+  // in its place among the layer's acts — a minus. It holds a frozen copy of the OTHER layer's mark (the one that keeps) on
+  // the sub-faces of the overlap (op.F): its dabs near them, its face-level acts on them, where each of them starts. In a
+  // sub-face of op.F the layer's field becomes "this layer AND NOT the keeping one": max(f, -keep's field) — the same
+  // field the line is cut by everywhere, so the cut is the engine's own; outside op.F the act is not there at all. A
+  // stroke after it paints again (the acts' order), and taking the act back is one act. Frozen, not live: an act is
+  // history — a later edit of the keeping layer does not move this one's area (as a deletion behaves).
+  // op.W — the sub-faces of op.F this layer marked WHOLE when the act was made, by a mark its field may not know (a hand's
+  // mark from before the acts were kept): "this layer" there is the whole sub-face, whatever the field says
+  function ccMinus(op,cur,f,x,y,z){ if(!op.F.has(cur)) return f;
+    const ke=ccMinusEn(op); ke.cur=cur; return Math.max((op.W&&op.W.has(cur))?-CC_BIG:f,-ccField(ke,x,y,z)); }
+  // the keeping layer's frozen mark as an entry of the field, made once
+  function ccMinusEn(op){ let ke=op.en; if(!ke){ const st=op.k.st, ops=op.k.ops;
+      ke=op.en={faces:null, S:null, ops:ops, inv:false, cur:-1, st:t=>st.has(t), _ix:ops.length>1?ccIndex(ops):null}; }
+    return ke; }
   function ccBBox(en){ const lo=[Infinity,Infinity,Infinity], hi=[-Infinity,-Infinity,-Infinity];
     for(const op of en.ops){
       if(op.t==='balls'){ for(let i=0;i+2<op.c.length;i+=3) for(let k=0;k<3;k++){
@@ -1686,7 +1704,9 @@ mat.onBeforeCompile=sh=>{
       // 479: a polygon on the screen of a locked view ('proj') — the funnel from the eye — is as unbounded
       else if(op.t==='poly'){ if(op.m==='deep'||op.m==='proj') return [[-Infinity,-Infinity,-Infinity],[Infinity,Infinity,Infinity]];
         for(let i=0;i+2<op.p.length;i+=3) for(let k=0;k<3;k++){
-          lo[k]=Math.min(lo[k],op.p[i+k]-2*op.b); hi[k]=Math.max(hi[k],op.p[i+k]+2*op.b);} } }
+          lo[k]=Math.min(lo[k],op.p[i+k]-2*op.b); hi[k]=Math.max(hi[k],op.p[i+k]+2*op.b);} }
+      // 651ב: a minus reaches its own sub-faces (their box, kept on the op — amMinusBox)
+      else if(op.t==='minus'&&op.bb){ for(let k=0;k<3;k++){ lo[k]=Math.min(lo[k],op.bb[0][k]); hi[k]=Math.max(hi[k],op.bb[1][k]); } } }
     return [lo,hi]; }
   // 683: the distance from a point to the triangle at P[o..o+8] (Ericson, Real-Time Collision Detection, 5.1.5) — a dab's
   // own sub-face is the one its centre lies on: the distance to the sub-face itself, not to its centre
@@ -2098,7 +2118,7 @@ mat.onBeforeCompile=sh=>{
   function amEnNear(T,lo,hi){
     const en=amEnOf(T), ops=T.ops; if(ops.length<3) return en;
     let rmax=0, rk=-1; const ev=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity], ek=[-1,-1,-1,-1,-1,-1], ei=[0,0,0,0,0,0];
-    for(let k=0;k<ops.length;k++){ const op=ops[k]; if(op.t==='faces') continue; if(op.t!=='balls') return en;
+    for(let k=0;k<ops.length;k++){ const op=ops[k]; if(op.t==='faces'||op.t==='minus') continue; if(op.t!=='balls') return en;
       const c=op.c; if(c.length<3) continue;
       let b=AM_OPBB.get(op);
       if(!b||b.c!==c||b.n>c.length){ b={c:c,n:0,lo:[Infinity,Infinity,Infinity],hi:[-Infinity,-Infinity,-Infinity],li:[0,0,0],hk:[0,0,0]}; AM_OPBB.set(op,b); }
@@ -2108,7 +2128,7 @@ mat.onBeforeCompile=sh=>{
       for(let a=0;a<3;a++){ const l=b.lo[a]-op.r, h=b.hi[a]+op.r;
         if(l<ev[a]){ ev[a]=l; ek[a]=k; ei[a]=b.li[a]; } if(h>ev[3+a]){ ev[3+a]=h; ek[3+a]=k; ei[3+a]=b.hk[a]; } } }
     const m=3*Math.max(2*rmax,1e-6), zl=[lo[0]-m,lo[1]-m,lo[2]-m], zh=[hi[0]+m,hi[1]+m,hi[2]+m], keep=[]; let cut=false;
-    for(let k=0;k<ops.length;k++){ const op=ops[k]; if(op.t==='faces'){ keep.push(op); continue; }
+    for(let k=0;k<ops.length;k++){ const op=ops[k]; if(op.t==='faces'||op.t==='minus'){ keep.push(op); continue; }   // 651ב: a minus is kept whole, as a face-level act (it acts on its own sub-faces only)
       const c=op.c; if(c.length<3){ cut=true; continue; }
       const b=AM_OPBB.get(op), ex=[]; for(let a=0;a<6;a++) if(ek[a]===k) ex.push(ei[a]);
       if(b.lo[0]>=zl[0]&&b.hi[0]<=zh[0]&&b.lo[1]>=zl[1]&&b.hi[1]<=zh[1]&&b.lo[2]>=zl[2]&&b.hi[2]<=zh[2]){ keep.push(op); continue; }
@@ -2131,15 +2151,99 @@ mat.onBeforeCompile=sh=>{
   function* amSOfG(T){ const ti=types.indexOf(T); if(!T.S||T.S.length!==N) T.S=new Uint8Array(N);   // 555: as steps
     for(let f=0;f<N;f++){ if((f&4095)===4095) yield; T.S[f]=isType(ti,f)?1:0; } }
   function amSOf(T){ const g=amSOfG(T); while(!g.next().done){} }
-  function amHasBalls(T){ return !!(T.ops&&T.ops.some(o=>o.t==='balls'&&o.c.length)); }
+  function amHasBalls(T){ return !!(T.ops&&T.ops.some(o=>(o.t==='balls'&&o.c.length)||o.t==='minus')); }   // 651ב: a minus draws a line too
+  // 651ב: the minus of layer K (the one that keeps) for the sub-faces fs of another layer — a frozen copy of K's mark there
+  // (ccMinus): K's strokes cut down to the dabs within 2r of fs (farther, a dab is only "outside, by r" at every point of
+  // them), its face-level acts on fs, and which of fs it starts in — all in K's own order, the dabs as they are (no
+  // rounding: the copy is the truth from now on, and a save and an open must give it back to the last bit).
+  // Not Ada's: any tool that resolves an overlap makes it (690)
+  function amMinus(K,fs,W){
+    const F=new Set(fs), enK=amEnOf(K), ops=[];
+    // the cells (the screen's grid) that hold a sub-face of fs, and their box
+    const lo=[Infinity,Infinity,Infinity], hi=[-Infinity,-Infinity,-Infinity], cells=new Map();
+    for(const f of F){ const o=f*9; for(let c=0;c<9;c+=3) for(let k=0;k<3;k++){ const v=pos[o+c+k]; if(v<lo[k]) lo[k]=v; if(v>hi[k]) hi[k]=v; }
+      const key=ckey(Math.floor(cen[f*3]/CELL),Math.floor(cen[f*3+1]/CELL),Math.floor(cen[f*3+2]/CELL)); let a=cells.get(key);
+      if(!a){ a={fs:[], lo:[Infinity,Infinity,Infinity], hi:[-Infinity,-Infinity,-Infinity]}; cells.set(key,a); } a.fs.push(f);
+      for(let c=0;c<9;c+=3) for(let k=0;k<3;k++){ const v=pos[o+c+k]; if(v<a.lo[k]) a.lo[k]=v; if(v>a.hi[k]) a.hi[k]=v; } }
+    const CL=[...cells.values()];
+    for(const op of K.ops||[]){
+      if(op.t==='faces'){ const m=new Map(); for(const [f,v] of op.m) if(F.has(f)) m.set(f,v); if(m.size) ops.push({t:'faces', m:m}); continue; }
+      if(op.t!=='balls') continue;   // a minus of K's own is K's history, not its mark's shape here: K's field in fs is read below
+      const c=op.c, R=2*op.r, q=[];
+      for(let i=0;i+2<c.length;i+=3){ const x=c[i], y=c[i+1], z=c[i+2];
+        if(x<lo[0]-R||x>hi[0]+R||y<lo[1]-R||y>hi[1]+R||z<lo[2]-R||z>hi[2]+R) continue;
+        let near=false;
+        for(const a of CL){ if(x<a.lo[0]-R||x>a.hi[0]+R||y<a.lo[1]-R||y>a.hi[1]+R||z<a.lo[2]-R||z>a.hi[2]+R) continue;
+          for(const f of a.fs) if(ccPtTri(x,y,z,pos,f*9)<=R){ near=true; break; }
+          if(near) break; }
+        if(near) q.push(x,y,z); }
+      if(q.length) ops.push({t:'balls', c:q, r:op.r, s:op.s}); }
+    const st=new Set(); if(enK.st) for(const f of F) if(enK.st(f)) st.add(f);
+    return amMinusBox({t:'minus', at:K.id, F:F, W:new Set(W||[]), k:{ops:ops, st:st}});
+  }
+  // 651ב: a sub-face whose last acts are minuses (none after them reaches it) is cut in two steps, each a line of its own —
+  // the layer's mark as it stood before them (inside), then each keeping layer (outside): where the two lines meet the
+  // piece has a true corner, and neither line is asked about more than its own two crossings of an edge. Measured on Eli's
+  // zzz (keep "שטח צלעות", 12/11) against one field of both (max(f, -keep), a kink where the lines meet): the two steps lose
+  // less of what lies outside the overlap (0.0018 against 0.0031 m² on "שטח גג") and leave a little more of it (0.0011
+  // against 0.0003 m²) — the side to err on is the mark that stays. With an act after the minus that reaches the sub-face
+  // (a stroke that paints again, a face-level act) — the one field, in the acts' order
+  function amMinusTail(en,f){ const ops=en.ops; let k0=-1;
+    for(let k=0;k<ops.length;k++){ const op=ops[k];
+      if(op.t==='minus'){ if(k0<0&&op.F.has(f)) k0=k; continue; }
+      if(k0<0) continue;
+      if(op.t==='faces'){ if(op.m.has(f)) return null; continue; }
+      if(op.t!=='balls') return null;
+      const c=op.c, r=op.r, o=f*9; let lo0=Infinity,lo1=Infinity,lo2=Infinity,hi0=-Infinity,hi1=-Infinity,hi2=-Infinity;
+      for(let q=0;q<9;q+=3){ const x=pos[o+q], y=pos[o+q+1], z=pos[o+q+2]; if(x<lo0)lo0=x; if(x>hi0)hi0=x; if(y<lo1)lo1=y; if(y>hi1)hi1=y; if(z<lo2)lo2=z; if(z>hi2)hi2=z; }
+      for(let i=0;i+2<c.length;i+=3){ const x=c[i], y=c[i+1], z=c[i+2];
+        if(x<lo0-r||x>hi0+r||y<lo1-r||y>hi1+r||z<lo2-r||z>hi2+r) continue;
+        if(ccPtTri(x,y,z,pos,o)<r) return null; } }
+    if(k0<0) return null;
+    const out=[];
+    if(!(ops[k0].W&&ops[k0].W.has(f))){   // a sub-face the layer marked whole (op.W) is whole before the minus: no first cut
+      let C=en._pre; if(!C) C=en._pre=new Map(); let pre=C.get(k0);
+      if(!pre){ const po=ops.slice(0,k0); pre={ops:po, _ix:po.length>1?ccIndex(po):null}; C.set(k0,pre); }
+      out.push({faces:null, S:en.S, ops:pre.ops, inv:true, cur:f, st:en.st, _ix:pre._ix}); }
+    for(let k=k0;k<ops.length;k++){ const op=ops[k]; if(op.t!=='minus'||!op.F.has(f)) continue; const ke=ccMinusEn(op);
+      out.push({faces:null, S:null, ops:ke.ops, inv:false, cur:f, st:ke.st, _ix:ke._ix}); }
+    return out; }
+  // The act that takes layer K's mark off the sub-faces F of layer ti — for whoever resolves an overlap (Ada's proposal at
+  // its accept; a person's own tool, 690); the caller puts it among the layer's acts and in the history. With it goes W: a
+  // sub-face of F the layer marks whole and its line does not hold may be marked by a hand's mark the field does not know
+  // (a work from before the acts were kept: zzz, "שטח רחבה" — 130 of 178) — the field reads it unmarked, and a minus by the
+  // field alone would leave it whole (and two cuts by the field would empty it: the first try's 0.037 m² beyond the
+  // overlap). In the act, not in an act before it: one act has no order to keep (a step forward in the history puts a
+  // step's acts back in reverse)
+  function amMinusOf(ti,K,F){ const T=types[ti]; return amMinus(K,F,F.filter(f=>!(T.band&&T.band.has(f))&&isType(ti,f))); }
+  // the box of a minus's sub-faces, kept on it (ccBBox)
+  function amMinusBox(op){ const lo=[Infinity,Infinity,Infinity], hi=[-Infinity,-Infinity,-Infinity];
+    for(const f of op.F){ const o=f*9; for(let c=0;c<9;c+=3) for(let k=0;k<3;k++){ const v=pos[o+c+k]; if(v<lo[k]) lo[k]=v; if(v>hi[k]) hi[k]=v; } }
+    op.bb=[lo,hi]; return op; }
+  // the sheet's form of a minus, and back (the sub-faces through the layout's map, as a face-level act's)
+  function amMinusOut(op){ return {t:'minus', at:op.at, F:[...op.F], W:[...(op.W||[])], k:{st:[...op.k.st],
+    ops:op.k.ops.map(o=>o.t==='balls'?{t:'balls', r:o.r, s:o.s, c:o.c.slice()}:{t:'faces', f:[...o.m.keys()], v:[...o.m.values()]})}}; }
+  function amMinusIn(MAP,o){
+    if(!o||o.t!=='minus'||!Array.isArray(o.F)||!o.k||!Array.isArray(o.k.ops)) return null;
+    const F=new Set(), W=new Set(), st=new Set(), ops=[];
+    for(const f of o.F) amEach(MAP,f,t=>F.add(t));
+    for(const f of (o.W||[])) amEach(MAP,f,t=>W.add(t));
+    for(const f of (o.k.st||[])) amEach(MAP,f,t=>st.add(t));
+    for(const q of o.k.ops){
+      if(q&&q.t==='balls'&&Array.isArray(q.c)&&q.c.length&&q.c.length%3===0&&+q.r>0) ops.push({t:'balls', r:+q.r, s:(q.s<0)?-1:1, c:q.c.map(Number)});
+      else if(q&&q.t==='faces'&&Array.isArray(q.f)){ const m=new Map(); q.f.forEach((f,i)=>amEach(MAP,f,t=>m.set(t,(q.v&&q.v[i]<0)?-1:1))); if(m.size) ops.push({t:'faces', m:m}); } }
+    if(!F.size) return null;
+    return amMinusBox({t:'minus', at:(typeof o.at==='string')?o.at:null, F:F, W:W, k:{ops:ops, st:st}});
+  }
   function amTriA(p){ const ax=p[1][0]-p[0][0],ay=p[1][1]-p[0][1],az=p[1][2]-p[0][2],bx=p[2][0]-p[0][0],by=p[2][1]-p[0][1],bz=p[2][2]-p[0][2];
     return 0.5*Math.sqrt((ay*bz-az*by)**2+(az*bx-ax*bz)**2+(ax*by-ay*bx)**2); }
   // the marked part of one sub-face on the line: its triangles, their texture, their barycentrics
   // in the sub-face (what the sheet carries to the report), and the fraction of the sub-face
   function amPiecesOf(f,en){
     const inside={faces:null, S:en.S, ops:en.ops, inv:true, cur:f, st:en.st, _ix:en._ix};
+    const two=amMinusTail(en,f), ents=two||[inside];
     const P=[], U=[], BB=[]; let a=0;
-    for(const [p,b] of ccCutFace(f,[0],[inside])){ a+=amTriA(p);
+    for(const [p,b] of ccCutFace(f,ents.map((_,i)=>i),ents)){ a+=amTriA(p);
       for(let i=0;i<3;i++){ P.push(p[i][0],p[i][1],p[i][2]);
         let u=0,v=0; for(let c=0;c<3;c++){u+=b[i][c]*uv[(f*3+c)*2]; v+=b[i][c]*uv[(f*3+c)*2+1];}
         U.push(u,v); BB.push(b[i][1],b[i][2]); } }
@@ -2216,17 +2320,19 @@ mat.onBeforeCompile=sh=>{
       for(const f of L){ if(inner) region.add(f); else if(T.band.has(f)) outer.add(f); } }
   }
   function amOpPts(op){ if(op.t==='balls') return op.c;
-    const p=[]; for(const f of op.m.keys()) p.push(cen[f*3],cen[f*3+1],cen[f*3+2]); return p; }
+    const p=[]; for(const f of (op.t==='minus'?op.F:op.m.keys())) p.push(cen[f*3],cen[f*3+1],cen[f*3+2]); return p; }
   // 638: a face-level act (an accepted proposal, a grow, an erase) moves no line — it turns whole sub-faces on or off; a
   // sub-face its cut finds on the line before it, still crossed, stays on it (amMarkLocalG `keep`)
-  function amMarkAt(T,op){ const p=amOpPts(op); if(p.length) amMarkLocal(T,p,op.t==='balls'?op.r:0,op.t==='faces'); }
+  function amMarkAt(T,op){ const p=amOpPts(op); if(p.length) amMarkLocal(T,p,op.t==='balls'?op.r:0,op.t!=='balls'); }   // 651ב: a minus as a face-level act — the line near it stays
   // the whole layer: after a threshold, a learning, a load — every stroke's dabs at once
   function* amMarkFullG(T){   // 555: as steps (amMarkLocalG); amMarkFull runs it to the end at once
     if(T.band) for(const f of T.band) recolorFace(f);
     T.band=new Set(); T.pieces=new Map();
     if(!amHasBalls(T)) return;
     const pts=[]; let rmax=0;
-    for(const op of T.ops){ if(op.t!=='balls') continue; for(let i=0;i+2<op.c.length;i+=3) pts.push(op.c[i],op.c[i+1],op.c[i+2]);
+    for(const op of T.ops){
+      if(op.t==='minus'){ for(const f of op.F) pts.push(cen[f*3],cen[f*3+1],cen[f*3+2]); continue; }   // 651ב: its sub-faces are asked
+      if(op.t!=='balls') continue; for(let i=0;i+2<op.c.length;i+=3) pts.push(op.c[i],op.c[i+1],op.c[i+2]);
       if(op.c.length) rmax=Math.max(rmax,op.r); amSeen.set(op,op.c.length); }
     yield* amMarkLocalG(T,pts,rmax);
   }
@@ -2466,6 +2572,7 @@ mat.onBeforeCompile=sh=>{
   // the sheet: the strokes' balls and the grows' sub-faces, in their order
   function amOpsOut(T){ return (T.ops||[]).map(op=>amOpSrc(op.t==='balls'
       ? {t:'balls', r:Math.round(op.r*1e5)/1e5, s:op.s, c:op.c.map(v=>Math.round(v*1e5)/1e5)}
+      : op.t==='minus' ? amMinusOut(op)
       : {t:'faces', f:[...op.m.keys()], v:[...op.m.values()]}, op)).filter(o=>o.t!=='balls'||o.c.length); }
   function amOpSrc(dst,src){
     // 571: who made an act, carried from one form of it to the next (the sheet, the screen, the sheet
@@ -5685,7 +5792,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
              // 332: a sheet with tags needs a reader that knows them — an older one would
              // drop them without a word
              // 644: a sheet with a volume marking needs reader 10 — an older one would drop the marking without a word
-             minReader:Math.max(H.volMark?10:1, types.some(T=>T.hasProb&&T.prob)?11:1, (SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1))))))),   // 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
+             minReader:Math.max(H.volMark?10:1, types.some(T=>T.hasProb&&T.prob)?11:1, types.some(T=>(T.ops||[]).some(o=>o.t==='minus'))?12:1, (SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1))))))),   // 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
              tagTypes:tagTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid})),
              tags:tags.map(g=>({id:g.id,t:g.t,p:g.p.slice(),nrm:g.nrm?g.nrm.slice():null,
                                 title:g.title,text:g.text,img:g.img||null})),
@@ -6391,7 +6498,7 @@ const amPal=(function(){
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
-  const AM_SHEET_READER = 11;  // 677: a learned layer's probabilities a sub-face (probS) ·  // 644: the volume marking, carried (volMark) · 433: one brush, a level per layer · 571: Ada's acts and their records   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
+  const AM_SHEET_READER = 12;  // 651ב: a minus among a layer's acts · 677: a learned layer's probabilities a sub-face (probS) ·  // 644: the volume marking, carried (volMark) · 433: one brush, a level per layer · 571: Ada's acts and their records   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
   const AM_SUB_SCHEME = (am.subScheme===2)?2:1;   // 539: 1 — one k; 2 — a target size, k_f = sqrt(cnt) (the work says which)
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -6515,7 +6622,8 @@ const amPal=(function(){
       if(Array.isArray(src.ops)){ for(const o of src.ops){   // 571: each act with its source (amOpSrc)
           if(o&&o.t==='balls'&&Array.isArray(o.c)&&o.c.length) T.ops.push(amOpSrc({t:'balls',r:(+o.r>0)?+o.r:0.1,s:(o.s<0)?-1:1,c:o.c.slice()},o));
           else if(o&&o.t==='faces'&&Array.isArray(o.f)){ const m=new Map();
-            o.f.forEach((f,i)=>amEach(MAP,f,t=>m.set(t,(o.v&&o.v[i]<0)?-1:1))); if(m.size) T.ops.push(amOpSrc({t:'faces',m:m},o)); } } }
+            o.f.forEach((f,i)=>amEach(MAP,f,t=>m.set(t,(o.v&&o.v[i]<0)?-1:1))); if(m.size) T.ops.push(amOpSrc({t:'faces',m:m},o)); }
+          else if(o&&o.t==='minus'){ const mo=amMinusIn(MAP,o); if(mo) T.ops.push(amOpSrc(mo,o)); } } }   // 651ב
       else { const m=new Map(); for(let t=0;t<N;t++) if(T.manual[t]!==0) m.set(t,T.manual[t]); if(m.size) T.ops.push({t:'faces',m:m}); }
       if((src.faceThr||[]).length){T.faceThr=new Float32Array(N).fill(NaN);
         for(const pr of src.faceThr) amEach(MAP,pr[0],t=>{T.faceThr[t]=pr[1];});}
