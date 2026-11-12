@@ -1703,6 +1703,7 @@ mat.onBeforeCompile=sh=>{
     const dn=va+vb+vc; if(!(dn>0)) return Math.min(D(ax,ay,az),D(bx,by,bz),D(cx,cy,cz));   // a sub-face with no area
     const v=vb/dn, w=vc/dn; return D(ax+abx*v+acx*w,ay+aby*v+acy*w,az+abz*v+acz*w);
   }
+  const CC_OWN=1e-3, CC_OWN_CELL=0.05;   // 683: a dab's centre lies ON a sub-face within 1 mm (a point hit on it; saved rounded to 0.01 mm); its centres' cells
   function ccEdgeZero(Pi,Pj,fi,fj,en){
     const less=(a,b)=>a[0]!==b[0]?a[0]<b[0]:(a[1]!==b[1]?a[1]<b[1]:a[2]<b[2]);
     const swap=less(Pj,Pi);
@@ -1967,36 +1968,41 @@ mat.onBeforeCompile=sh=>{
       // 683 (found in 682's diagnosis; Eli, 11/11: "מאשר 683 כתוכנית"): the line grew only from a sub-face the layer marks (its
       // centre inside a dab), from a block marked whole (670) or erased whole (670e) — and a small dab lying across the edge
       // between two sub-faces, no corner and no centre of either inside it, was on no line at all: not while painted, not at
-      // an open of the work. A paint dab's OWN sub-face is on the line too — the one its centre lies on: the nearest of all the
-      // sub-faces to it (the distance to the triangle, ccPtTri — not to its centre), nearer than the dab's r — when the field
-      // crosses it. A centre as near to several (on an edge, on a vertex): all of them when they are one surface (the normals
-      // agree — CC_FOLD, as at every step of the line), none across a fold: the wall it was painted on is not known (324).
-      // "Of all": asked or not, crossed or not — so the answer is the same while painting (only the sub-faces near the new
-      // dabs are asked) and at an open, and a dab never seeds the far side of a thin wall its ball reaches.
+      // an open of the work. Such a dab's OWN sub-face is on the line too — the one its centre lies on (CC_OWN: a dab is a
+      // point of the surface), when the field crosses it and the dab does not hold its centre (a dab that does marked it as
+      // it was painted: unmarked now, something cleared it — not this case, and a large brush is never asked). "Its own": of
+      // ALL the sub-faces none is nearer (the distance to the triangle, ccPtTri — not to its centre) — asked or not, crossed
+      // or not: so painting (only the sub-faces near the new dabs are asked) and an open of the work answer the same, and the
+      // far side of a thin wall is never the dab's. A centre as near to several (on an edge, on a vertex): all of them when
+      // they are one surface (the normals agree — CC_FOLD, as at every step of the line), none across a fold: the wall it
+      // was painted on is not known (324).
       // The guard: no seed where the field is stale — a sub-face whose centre lies within r + the seed's longest edge of the
       // dab's centre, that the layer does not mark (S=0) while its field holds that centre inside: cleared with no act in the
       // history (an old work's eraser — the dabs stayed). A seed there draws the rim of the cleared patch (קטע טוב: 0.03 ->
       // 1.90 m² without the guard). Around 683's own dab the field is outside, or the layer marks what it holds
       const own=new Set();
-      { const G=new Map();   // the paint dabs by their radius: r -> the cells of 2r -> [stroke, dab, ...]
-        for(let k=0;k<en.ops.length;k++){ const op=en.ops[k]; if(op.t!=='balls'||!(op.s>=0)||!(op.r>0)) continue;
-          let H=G.get(op.r); if(!H){ H={cs:2*op.r, m:new Map()}; G.set(op.r,H); }
-          const c=op.c; for(let i=0;i+2<c.length;i+=3){ const key=ccCellKey(Math.floor(c[i]/H.cs),Math.floor(c[i+1]/H.cs),Math.floor(c[i+2]/H.cs));
-            let L=H.m.get(key); if(!L){ L=[]; H.m.set(key,L); } L.push(k,i); } }
-        const best=new Map();   // a dab -> [its distance to the nearest crossed sub-face asked, those as near]
-        const near=(L,r,f,o)=>{ for(let w=0;w<L.length;w+=2){ const k=L[w], i=L[w+1], c=en.ops[k].c, d=ccPtTri(c[i],c[i+1],c[i+2],pos,o); if(d>=r) continue;
+      { const U=[]; for(const f of mixed) if(!(S[f]||byWhole.has(f)||(seeds&&seeds.has(f)))) U.push(f);   // crossed, and not on the line yet
+        const H=new Map(); let nd=0;   // the paint dabs' centres, in cells of CC_OWN_CELL -> [stroke, dab, ...]
+        if(U.length) for(let k=0;k<en.ops.length;k++){ const op=en.ops[k]; if(op.t!=='balls'||!(op.s>=0)||!(op.r>0)) continue;
+          const c=op.c; for(let i=0;i+2<c.length;i+=3){ if((++nd&16383)===0) yield 0.9;
+            const key=ccCellKey(Math.floor(c[i]/CC_OWN_CELL),Math.floor(c[i+1]/CC_OWN_CELL),Math.floor(c[i+2]/CC_OWN_CELL));
+            let L=H.get(key); if(!L){ L=[]; H.set(key,L); } L.push(k,i); } }
+        const best=new Map();   // a dab -> [its distance to the nearest of those it lies on, those as near]
+        const near=(L,f,o,bl,bh)=>{ for(let w=0;w<L.length;w+=2){ const k=L[w], i=L[w+1], op=en.ops[k], c=op.c, x=c[i], y=c[i+1], z=c[i+2];
+            if(x<bl[0]||x>bh[0]||y<bl[1]||y>bh[1]||z<bl[2]||z>bh[2]) continue;
+            const dx=cen[f*3]-x, dy=cen[f*3+1]-y, dz=cen[f*3+2]-z; if(dx*dx+dy*dy+dz*dz<=op.r*op.r) continue;   // the dab holds its centre
+            const d=ccPtTri(x,y,z,pos,o); if(d>CC_OWN||d>=op.r) continue;
             const id=k*16777216+i/3, b=best.get(id);
             if(!b||d<b[0]-1e-7) best.set(id,[d,[f]]); else if(d<=b[0]+1e-7&&!b[1].includes(f)) b[1].push(f); } };
-        if(G.size) for(const f of mixed){ if((++yk&255)===0) yield 0.9; const o=f*9, bl=[0,0,0], bh=[0,0,0];
-          for(let a=0;a<3;a++){ bl[a]=Math.min(pos[o+a],pos[o+3+a],pos[o+6+a]); bh[a]=Math.max(pos[o+a],pos[o+3+a],pos[o+6+a]); }
-          for(const [r,H] of G){ const cs=H.cs, x0=Math.floor((bl[0]-r)/cs), x1=Math.floor((bh[0]+r)/cs), y0=Math.floor((bl[1]-r)/cs), y1=Math.floor((bh[1]+r)/cs),
-                  z0=Math.floor((bl[2]-r)/cs), z1=Math.floor((bh[2]+r)/cs);
-            // a long sub-face under a small brush: its box holds more cells than the brush has — every cell of the brush then
-            if((x1-x0+1)*(y1-y0+1)*(z1-z0+1)>H.m.size){ for(const L of H.m.values()) near(L,r,f,o); continue; }
-            for(let x=x0;x<=x1;x++) for(let y=y0;y<=y1;y++) for(let z=z0;z<=z1;z++){ const L=H.m.get(ccCellKey(x,y,z)); if(L) near(L,r,f,o); } } }
-        const onLine=f=>S[f]||byWhole.has(f)||(seeds&&seeds.has(f));
+        if(H.size) for(const f of U){ if((++yk&255)===0) yield 0.9; const o=f*9, bl=[0,0,0], bh=[0,0,0];
+          for(let a=0;a<3;a++){ bl[a]=Math.min(pos[o+a],pos[o+3+a],pos[o+6+a])-CC_OWN; bh[a]=Math.max(pos[o+a],pos[o+3+a],pos[o+6+a])+CC_OWN; }
+          const x0=Math.floor(bl[0]/CC_OWN_CELL), x1=Math.floor(bh[0]/CC_OWN_CELL), y0=Math.floor(bl[1]/CC_OWN_CELL), y1=Math.floor(bh[1]/CC_OWN_CELL),
+                z0=Math.floor(bl[2]/CC_OWN_CELL), z1=Math.floor(bh[2]/CC_OWN_CELL);
+          // a long sub-face: its box holds more cells than the dabs fill — every filled cell then
+          if((x1-x0+1)*(y1-y0+1)*(z1-z0+1)>H.size){ for(const L of H.values()) near(L,f,o,bl,bh); continue; }
+          for(let x=x0;x<=x1;x++) for(let y=y0;y<=y1;y++) for(let z=z0;z<=z1;z++){ const L=H.get(ccCellKey(x,y,z)); if(L) near(L,f,o,bl,bh); } }
         let reach=-1, longF=null;
-        for(const [id,b] of best){ const d=b[0], F=b[1]; if(F.every(onLine)) continue;   // nothing to add
+        for(const [id,b] of best){ const d=b[0], F=b[1];
           if((++yk&63)===0) yield 0.92;
           if(reach<0){ const rg=ccReachG(); let rr=rg.next(); while(!rr.done){ yield 0.92; rr=rg.next(); } reach=rr.value;
             const lg=ccLongFacesG(); let lr=lg.next(); while(!lr.done){ yield 0.92; lr=lg.next(); } longF=lr.value; }
