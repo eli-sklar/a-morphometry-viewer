@@ -2744,6 +2744,16 @@ mat.onBeforeCompile=sh=>{
     desAttr.needsUpdate=true; amMarkDraw(); if(typeof smRecolor==='function') smRecolor(); invalidate();
   }
   function amDessSoon(){ if(_desReq) return; _desReq=true; requestAnimationFrame(amDessOnly); }
+  // 703: polygon P of layer ti — the part of it the layer's own brush marking covers (pgCover), by the marking as the
+  // screen holds it now: a sub-face on the line by the pieces of its cut, any other whole or not at all. The polygon's
+  // fill is the one its drawing keeps (polyRebuild's, by its points)
+  function amPolyCover(ti,P){
+    const T=types[ti]; if(!T||!P||!P.pts||P.pts.length<3) return 0;
+    const key=JSON.stringify(P.pts);
+    if(P._fk!==key){ P._fill=pgFill(P.pts,pos,uv,N,pgTexAt); P._fk=key; }
+    const B=T.band;
+    return pgCover(P.pts,P._fill,pos,f=>{ if(B&&B.has(f)){ const q=T.pieces.get(f); return (q&&q.bb&&q.bb.length)?q.bb:0; } return isType(ti,f)?1:0; });
+  }
   function updateArea(){
     if(typeof amCutJob!=='undefined'&&amCutJob){ for(const T of types){ const e=document.getElementById('tA_'+T.id); if(e) e.textContent='…'; } amLenCntShow(); return; }   // 555: counted when the cut is whole
     for(let ti=0;ti<types.length;ti++){const T=types[ti];let a=0;
@@ -2751,7 +2761,8 @@ mat.onBeforeCompile=sh=>{
       {const B=T.band; if(B&&B.size){ for(let f=0;f<N;f++)if(isType(ti,f)&&!B.has(f))a+=area[f]; for(const [f,q] of T.pieces)a+=q.fr*area[f]; }
        else for(let f=0;f<N;f++)if(isType(ti,f))a+=area[f];}
       // 258: a polygon layer's area lives in its rings, not in painted faces
-      for(const P of polys) if(P.at===T.id) a+=P.area;
+      // 703: a place the brush has marked under a ring too is counted once (as the measurement screen)
+      { const br=a; for(const P of polys) if(P.at===T.id) a+=(br>0)?P.area*(1-amPolyCover(ti,P)):P.area; }
       if(typeof SMR!=='undefined'&&SMR){ let aS=0, aP=0, has=false; for(const r of SMR) if(r.at===T.id){ aS+=r.area; aP+=(r.painted||0); has=true; }
       if(has&&smLevelOf(T)>0) a-=aP; a+=aS; }   // 329 · 433: a smoothed layer is its regions' copies
       T.area=a;
@@ -4079,6 +4090,32 @@ float amStippleA(float a, float lvl){
     return out;
   }
   /* ---- end 335ב polygon core ---------------------------------------------------------------- */
+  // 703: the part of a polygon its own layer's brush marking covers — a place marked both ways counts once
+  // 703 (Eli, 13/11: "כן לשלושתן"): how much of a polygon — of its own area on its plane — the SAME layer's brush marking
+  // covers, 0..1. A place marked both ways is counted once: the brush's number stays, and the polygon adds only what it
+  // covers beyond the marking. F is pgFill's answer for these points; markOf(f) says what the brush holds of sub-face f:
+  // 0 (nothing), 1 (all of it), or the pieces of its cut (b1,b2 per corner, six numbers a triangle — as F's own bb).
+  // Exact, with no sampling: within each sub-face the polygon's pieces are cut against the brush's, in the sub-face's own
+  // barycentrics, and a sub-face's part weighs what it measures on the polygon's plane. What of the polygon lies over no
+  // model is never covered. No marking under it: 0 exactly — and the layer's sum is the one it was
+  function pgCover(pts,F,POS,markOf){
+    if(!F||!F.surf||!F.surf.length||!pts||pts.length<3) return 0;
+    const pl=pgPlane(pts); let plane=0;
+    for(const E of pgEars(pts.map(p=>pgTo(pl,p[0],p[1],p[2])))) plane+=pgCross(E[0],E[1],E[2])/2;
+    if(!(plane>0)) return 0;
+    // a bb list as counter-clockwise triangles (pgClip's clip side must be one)
+    const tri=bb=>{ const L=[]; for(let i=0;i+5<bb.length;i+=6){ const t=[[bb[i],bb[i+1]],[bb[i+2],bb[i+3]],[bb[i+4],bb[i+5]]], c=pgCross(t[0],t[1],t[2]);
+        if(Math.abs(c)<1e-15) continue; L.push(c<0?[t[0],t[2],t[1]]:t); } return L; };
+    let cov=0;
+    for(const s of F.surf){ const m=markOf(s.f); if(!m) continue;
+      const o=s.f*9, a=pgTo(pl,POS[o],POS[o+1],POS[o+2]), b=pgTo(pl,POS[o+3],POS[o+4],POS[o+5]), c=pgTo(pl,POS[o+6],POS[o+7],POS[o+8]);
+      const pa=Math.abs(pgCross(a,b,c))/2; if(!(pa>0)) continue;      // the sub-face on the plane
+      const A=tri(s.bb); let fr=0;                                    // fr: the share of the sub-face both hold (its barycentric cross is 1)
+      if(m===1){ for(const t of A) fr+=pgCross(t[0],t[1],t[2]); }
+      else{ const B=tri(m); for(const x of A) for(const y of B){ const P=pgClip(x,y); for(let k=1;k+1<P.length;k++) fr+=Math.abs(pgCross(P[0],P[k],P[k+1])); } }
+      cov+=fr*pa; }
+    return Math.max(0,Math.min(1,cov/plane));
+  }
   // 335ב: the texture's colour under a point (linear rgb) — read once from a small copy of the image
   let pgPix=null;
   function pgTexAt(u,v){
