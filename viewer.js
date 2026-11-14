@@ -2751,7 +2751,9 @@ mat.onBeforeCompile=sh=>{
       const e4=document.getElementById('cA_'+ct.id); if(e4)e4.textContent=String(n);}
   }
   window.amColFlush=()=>amColFlush();   // 494: the frame sends this model's recoloured sub-faces
-  const roiOp=1.0, selMask=new Uint8Array(0);   // 349: the editor's orange-zone opacity wheel and rectangle selection — fixed and empty here; the shared recolorFace reads them
+  // 716 (Eli, 14/11: "באייפד אין גלגלת שקיפות לסימון הכתום"): the orange zone's opacity is the wheel's (roiop), as in the
+  // measurement screen — it stood fixed at 1 since the screens' code became one (349). The rectangle selection stays empty here
+  let roiOp=1.0; const selMask=new Uint8Array(0);   // the shared recolorFace reads them
   function amMarkLayers(){ const L=(typeof volMarkT!=='undefined'&&volMarkT)?types.concat([volMarkT]):types;
     return (typeof smLiveT!=='undefined'&&smLiveT)?L.concat([smLiveT]):L; }   // 325: no volume brush · 335: the smooth brush's line while it is down
   function recolorAll(){if(typeof smRecolor==='function') smRecolor();   // 335ב: the copies take the layer's colour too
@@ -6204,6 +6206,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   if($('clear')) $('clear').oninput=e=>{
     $('clearV').textContent=e.target.value+'%';
     amApplyClear(e.target.value);};
+  // 716: the orange zone's opacity — the measurement screen's wheel: the same range, the same repaint, display only (not
+  // kept in the sheet, there or here), and closed while the work has no orange zone (322)
+  if($('roiop')){ $('roiop').oninput=e=>{ roiOp=e.target.value/100; $('roiopV').textContent=e.target.value+'%'; recolorAll(); }; amOrangeUI(); }
+  function amOrangeUI(){ const r=$('roiop'); if(r) r.disabled=!roiCount; }
   if($('design')) $('design').oninput=e=>{
     const v=e.target.value/100;
     $('designV').textContent=e.target.value+'%';
@@ -6817,6 +6823,7 @@ const amPal=(function(){
     roi.fill(0);roiCount=0;
     for(const fo of (sh.roiPainted||sh.roiFaces||[])) if(fo<FO)
       for(let t=OFF[fo];t<OFF[fo+1];t++){ if(!roi[t]){roi[t]=1;roiCount++;} }
+    amOrangeUI();   // 716: the wheel follows the sheet's orange zone
     const loadT=(T,src)=>{
       T.am=(src.am===AM_POLY)?AM_POLY:AM_BRUSH; T.sm=Math.max(0,Math.min(SM_MAXLEVEL,Math.round(+src.sm||0)));   // 433: the layer's smoothing level   // an older sheet is a brush layer
       if(src.name!==undefined)T.name=src.name;
