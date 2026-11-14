@@ -457,7 +457,7 @@ function amAboutMount(btn,ver){
 }
 // 536 (14/10): viewer.js carries its own version — the page's number (#ver) is index.html's, and the two could part in a
 // cache; the About line shows both ("גרסה 47 · קוד 47"), so a gap shows at once
-const VIEWER_JS_VER=67;
+const VIEWER_JS_VER=68;
 amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{}).textContent||'').replace(/[^0-9.]+/g,'')||'?')+' · קוד '+VIEWER_JS_VER});
 /* 520 (Eli, 13/10: "המקלדת חזרה להיות הקטנה (ומעצבנת)" — the notes app's is the large one, a reverse pinch does not help, no
    keyboard is paired, a fresh start keeps it small): a TEMPORARY keyboard check, opened from the About box only (453's
@@ -574,6 +574,27 @@ function amCamMoved(){ camera.updateMatrixWorld(); const a=camera.matrixWorld.el
 // one fades by degrees, and the one it faces is seen through it (02/09). The marks and the surfaces are drawn in (3) as
 // today. At 100%, or with no WebGL2 (depth textures), false: the screen draws as it always did. A colour background clears
 // colour AND depth at every render() (three r160) — it is the clear colour here, and comes back after
+// 715 (Eli, 14/11, a volume in Nahal Kziv: "כאשר המודל שקוף לא רואים דרכו את הנפח, אני רוצה לראות את הנפח דרך המודל כשאני
+// הופך את המודל לשקוף"): since 557b the screen's depth is the model's NEAREST surface when (3) draws the scene, so a body
+// behind that surface — a volume under the ground, inside a wall, seen from the other side — failed the depth test and was
+// not drawn at all, at any opacity of the model. A body that is to be seen through the model (amThru: a volume's shell,
+// its tint on the scan, its rim) is drawn TWICE, each of its fragments once: (2a) what lies BEHIND the nearest surface,
+// over the second layer and against its depth — the nearest is then laid over it at the model's opacity in (3), so the
+// body shows through by degrees, as the wall behind does; and in (3), as always, what lies in front of the nearest.
+// The switch is a uniform of the body's own material (uThru): the same program, the same design and shading, in both
+var AM_THRU={tD1:{value:null}, uRes:{value:null}, uEps:{value:2e-6}, uThru:{value:0}};
+function amThru(o){
+  if(!AM_THRU.uRes.value) AM_THRU.uRes.value=new THREE.Vector2(1,1);
+  o.traverse(c=>{ const mm=c.material; if(!mm) return;
+    for(const m of (Array.isArray(mm)?mm:[mm])){ if(m.userData.amThru) continue; m.userData.amThru=1;
+      const base=m.onBeforeCompile, key=m.customProgramCacheKey;
+      m.onBeforeCompile=function(sh,r){ if(base) base.call(this,sh,r); Object.assign(sh.uniforms,AM_THRU);
+        sh.fragmentShader='uniform sampler2D tD1;uniform vec2 uRes;uniform float uEps;uniform float uThru;\n'+sh.fragmentShader.replace('#include <clipping_planes_fragment>',
+          'if(uThru>0.5&&gl_FragCoord.z<=texture2D(tD1,gl_FragCoord.xy/uRes).x+uEps) discard;   // 715: (2a) draws only what is behind the nearest\n#include <clipping_planes_fragment>'); };
+      m.customProgramCacheKey=function(){ return 'amThru|'+(key?key.call(this):'')+'|'+(base?base.toString():''); };
+      m.needsUpdate=true; } });
+  o.userData.amThru=true; return o;
+}
 var AM_SEE=null;
 function amSeeRender(renderer,scene,camera,mesh){
   if(!mesh||!mesh.visible||!mesh.parent) return false;
@@ -619,12 +640,18 @@ function amSeeRender(renderer,scene,camera,mesh){
     if(bg&&bg.isColor) renderer.setClearColor(bg,1); else renderer.setClearColor(cc,ca);
     renderer.clear();
     mesh.material=Array.isArray(mat0)?ms.map(sec):sec(m0); renderer.autoClear=false; renderer.render(mesh,camera);
+    // (2a) 715: the bodies seen through the model — what of them lies behind the nearest, over the second layer
+    { const thru=[]; for(const c of scene.children) if(c.visible&&c.userData&&c.userData.amThru) thru.push(c);
+      if(thru.length){ AM_THRU.tD1.value=S.rt.depthTexture; AM_THRU.uRes.value.copy(S.size); AM_THRU.uThru.value=1;
+        for(const c of thru) renderer.render(c,camera);
+        AM_THRU.uThru.value=0; } }
     // (2b) the nearest's depth over the second's
     mesh.material=Array.isArray(mat0)?ms.map(pre):pre(m0); renderer.render(mesh,camera);
     // (3) the scene as today, the model's nearest — and only it — at its opacity over the second
     mesh.material=mat0; for(const m of ms){ m.depthFunc=THREE.LessEqualDepth; m.depthWrite=false; }
     scene.background=(bg&&bg.isColor)?null:bg; renderer.render(scene,camera);
   } finally {
+    AM_THRU.uThru.value=0;
     mesh.material=mat0; ms.forEach((m,i)=>{ m.depthFunc=THREE.LessEqualDepth; m.depthWrite=dw[i]; });
     scene.background=bg; renderer.autoClear=ac; renderer.setClearColor(cc,ca); renderer.setRenderTarget(prevRT);
   }
@@ -2869,6 +2896,7 @@ mat.onBeforeCompile=sh=>{
     return pgCover(P.pts,P._fill,pos,f=>{ if(B&&B.has(f)){ const q=T.pieces.get(f); return (q&&q.bb&&q.bb.length)?q.bb:0; } return isType(ti,f)?1:0; });
   }
   function updateArea(){
+    if(typeof amAreaT!=='undefined'&&amAreaT){ clearTimeout(amAreaT); amAreaT=0; }   // 714: a count asked for by the polygons' rebuild is this one
     if(typeof amCutJob!=='undefined'&&(amCutJob||amMarkTimer)){ for(const T of types){ const e=document.getElementById('tA_'+T.id); if(e) e.textContent='…'; } amLenCntShow(); return; }   // 555: counted when the cut is whole
     for(let ti=0;ti<types.length;ti++){const T=types[ti];let a=0;
       // 324: a sub-face the line crosses counts by its marked part
@@ -4356,7 +4384,17 @@ float amStippleA(float a, float lvl){
     if(curPoly&&curPoly.pts.length) draw(curPoly,true);
     smRebuild();                      // 329: the smoothed copies follow the layers too
     rescaleFixed(); invalidate();
+    // 714 (Eli, 14/11: "וגם פה (פוליגון) השטח לא מתעדכן עד שאני לוחץ על השכבה, צריך בדיקה רוחבית של זה"): a layer's area on its
+    // chip holds its closed polygons, and it was counted (updateArea) only by the acts that remembered to ask — a polygon
+    // closed by hand did not, and the chip stood behind the ring's own label until a chip was clicked (buildChips counts).
+    // The polygons' rebuild — every act on them passes here — asks for the count itself when the closed rings are not the
+    // ones it last saw: once, shortly after (a point being dragged asks at every move; the count is of every sub-face)
+    { let s=''; for(const P of polys) s+=P.at+':'+P.area+';';
+      if(s!==amPolySig){ amPolySig=s; if(typeof updateArea==='function') amAreaSoon(); } }
   }
+  // 714: the areas counted once, 150 ms after the last asking; a count that runs meanwhile (updateArea) takes the asking with it
+  var amPolySig='', amAreaT=0;
+  function amAreaSoon(){ if(amAreaT) clearTimeout(amAreaT); amAreaT=setTimeout(()=>{ amAreaT=0; updateArea(); },150); }
   function amPolyPick(e,el,cam,ray,pts,cast){
     // one click of a polygon: back on the first point (14 px, three points or more) closes it;
     // otherwise the ray's hit is the next point; nothing under the cursor, nothing
