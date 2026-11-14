@@ -516,6 +516,27 @@ function amCamMoved(){ camera.updateMatrixWorld(); const a=camera.matrixWorld.el
 // one fades by degrees, and the one it faces is seen through it (02/09). The marks and the surfaces are drawn in (3) as
 // today. At 100%, or with no WebGL2 (depth textures), false: the screen draws as it always did. A colour background clears
 // colour AND depth at every render() (three r160) — it is the clear colour here, and comes back after
+// 715 (Eli, 14/11, a volume in Nahal Kziv: "כאשר המודל שקוף לא רואים דרכו את הנפח, אני רוצה לראות את הנפח דרך המודל כשאני
+// הופך את המודל לשקוף"): since 557b the screen's depth is the model's NEAREST surface when (3) draws the scene, so a body
+// behind that surface — a volume under the ground, inside a wall, seen from the other side — failed the depth test and was
+// not drawn at all, at any opacity of the model. A body that is to be seen through the model (amThru: a volume's shell,
+// its tint on the scan, its rim) is drawn TWICE, each of its fragments once: (2a) what lies BEHIND the nearest surface,
+// over the second layer and against its depth — the nearest is then laid over it at the model's opacity in (3), so the
+// body shows through by degrees, as the wall behind does; and in (3), as always, what lies in front of the nearest.
+// The switch is a uniform of the body's own material (uThru): the same program, the same design and shading, in both
+var AM_THRU={tD1:{value:null}, uRes:{value:null}, uEps:{value:2e-6}, uThru:{value:0}};
+function amThru(o){
+  if(!AM_THRU.uRes.value) AM_THRU.uRes.value=new THREE.Vector2(1,1);
+  o.traverse(c=>{ const mm=c.material; if(!mm) return;
+    for(const m of (Array.isArray(mm)?mm:[mm])){ if(m.userData.amThru) continue; m.userData.amThru=1;
+      const base=m.onBeforeCompile, key=m.customProgramCacheKey;
+      m.onBeforeCompile=function(sh,r){ if(base) base.call(this,sh,r); Object.assign(sh.uniforms,AM_THRU);
+        sh.fragmentShader='uniform sampler2D tD1;uniform vec2 uRes;uniform float uEps;uniform float uThru;\n'+sh.fragmentShader.replace('#include <clipping_planes_fragment>',
+          'if(uThru>0.5&&gl_FragCoord.z<=texture2D(tD1,gl_FragCoord.xy/uRes).x+uEps) discard;   // 715: (2a) draws only what is behind the nearest\n#include <clipping_planes_fragment>'); };
+      m.customProgramCacheKey=function(){ return 'amThru|'+(key?key.call(this):'')+'|'+(base?base.toString():''); };
+      m.needsUpdate=true; } });
+  o.userData.amThru=true; return o;
+}
 var AM_SEE=null;
 function amSeeRender(renderer,scene,camera,mesh){
   if(!mesh||!mesh.visible||!mesh.parent) return false;
@@ -561,12 +582,18 @@ function amSeeRender(renderer,scene,camera,mesh){
     if(bg&&bg.isColor) renderer.setClearColor(bg,1); else renderer.setClearColor(cc,ca);
     renderer.clear();
     mesh.material=Array.isArray(mat0)?ms.map(sec):sec(m0); renderer.autoClear=false; renderer.render(mesh,camera);
+    // (2a) 715: the bodies seen through the model — what of them lies behind the nearest, over the second layer
+    { const thru=[]; for(const c of scene.children) if(c.visible&&c.userData&&c.userData.amThru) thru.push(c);
+      if(thru.length){ AM_THRU.tD1.value=S.rt.depthTexture; AM_THRU.uRes.value.copy(S.size); AM_THRU.uThru.value=1;
+        for(const c of thru) renderer.render(c,camera);
+        AM_THRU.uThru.value=0; } }
     // (2b) the nearest's depth over the second's
     mesh.material=Array.isArray(mat0)?ms.map(pre):pre(m0); renderer.render(mesh,camera);
     // (3) the scene as today, the model's nearest — and only it — at its opacity over the second
     mesh.material=mat0; for(const m of ms){ m.depthFunc=THREE.LessEqualDepth; m.depthWrite=false; }
     scene.background=(bg&&bg.isColor)?null:bg; renderer.render(scene,camera);
   } finally {
+    AM_THRU.uThru.value=0;
     mesh.material=mat0; ms.forEach((m,i)=>{ m.depthFunc=THREE.LessEqualDepth; m.depthWrite=dw[i]; });
     scene.background=bg; renderer.autoClear=ac; renderer.setClearColor(cc,ca); renderer.setRenderTarget(prevRT);
   }
