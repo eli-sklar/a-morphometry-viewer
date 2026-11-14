@@ -1933,6 +1933,8 @@ mat.onBeforeCompile=sh=>{
         for(let k=0;k<3&&inb;k++){ const a0=pos[o+k],a1=pos[o+3+k],a2=pos[o+6+k];
           if(Math.max(a0,a1,a2)<lo[k]||Math.min(a0,a1,a2)>hi[k]) inb=false; }
         if(!inb) continue;
+        // 710א: a seed of the ring (amMarkLocalG) is on the line as its piece was cut — its corners and its bite are the piece's
+        if(en.fix&&en.fix.has(f)){ const pc=en.pcs.get(f); if(pc&&pc.fv){ mixed.add(f); fv.set(f,pc.fv); if(pc.bt) bitten.add(f); continue; } }
         const v=[0,1,2].map(c=>ccField(en,pos[o+c*3],pos[o+c*3+1],pos[o+c*3+2]));
         const n=(v[0]<=0)+(v[1]<=0)+(v[2]<=0);
         if(n>0&&n<3){ mixed.add(f); fv.set(f,v); continue; }
@@ -1963,7 +1965,12 @@ mat.onBeforeCompile=sh=>{
         if((v[i]<=0)!==(v[j]<=0)) return true;
         const k=[vkey(f,0),vkey(f,1),vkey(f,2)], ek=k[i]<k[j]?k[i]+'|'+k[j]:k[j]+'|'+k[i];
         const gs=edges.get(ek)||[]; if(!gs.some(g=>bitten.has(g))) return false;
-        en.cur=f; if(!ekCross.has(ek)) ekCross.set(ek,ccEdgeCrossings(ccCorner(f,i),ccCorner(f,j),v[i],v[j],en).length>0);
+        // 710א: an edge of a seed, checked once, is read from its piece; a check made now is kept — on the seed's piece, or (a
+        // sub-face of the region) for the piece this cut makes of it
+        en.cur=f; if(!ekCross.has(ek)){ const sd=!!(en.fix&&en.fix.has(f)), pc=sd?en.pcs.get(f):null; let r;
+          if(pc&&pc.ec&&pc.ec[i]!==undefined) r=pc.ec[i];
+          else { r=ccEdgeCrossings(ccCorner(f,i),ccCorner(f,j),v[i],v[j],en).length>0; if(pc) (pc.ec||(pc.ec=[]))[i]=r; else if(!sd&&en.eco) en.eco.set(f*3+i,r); }
+          ekCross.set(ek,r); }
         return ekCross.get(ek); };
       const band=new Set(), q=[];
       // `seeds`: faces already known to be on the line just outside the region asked about —
@@ -2047,6 +2054,7 @@ mat.onBeforeCompile=sh=>{
           if(ok) for(const lf of longF){ if(lf.lo[0]>x+d||lf.hi[0]<x-d||lf.lo[1]>y+d||lf.hi[1]<y-d||lf.lo[2]>z+d||lf.hi[2]<z-d) continue;
             if(!other(lf.f)){ ok=false; break; } }   // the long ones, by their box: their centres may lie past the reach
           if(ok) for(const f of F) own.add(f); } }
+      en.fvo=fv; en.bto=bitten;   // 710א: what the plan read of every crossed sub-face — kept on the pieces (amMarkLocalG)
       for(const f of mixed) if(S[f]||own.has(f)||(seeds&&seeds.has(f))||byWhole.has(f)){band.add(f);q.push(f);}
       while(q.length){ if((++yk&1023)===0) yield 0.95;
         const f=q.pop(), v=fv.get(f), k=[vkey(f,0),vkey(f,1),vkey(f,2)], n1=nrm.get(f);
@@ -2293,6 +2301,15 @@ mat.onBeforeCompile=sh=>{
         if(pts[i]>=q.lo[0]-rmax&&pts[i]<=q.hi[0]+rmax&&pts[i+1]>=q.lo[1]-rmax&&pts[i+1]<=q.hi[1]+rmax&&pts[i+2]>=q.lo[2]-rmax&&pts[i+2]<=q.hi[2]+rmax){ region.add(q.f); break; } }
     for(const f of region){ if((++yk&16383)===0) yield 0.2; outer.delete(f); }
     const seeds=new Set(); for(const f of outer) if(T.band.has(f)) seeds.add(f);
+    // 710א (Eli, 14/11, Har Sinay in 1.6.7: "המכחול עדיין איטי"; "מאשר הכל לפי ההמלצות"): the seeds of the ring — the sub-faces
+    // on the line just outside the region asked about. No new dab can reach one (that is what puts it outside), so its field
+    // is what it was when its piece was cut — and it was computed again at every cut: of a stroke's cut on a work with many
+    // strokes, 42% of the field calls (measured: 11,000 of 26,500; 580 seeds of 903 sub-faces asked). A stroke's cut takes
+    // from the seed's own piece what the plan read of it when the piece was made — its three corner values, whether an edge
+    // bit it (fv, bt: kept below) — and each of its edges the line's walk checked (ec: kept below and by the walk itself,
+    // ccPlanG). A value that is not there is computed, as before. Not at the whole cut (it has no ring), and not at a
+    // face-level act (`keep`: its seeds are the region's own line too, and it was not measured)
+    const fix=(keep||whole)?null:new Set(seeds);
     // 550: the strokes that can reach the faces asked — the place is their corners' box
     const cand=[], zl=[Infinity,Infinity,Infinity], zh=[-Infinity,-Infinity,-Infinity];
     for(const f of region){ cand.push(f); if((++yk&16383)===0) yield 0.21; } for(const f of seeds) cand.push(f);
@@ -2305,11 +2322,15 @@ mat.onBeforeCompile=sh=>{
     { const ops=T.ops; for(let k=0;k<ops.length;){ if(ops[k].t!=='faces'){ k++; continue; } let j=k; while(j<ops.length&&ops[j].t==='faces') j++;
         if(j-k>1){ const fg=amFacesRunG(ops.slice(k,j)); while(!fg.next().done) yield 0.23; } k=j; } }
     const en=amEnNear(T,zl,zh);
+    en.pcs=T.pieces; en.eco=new Map(); if(fix) en.fix=fix;   // 710א: the pieces the seeds are read from; what the walk checks of the others
     const pg=ccPlanG([en],cand,seeds); let pr=pg.next(); while(!pr.done){ yield 0.25+0.6*(+pr.value||0); pr=pg.next(); } const plan=pr.value;
     for(const f of region){ if((++yk&4095)===0) yield 0.85; if(T.band.has(f)&&!plan.cuts.has(f)){ amStash(T,f); T.band.delete(f); T.pieces.delete(f); recolorFace(f); } }
     let nc=0; const NC=plan.cuts.size||1;
     for(const f of plan.cuts.keys()){ if((++nc&7)===0) yield 0.86+0.14*nc/NC; if(!region.has(f)) continue; amStash(T,f); const was=T.band.has(f); T.band.add(f);
-      T.pieces.set(f,amPiecesOf(f,en)); if(!was) recolorFace(f); }
+      // 710א: the piece keeps what the plan read of its sub-face — for the cut that will find it a seed of its ring
+      const pq=amPiecesOf(f,en); if(en.fvo){ pq.fv=en.fvo.get(f); pq.bt=en.bto.has(f); }
+      { const e0=en.eco.get(f*3), e1=en.eco.get(f*3+1), e2=en.eco.get(f*3+2); if(e0!==undefined||e1!==undefined||e2!==undefined) pq.ec=[e0,e1,e2]; }
+      T.pieces.set(f,pq); if(!was) recolorFace(f); }
   }
   function amMarkLocal(T,pts,rmax,keep){ const g=amMarkLocalG(T,pts,rmax,keep); while(!g.next().done){} }
   // four rows (a, b0..b1) of a new cell's cube: the region's faces, and of the ring only those on the line — the same as the
