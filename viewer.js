@@ -1624,6 +1624,7 @@ mat.onBeforeCompile=sh=>{
     for(let t=0;t<q;t++){ const h=fslot[t], w=ffill[h]++; FEO[w]=dOp[t]; FEI[w]=dI[t]; }
     const fops=[]; ops.forEach((op,k)=>{ if(op.t==='faces'||op.t==='minus') fops.push(k); });   // 651ב: a minus stands among the strokes as a face-level act does
     return {fops:fops, cs:cs, mask:mask, KI:KI, KJ:KJ, KK:KK, used:used, start:start, EO:EO, farPos:farPos, stamp:0,
+            near:null, nk:-1, nl:null,   // 710ב-1: the strokes each cell asked finds (ccFieldIx), and the last cell asked
             cls:cls, cseen:new Int32Array(fcs.length), clist:new Int32Array(fcs.length), fcs:fcs,
             fmask:fmask, FI:FI, FJ:FJ, FK:FK, FC:FC, fused:fused, fstart:fstart, FEO:FEO, FEI:FEI,
             seen:new Int32Array(ops.length), best:new Float64Array(ops.length), touch:new Int32Array(ops.length)};
@@ -1638,6 +1639,22 @@ mat.onBeforeCompile=sh=>{
     const cs=ix.cs, ix0=Math.floor(x/cs), iy0=Math.floor(y/cs), iz0=Math.floor(z/cs);
     const st=++ix.stamp, S=ix.seen, B=ix.best, T=ix.touch, mask=ix.mask, KI=ix.KI, KJ=ix.KJ, KK=ix.KK,
           U=ix.used, ST=ix.start, EO=ix.EO, CLS=ix.cls, CS=ix.cseen, CL=ix.clist; let nt=0, nc=0;
+    // 710ב-1 (Eli, 14/11, Har Sinay: "המכחול עדיין איטי"; "לבנות את 710ב-1? - מאשר"): WHICH strokes a point finds, and which
+    // radii they are of, depends only on the layer's cell the point lies in — and they were gathered from the cell's 27
+    // neighbours and sorted again at every call: the cost of a call followed the number of strokes near it (22 on Har Sinay;
+    // 386 after 380 strokes accepted in one patch — 2.6 -> 27 µs a call, the slow step back and forward after "קבלת הכול").
+    // Gathered and sorted once for each cell asked, and kept on the index (which is the acts' as they stood when it was
+    // built); a call takes the cell's list. The same strokes in the same order — the same field to the last bit.
+    // The cell's key: a small integer where the cell's numbers allow (the usual), a larger number up to 65,536 cells a side,
+    // none beyond (the call gathers, as before). The last call's cell is remembered: most calls follow one in the same cell
+    const key=(ix0>-512&&ix0<512&&iy0>-512&&iy0<512&&iz0>-512&&iz0<512)?(((ix0+512)<<20)|((iy0+512)<<10)|(iz0+512))
+             :((ix0>-65536&&ix0<65536&&iy0>-65536&&iy0<65536&&iz0>-65536&&iz0<65536)?((ix0+65536)*131072+(iy0+65536))*131072+(iz0+65536):-1);
+    let L=null;
+    if(key>=0){ if(key===ix.nk) L=ix.nl; else if(ix.near){ L=ix.near.get(key)||null; if(L){ ix.nk=key; ix.nl=L; } } }
+    if(L){ const K=L.k, Cc=L.c; nt=K.length; nc=Cc.length;
+      for(let i=0;i<nt;i++){ const k=K[i]; S[k]=st; B[k]=Infinity; T[i]=k; }
+      for(let q=0;q<nc;q++) CL[q]=Cc[q]; }
+    else{
     for(let a=ix0-1;a<=ix0+1;a++){ const ha=Math.imul(a,73856093);
       for(let b=iy0-1;b<=iy0+1;b++){ const hb=ha^Math.imul(b,19349663);
         for(let d=iz0-1;d<=iz0+1;d++){
@@ -1646,6 +1663,9 @@ mat.onBeforeCompile=sh=>{
           if(!U[h]) continue;
           for(let w=ST[h],we=ST[h+1];w<we;w++){ const k=EO[w];
             if(S[k]!==st){ S[k]=st; B[k]=Infinity; T[nt++]=k; const c=CLS[k]; if(CS[c]!==st){ CS[c]=st; CL[nc++]=c; } } } } } }
+    for(let i=1;i<nt;i++){ const v=T[i]; let j=i-1; while(j>=0&&T[j]>v){T[j+1]=T[j];j--;} T[j+1]=v; }
+    if(key>=0){ if(!ix.near||ix.near.size>50000) ix.near=new Map();
+      const Ln={k:T.slice(0,nt), c:CL.slice(0,nc)}; ix.near.set(key,Ln); ix.nk=key; ix.nl=Ln; } }
     // each radius's own cells: the nearest dab of every found stroke
     const fm=ix.fmask, FI=ix.FI, FJ=ix.FJ, FK=ix.FK, FC=ix.FC, FU=ix.fused, FS=ix.fstart, FO2=ix.FEO, FE=ix.FEI, FCS=ix.fcs;
     for(let q=0;q<nc;q++){ const c=CL[q], fs=FCS[c], jx=Math.floor(x/fs), jy=Math.floor(y/fs), jz=Math.floor(z/fs), hc=Math.imul(c,2654435761);
@@ -1658,7 +1678,6 @@ mat.onBeforeCompile=sh=>{
             for(let w=FS[h],we=FS[h+1];w<we;w++){ const k=FO2[w]; if(S[k]!==st) continue;
               const i=FE[w], cc=ops[k].c, dx=x-cc[i],dy=y-cc[i+1],dz=z-cc[i+2], d2=dx*dx+dy*dy+dz*dz;
               if(d2<B[k]) B[k]=d2; } } } } }
-    for(let i=1;i<nt;i++){ const v=T[i]; let j=i-1; while(j>=0&&T[j]>v){T[j+1]=T[j];j--;} T[j+1]=v; }
     // the sub-face's own start, and the face-level acts in their place among the strokes
     let f=(en&&en.st)?(en.st(en.cur)?-CC_BIG:CC_BIG):Infinity;
     const FOP=ix.fops; let fi=0;
