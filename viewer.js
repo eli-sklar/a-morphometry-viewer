@@ -184,7 +184,7 @@ function amTagCard(o){
     // their order — each {n: its name in the work (null for one added here), src}. The first is the main one; `sel` is
     // the one the card shows large
     const pics=(Array.isArray(o.imgs)?o.imgs:[]).filter(q=>q&&q.src).map(q=>({n:q.n||null,src:q.src}));
-    let sel=0, busy=false;
+    let sel=0, busy=false, btnState=null;   // btnState: the edit card's buttons follow the photo chosen
     const pic=document.createElement('img'); pic.dataset.amPic='1';
     pic.style.cssText='max-width:100%;max-height:38vh;object-fit:contain;display:block;border:1px solid #6b5a33;border-radius:2px';
     // 356 (Eli: "כפתור קטן בפינה של התמונה שפותח אותה על מסך מלא"): the photo on the whole
@@ -207,11 +207,11 @@ function amTagCard(o){
       strip.textContent=''; strip.style.display=pics.length>1?'':'none';
       if(pics.length>1){ pics.forEach((q,i)=>{ const t=document.createElement('img'); t.src=q.src; t.title='תמונה '+(i+1);
           t.style.cssText='width:54px;height:54px;object-fit:cover;cursor:pointer;border-radius:2px;border:2px solid '+(i===sel?'#ffca3a':'#6b5a33');
-          t.onclick=()=>{ sel=i; showPic(); }; strip.appendChild(t); });
+          t.onclick=()=>{ sel=i; showPic(); if(btnState) btnState(); }; strip.appendChild(t); });
         count.textContent=of(); strip.appendChild(count); }
       if(big&&bigImg&&pics.length){ bigImg.src=pics[sel].src; if(bigN) bigN.textContent=pics.length>1?of():''; } };
     // the next photo / the one before, around the ring. The line reads from the right: "the next" is to the left
-    const step=d=>{ if(pics.length<2) return; sel=(sel+d+pics.length)%pics.length; showPic(); };
+    const step=d=>{ if(pics.length<2) return; sel=(sel+d+pics.length)%pics.length; showPic(); if(btnState) btnState(); };
     full.onclick=e=>{ e.stopPropagation(); if(!pics.length) return;
       big=document.createElement('div');
       big.style.cssText='position:fixed;inset:0;z-index:2147483001;background:rgba(0,0,0,.92);display:flex;'
@@ -276,10 +276,11 @@ function amTagCard(o){
     // what the card gives back: the photos in their order — a name for one the tag had, a data URL for one added here
     const save=btn('שמירה',true,()=>{ const t=ti.value.trim(); if(!t){ti.focus();return;} if(busy) return;
       done({title:t,text:tx.value.trim(),imgs:pics.map(q=>q.n||q.src)}); });
-    const sync=()=>{ del.style.display=pics.length?'':'none';
+    btnState=()=>{ del.style.display=pics.length?'':'none';
       fwd.style.display=back.style.display=pics.length>1?'':'none';
       fwd.disabled=sel<=0; back.disabled=sel>=pics.length-1; fwd.style.opacity=fwd.disabled?'.4':'1'; back.style.opacity=back.disabled?'.4':'1';
-      save.disabled=!ti.value.trim()||busy; save.style.opacity=save.disabled?'.5':'1'; showPic(); };
+      save.disabled=!ti.value.trim()||busy; save.style.opacity=save.disabled?'.5':'1'; };
+    const sync=()=>{ showPic(); btnState(); };
     // 376 · 640: every file in its turn. An HEIC goes to the screen's server and back (amTagShrink), one after the other,
     // and the card says how far it is ("ממיר 2 מתוך 5"). A file that fails does not take the others with it: those that
     // were read are in, and the message names the file and says why
