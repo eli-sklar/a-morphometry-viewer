@@ -2965,6 +2965,11 @@ mat.onBeforeCompile=sh=>{
       if(o.material){if(o.material.map)o.material.map.dispose();o.material.dispose();}
     }
     for(const T of rulTypes){
+      // 711 (Eli, 14/11: "אורך מדידות סרגל לא מתעדכן מעצמו בשורה השכבות, אלא רק אחרי לחיצה על השכבה"): the layer's
+      // total on its chip follows every rebuild — a point placed, dropped, dragged, taken back or brought forward, a
+      // sheet loaded — and not only the next building of the chips. A hidden layer too: measured, not drawn.
+      const _runs=rulRuns(T.id), _rA=document.getElementById('rA_'+T.id);
+      if(_rA){ let tot=0; for(const g of _runs) tot+=g.len; _rA.textContent=tot.toFixed(2); }
       if(T.hid) continue;                         // 9: hidden — measured, not drawn
       const col=new THREE.Color(T.hex||'#b8934a');
       // the ruler layer's opacity, as in the viewer and the report screen (302); the tag
@@ -2992,7 +2997,7 @@ mat.onBeforeCompile=sh=>{
       }
       // one tag per run, at its centroid: "3 : 4.67 מ'" — the number and the sum, which is
       // what the report prints too, so the model and the table cannot disagree
-      for(const run of rulRuns(T.id)){
+      for(const run of _runs){
         const sp=rulTag(run.len.toFixed(2)+' מ\u05f3', T.hex);   // 373: the reading, without the report's number
         sp.userData.amTag={kind:'rul', t:T.id, ids:run.pts.map(x=>x.id)};   // 321: the run, by its tag
         sp.position.set(run.c.x,run.c.y,run.c.z);
