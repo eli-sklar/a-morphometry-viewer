@@ -2255,8 +2255,9 @@ mat.onBeforeCompile=sh=>{
   // the faces already on the line just beyond as the ones they may be reached from (317)
   // 555: as steps — the same code in the same order, pausing (`yield`, with how far it has come, 0..1) so the whole layer's
   // cut can be spread over frames (amCutStep); amMarkLocal runs it to the end at once, exactly as before
-  function* amMarkLocalG(T,pts,rmax,keep){
+  function* amMarkLocalG(T,pts,rmax,keep,whole){
     let yk=0;
+    if(!whole&&typeof amCutLocal!=='undefined') amCutLocal=true;   // 706ב: a cut near a place — a report's sheet asks for the whole cut again (amCutFresh)
     if(!T.band){ T.band=new Set(); T.pieces=new Map(); }
     if(!amHasBalls(T)){ for(const f of T.band) recolorFace(f); T.band.clear(); T.pieces.clear(); return; }
     let rg=ccReachG(), rr=rg.next(); while(!rr.done){ yield 0; rr=rg.next(); }
@@ -2334,7 +2335,7 @@ mat.onBeforeCompile=sh=>{
       if(op.t==='minus'){ for(const f of op.F) pts.push(cen[f*3],cen[f*3+1],cen[f*3+2]); continue; }   // 651ב: its sub-faces are asked
       if(op.t!=='balls') continue; for(let i=0;i+2<op.c.length;i+=3) pts.push(op.c[i],op.c[i+1],op.c[i+2]);
       if(op.c.length) rmax=Math.max(rmax,op.r); amSeen.set(op,op.c.length); }
-    yield* amMarkLocalG(T,pts,rmax);
+    yield* amMarkLocalG(T,pts,rmax,undefined,true);
   }
   function amMarkFull(T){ const g=amMarkFullG(T); while(!g.next().done){} }
   function* amMarkAllG(order){   // 555: every layer as steps, in this order; yields how far the whole has come (0..1)
@@ -2345,6 +2346,7 @@ mat.onBeforeCompile=sh=>{
     colAttr.needsUpdate=true; flatAttr.needsUpdate=true; desAttr.needsUpdate=true;
     yield 1; amMarkDraw(); yield 1;
     if(amCutJob&&amCutJob.gen) amCutJob=null;   // the area is counted below, and no longer "…"
+    amCutLocal=false;   // 706ב: every layer is as a reopen would cut it
     updateArea(); invalidate();
   }
   function amMarkAll(){
@@ -2395,10 +2397,23 @@ mat.onBeforeCompile=sh=>{
     const J=amCutJob; if(!J) return [];
     amCutJob=null; try{ J.gen.return(); }catch(_){}   // a step still posted finds another job id, and does nothing
     const T=J.T; if(T&&T.band){ const B=T.band; T.band=new Set(); T.pieces=new Map(); for(const f of B) recolorFace(f); }   // back whole
+    amCutLocal=true;   // 706ב: a layer is back whole — not the whole cut
     if(!keep){ amCutUI(false); amMarkDraw(); updateArea(); invalidate(); return []; }
     return J.wait;
   }
   function amCutWhenDone(fn){ if(amCutJob) amCutJob.wait.push(fn); else fn(); }
+  // 706ב (Eli, 14/11: "מאשר 706 לפי ההמלצות"; Har Sinay: the report of one session said 13.771, the work reopened said 13.76):
+  // the cut a reopen builds. A stroke, an accepted proposal, a step back cut near their own place only (amMarkLocalG), and what
+  // they leave on the line is not always what the whole layer's cut finds there (638, 682 — measured: 15 remains at the model's
+  // rim the session held and the whole cut does not reach, two the other way). A sheet that goes out to a report is taken
+  // after the whole cut: if any cut near a place ran since the last whole one (amCutLocal), the whole cut again, as a job
+  // (555), and fn after it; nothing ran — fn at once, as amCutWhenDone
+  var amCutLocal=true;   // no whole cut yet
+  function amCutFresh(fn){
+    if(amMarkTimer){ clearTimeout(amMarkTimer); amMarkTimer=0; amCutLocal=true; }   // a whole cut was asked (amMarkSoon) and has not begun
+    if(!amCutJob&&amCutLocal) amCutStart();
+    amCutWhenDone(fn);
+  }
   function amCutBusy(){ return !!amCutJob; }
   // the corner panel: the planimeter (468's drawing, small) and "מכין את הסימונים… N%"; it takes no clicks
   function amCutUI(on,frac){
@@ -2430,7 +2445,8 @@ mat.onBeforeCompile=sh=>{
     if(typeof window.__pmProgress==='function') window.__pmProgress(frac,Math.min(1,frac+0.05));
     const t=document.getElementById('amCutTxt'); if(t) t.textContent='מכין את הסימונים… '+Math.round(100*Math.max(0,Math.min(1,frac)))+'%';
   }
-  function amMarkSoon(){ if(amMarkTimer) clearTimeout(amMarkTimer); amMarkTimer=setTimeout(amCutStart,120); }   // 555: as a job over frames
+  function amMarkSoon(){ if(amMarkTimer) clearTimeout(amMarkTimer); amMarkTimer=setTimeout(amCutStart,120);   // 555: as a job over frames
+    updateArea(); }   // 706: the areas read "…" from now — not the sub-faces whole (Har Sinay: 13.78 for a moment, then 13.76)
   // while the hand paints: the dabs added since the last frame (317)
   // 549: with a budget (ms) — the tick's — the new dabs are cut a few at a time (each chunk against the whole line, so the
   // pieces come out as one call would cut them), and the cut stops once the budget is spent; what is left waits for the next
@@ -2755,7 +2771,7 @@ mat.onBeforeCompile=sh=>{
     return pgCover(P.pts,P._fill,pos,f=>{ if(B&&B.has(f)){ const q=T.pieces.get(f); return (q&&q.bb&&q.bb.length)?q.bb:0; } return isType(ti,f)?1:0; });
   }
   function updateArea(){
-    if(typeof amCutJob!=='undefined'&&amCutJob){ for(const T of types){ const e=document.getElementById('tA_'+T.id); if(e) e.textContent='…'; } amLenCntShow(); return; }   // 555: counted when the cut is whole
+    if(typeof amCutJob!=='undefined'&&(amCutJob||amMarkTimer)){ for(const T of types){ const e=document.getElementById('tA_'+T.id); if(e) e.textContent='…'; } amLenCntShow(); return; }   // 555: counted when the cut is whole
     for(let ti=0;ti<types.length;ti++){const T=types[ti];let a=0;
       // 324: a sub-face the line crosses counts by its marked part
       {const B=T.band; if(B&&B.size){ for(let f=0;f<N;f++)if(isType(ti,f)&&!B.has(f))a+=area[f]; for(const [f,q] of T.pieces)a+=q.fr*area[f]; }
@@ -5782,6 +5798,16 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // 677: a sheet layer's probS into the layer's array (Float32Array N), or false when it does not fit (another N)
   function amProbSIn(str,out){ const u=new Uint16Array(dec(str)); if(u.length!==out.length) return false;
     for(let i=0;i<u.length;i++) out[i]=u[i]/65535; if(amProbS.m) amProbS.m.delete(out); return true; }
+  // 706א (Eli, 14/11; Har Sinay: 13.771 in the report of one session, 13.76 at the next open): a probability from a sheet
+  // of before 677 — a number a face, three decimals — onto the sheet's 16-bit grid, ON THE SIDE ITS FLOAT32 STOOD. Until 677
+  // the layer held the number itself as a Float32: 0.86 was 0.8600000143, above a threshold of 0.86, and the faces at the
+  // threshold were marked in every session. 677 kept loading it so, and packed it at the first save by plain rounding
+  // (56360 → 0.8599985, below): from the next open the faces at the threshold changed side — out there, in at a threshold
+  // of 0.5. Up when the Float32 is above the number, down otherwise (a number the grid holds exactly stays): every
+  // comparison with a threshold is what it always was, and the layer holds from the first moment what its sheet will carry
+  function amProbOld(p){ p=+p; if(!(p>0)) return 0; if(p>=1) return 1;
+    const x=p*65535, r=Math.round(x); if(Math.abs(x-r)<1e-6) return r/65535;
+    return (Math.fround(p)>p?Math.ceil(x):Math.floor(x))/65535; }
   function typeState(T){
     const m=[], ov=[];
     for(let f=0;f<N;f++){
@@ -5914,7 +5940,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // 644: the iPad has no volume brush — a volume marking the sheet brought is carried on as it came, never dropped
   function amSheetHost(){ return {cnt:CNT?b64u8(CNT):null, volLayers:VOL_LAYERS, volMark:VOL_MARK, jobId:AM.jobId, exportedBy:'A-morphometry iPad'}; }   // 349: the product's own fields for the shared getSheet
   $('mExport').onclick=async()=>{
-    await new Promise(res=>amCutWhenDone(res));   // 555: the sheet with the line waits for the cut
+    await new Promise(res=>amCutFresh(res));   // 555: the sheet with the line waits for the cut · 706ב: the whole cut — the sheet goes to a report
     const sheet=getSheet(true);
     // 332: the photos go out INSIDE the sheet — the computer has no other way to receive them
     const imgs={};
@@ -6713,7 +6739,7 @@ const amPal=(function(){
         if(amProbSIn(src.probS,T.prob)) T.hasProb=true; }
       else if(src.hasProb&&src.prob&&src.prob.length===FO){
         if(!T.prob||(T.prob===prob&&T!==types[0]))T.prob=new Float32Array(N);
-        for(let fo=0;fo<FO;fo++) for(let t=OFF[fo];t<OFF[fo+1];t++) T.prob[t]=src.prob[fo];
+        for(let fo=0;fo<FO;fo++){ const v=amProbOld(src.prob[fo]); for(let t=OFF[fo];t<OFF[fo+1];t++) T.prob[t]=v; }   // 706א: on the sheet's grid, each on the side it stood
         T.hasProb=true;}
     };
     amProvIn(sh);                                         // 571: Ada's records, before the acts that point at them
