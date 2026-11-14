@@ -2838,6 +2838,7 @@ mat.onBeforeCompile=sh=>{
     return pgCover(P.pts,P._fill,pos,f=>{ if(B&&B.has(f)){ const q=T.pieces.get(f); return (q&&q.bb&&q.bb.length)?q.bb:0; } return isType(ti,f)?1:0; });
   }
   function updateArea(){
+    if(typeof amAreaT!=='undefined'&&amAreaT){ clearTimeout(amAreaT); amAreaT=0; }   // 714: a count asked for by the polygons' rebuild is this one
     if(typeof amCutJob!=='undefined'&&(amCutJob||amMarkTimer)){ for(const T of types){ const e=document.getElementById('tA_'+T.id); if(e) e.textContent='…'; } amLenCntShow(); return; }   // 555: counted when the cut is whole
     for(let ti=0;ti<types.length;ti++){const T=types[ti];let a=0;
       // 324: a sub-face the line crosses counts by its marked part
@@ -4325,7 +4326,17 @@ float amStippleA(float a, float lvl){
     if(curPoly&&curPoly.pts.length) draw(curPoly,true);
     smRebuild();                      // 329: the smoothed copies follow the layers too
     rescaleFixed(); invalidate();
+    // 714 (Eli, 14/11: "וגם פה (פוליגון) השטח לא מתעדכן עד שאני לוחץ על השכבה, צריך בדיקה רוחבית של זה"): a layer's area on its
+    // chip holds its closed polygons, and it was counted (updateArea) only by the acts that remembered to ask — a polygon
+    // closed by hand did not, and the chip stood behind the ring's own label until a chip was clicked (buildChips counts).
+    // The polygons' rebuild — every act on them passes here — asks for the count itself when the closed rings are not the
+    // ones it last saw: once, shortly after (a point being dragged asks at every move; the count is of every sub-face)
+    { let s=''; for(const P of polys) s+=P.at+':'+P.area+';';
+      if(s!==amPolySig){ amPolySig=s; if(typeof updateArea==='function') amAreaSoon(); } }
   }
+  // 714: the areas counted once, 150 ms after the last asking; a count that runs meanwhile (updateArea) takes the asking with it
+  var amPolySig='', amAreaT=0;
+  function amAreaSoon(){ if(amAreaT) clearTimeout(amAreaT); amAreaT=setTimeout(()=>{ amAreaT=0; updateArea(); },150); }
   function amPolyPick(e,el,cam,ray,pts,cast){
     // one click of a polygon: back on the first point (14 px, three points or more) closes it;
     // otherwise the ray's hit is the next point; nothing under the cursor, nothing
