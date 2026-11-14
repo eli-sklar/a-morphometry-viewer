@@ -91,6 +91,12 @@ const $=id=>document.getElementById(id);
    The card is the program's own dialog window (amAsk): the same frame, colours and buttons. */
 const AM_TAG_SIDE=2048, AM_TAG_Q=0.85, AM_TAG_TITLE_MAX=20;
 function amTagId(){ return 'g'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+// 640: the photos a tag of a sheet names, in their order — `imgs`, or the one `img` of a sheet written before it (a list
+// of one). Only names of the tags' folder, each once
+function amTagImgsOf(src){
+  const raw=(src&&Array.isArray(src.imgs))?src.imgs:((src&&typeof src.img==='string')?[src.img]:[]), out=[];
+  for(const n of raw) if(typeof n==='string'&&/^[A-Za-z0-9_-]{1,64}[.]jpg$/.test(n)&&out.indexOf(n)<0) out.push(n);
+  return out; }
 function amTagShort(t){ t=String(t||'').trim();
   return t.length>AM_TAG_TITLE_MAX ? t.slice(0,AM_TAG_TITLE_MAX-1)+'…' : t; }
 function amTagCanvas(title,hex,cam,gold){
@@ -158,9 +164,9 @@ function amTagShrink(file){
     im.src=u;
   });
 }
-/* The card. o = {title, text, img (a src or null), view (read only), place (a new tag)}.
-   Resolves null on cancel, else {title, text, img}: img undefined = unchanged, null = removed,
-   a data URL = a new photo. A title is required — it is what the model shows. */
+/* The card. o = {title, text, imgs (640: the tag's photos in order, each {n: its name, src}), view (read only)}.
+   Resolves null on cancel, else {title, text, imgs}: the photos in their order — a name for one the tag
+   had, a data URL for one added here. A title is required — it is what the model shows. */
 function amTagCard(o){
   o=o||{};
   return new Promise(res=>{
@@ -174,7 +180,11 @@ function amTagCard(o){
       +'max-height:90vh;display:flex;flex-direction:column;gap:10px;box-sizing:border-box;overflow-y:auto;'
       +'box-shadow:inset 0 0 0 3px #141210, inset 0 0 0 4px rgba(184,147,74,.45)';
     const lab=t=>{const l=document.createElement('div'); l.textContent=t; l.style.cssText='font-size:13px;color:#b8934a'; return l;};
-    let img=o.img||null, changed;
+    // 640 (Eli, 02/11: "היום אני מוגבל לתמונה אחת בתגית, אני רוצה אפשרות להעלות מספר תמונות לתגית"): the tag's photos, in
+    // their order — each {n: its name in the work (null for one added here), src}. The first is the main one; `sel` is
+    // the one the card shows large
+    const pics=(Array.isArray(o.imgs)?o.imgs:[]).filter(q=>q&&q.src).map(q=>({n:q.n||null,src:q.src}));
+    let sel=0, busy=false;
     const pic=document.createElement('img');
     pic.style.cssText='max-width:100%;max-height:38vh;object-fit:contain;display:block;border:1px solid #6b5a33;border-radius:2px';
     // 356 (Eli: "כפתור קטן בפינה של התמונה שפותח אותה על מסך מלא"): the photo on the whole
@@ -184,17 +194,42 @@ function amTagCard(o){
     full.style.cssText='position:absolute;top:6px;left:6px;width:30px;height:30px;padding:0;font-size:17px;line-height:28px;'
       +'background:rgba(20,18,16,0.85);color:#f0e6d2;border:1px solid #6b5a33;border-radius:2px;cursor:pointer';
     picBox.appendChild(pic); picBox.appendChild(full);
-    let big=null;
-    const bigClose=()=>{ if(big){ big.remove(); big=null; } };
-    full.onclick=e=>{ e.stopPropagation(); if(!img) return;
+    // 640: under the large photo, the small ones in their order (the first on the right, as the line reads) — the one
+    // shown is framed, and beside them "2 מתוך 5". Only when there is more than one: a tag with one photo is as it was
+    const strip=document.createElement('div'); strip.dataset.amStrip='1';
+    strip.style.cssText='display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:center';
+    const count=document.createElement('span'); count.dataset.amCount='1'; count.style.cssText='font-size:13px;color:#b8934a;margin-inline-start:6px';
+    let big=null, bigImg=null, bigN=null;
+    const bigClose=()=>{ if(big){ big.remove(); big=null; bigImg=null; bigN=null; } };
+    const of=()=>(sel+1)+' מתוך '+pics.length;
+    const showPic=()=>{ if(sel>=pics.length) sel=Math.max(0,pics.length-1);
+      picBox.style.display=pics.length?'':'none'; if(pics.length) pic.src=pics[sel].src;
+      strip.textContent=''; strip.style.display=pics.length>1?'':'none';
+      if(pics.length>1){ pics.forEach((q,i)=>{ const t=document.createElement('img'); t.src=q.src; t.title='תמונה '+(i+1);
+          t.style.cssText='width:54px;height:54px;object-fit:cover;cursor:pointer;border-radius:2px;border:2px solid '+(i===sel?'#ffca3a':'#6b5a33');
+          t.onclick=()=>{ sel=i; showPic(); }; strip.appendChild(t); });
+        count.textContent=of(); strip.appendChild(count); }
+      if(big&&bigImg&&pics.length){ bigImg.src=pics[sel].src; if(bigN) bigN.textContent=pics.length>1?of():''; } };
+    // the next photo / the one before, around the ring. The line reads from the right: "the next" is to the left
+    const step=d=>{ if(pics.length<2) return; sel=(sel+d+pics.length)%pics.length; showPic(); };
+    full.onclick=e=>{ e.stopPropagation(); if(!pics.length) return;
       big=document.createElement('div');
       big.style.cssText='position:fixed;inset:0;z-index:2147483001;background:rgba(0,0,0,.92);display:flex;'
         +'align-items:center;justify-content:center;cursor:zoom-out';
-      const bi=document.createElement('img'); bi.src=img;
-      bi.style.cssText='max-width:100vw;max-height:100vh;object-fit:contain';
-      big.appendChild(bi); big.onclick=ev=>{ ev.stopPropagation(); bigClose(); };
+      bigImg=document.createElement('img'); bigImg.src=pics[sel].src;
+      bigImg.style.cssText='max-width:100vw;max-height:100vh;object-fit:contain';
+      big.appendChild(bigImg); big.onclick=ev=>{ ev.stopPropagation(); bigClose(); };
+      if(pics.length>1){                       // 640: the arrows on the screen, and how far along
+        const arrow=(t,side,d,tip)=>{ const b=document.createElement('button'); b.textContent=t; b.title=tip; b.dataset.amStep=String(d);
+          b.style.cssText='position:absolute;top:50%;'+side+':14px;transform:translateY(-50%);width:46px;height:64px;padding:0;font-size:26px;'
+            +'background:rgba(20,18,16,0.85);color:#f0e6d2;border:1px solid #6b5a33;border-radius:2px;cursor:pointer';
+          b.onclick=ev=>{ ev.stopPropagation(); step(d); }; big.appendChild(b); };
+        arrow('▸','right',-1,'התמונה הקודמת'); arrow('◂','left',1,'התמונה הבאה');
+        bigN=document.createElement('div'); bigN.textContent=of();
+        bigN.style.cssText='position:absolute;bottom:14px;left:50%;transform:translateX(-50%);padding:4px 12px;font:14px system-ui,Arial,sans-serif;'
+          +'background:rgba(20,18,16,0.85);color:#f0e6d2;border:1px solid #6b5a33;border-radius:2px;direction:rtl';
+        big.appendChild(bigN); }
       document.body.appendChild(big); };
-    const showPic=()=>{ picBox.style.display=img?'':'none'; if(img) pic.src=img; };
     // Keys, the dialog window's rule: Escape closes wherever the focus is, and no key
     // reaches the screen underneath — also when the focus stayed on the model after the
     // click that opened the card (found in the run: Escape did nothing, and a Tab there
@@ -202,6 +237,8 @@ function amTagCard(o){
     // still reaches them; it stops at the card on its way up.
     const key=e=>{
       if((e.key||'')==='Escape'&&big){e.preventDefault();e.stopImmediatePropagation();bigClose();return;}   // 356
+      // 640: on the whole screen the arrow keys walk the photos — left is the next, right is the one before
+      if(big&&((e.key||'')==='ArrowLeft'||(e.key||'')==='ArrowRight')){e.preventDefault();e.stopImmediatePropagation();step((e.key==='ArrowLeft')?1:-1);return;}
       if((e.key||'')==='Escape'){e.preventDefault();e.stopImmediatePropagation();done(null);return;}
       if(!wrap.contains(e.target)){e.preventDefault();e.stopImmediatePropagation();}
     };
@@ -218,7 +255,7 @@ function amTagCard(o){
       const h=document.createElement('div'); h.textContent=o.title||''; h.style.cssText='font-size:18px;font-weight:700;color:#f0e6d2';
       box.appendChild(h);
       if(o.text){const t=document.createElement('div'); t.textContent=o.text; t.style.cssText='line-height:1.6;white-space:pre-wrap'; box.appendChild(t);}
-      box.appendChild(picBox); showPic();
+      box.appendChild(picBox); box.appendChild(strip); showPic();
       const close=btn('סגירה',true,()=>done(null)); row.appendChild(close); box.appendChild(row);
       wrap.appendChild(box); document.body.appendChild(wrap); setTimeout(()=>close.focus(),0); return;
     }
@@ -226,24 +263,44 @@ function amTagCard(o){
     ti.style.cssText=S+'padding:7px 9px;font:15px system-ui,Arial,sans-serif';
     const tx=document.createElement('textarea'); tx.value=o.text||''; tx.rows=4;
     tx.style.cssText=S+'padding:7px 9px;font:14px system-ui,Arial,sans-serif;resize:vertical';
-    const file=document.createElement('input'); file.type='file'; file.accept='image/*,.heic,.heif'; file.style.display='none';
-    const imgRow=document.createElement('div'); imgRow.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
-    const add=btn('',false,()=>file.click()), del=btn('הסרת התמונה',false,()=>{img=null;changed=null;sync();});
-    const warn=document.createElement('div'); warn.style.cssText='font-size:13px;color:#ff595e;display:none';
-    const save=btn('שמירה',true,()=>{ const t=ti.value.trim(); if(!t){ti.focus();return;}
-      done({title:t,text:tx.value.trim(),img:changed}); });
-    const sync=()=>{ add.textContent=img?'החלפת התמונה':'הוספת תמונה'; del.style.display=img?'':'none';
-      save.disabled=!ti.value.trim(); save.style.opacity=save.disabled?'.5':'1'; showPic(); };
-    file.onchange=async()=>{ const f=file.files&&file.files[0]; file.value=''; if(!f) return;
-      warn.style.display='none';
-      try{ img=await amTagShrink(f); changed=img; }catch(e){ warn.textContent=e.message; warn.style.display=''; }
+    // 640: several photos at once; "הסרת התמונה" takes off the one shown; ▸ / ◂ move it toward the first / the last
+    const file=document.createElement('input'); file.type='file'; file.accept='image/*,.heic,.heif'; file.multiple=true; file.style.display='none';
+    const imgRow=document.createElement('div'); imgRow.style.cssText='display:flex;gap:8px;flex-wrap:wrap;align-items:center';
+    const move=d=>{ const j=sel+d; if(j<0||j>=pics.length) return; const q=pics[sel]; pics[sel]=pics[j]; pics[j]=q; sel=j; sync(); };
+    const add=btn('הוספת תמונות',false,()=>{ if(!busy) file.click(); }),
+          del=btn('הסרת התמונה',false,()=>{ if(busy||!pics.length) return; pics.splice(sel,1); sync(); }),
+          fwd=btn('▸',false,()=>move(-1)), back=btn('◂',false,()=>move(1));
+    fwd.title='הזזת התמונה קדימה, לכיוון הראשונה'; back.title='הזזת התמונה אחורה';
+    const stat=document.createElement('span'); stat.dataset.amStat='1'; stat.style.cssText='font-size:13px;color:#b8934a';
+    const warn=document.createElement('div'); warn.style.cssText='font-size:13px;color:#ff595e;display:none;white-space:pre-wrap';
+    // what the card gives back: the photos in their order — a name for one the tag had, a data URL for one added here
+    const save=btn('שמירה',true,()=>{ const t=ti.value.trim(); if(!t){ti.focus();return;} if(busy) return;
+      done({title:t,text:tx.value.trim(),imgs:pics.map(q=>q.n||q.src)}); });
+    const sync=()=>{ del.style.display=pics.length?'':'none';
+      fwd.style.display=back.style.display=pics.length>1?'':'none';
+      fwd.disabled=sel<=0; back.disabled=sel>=pics.length-1; fwd.style.opacity=fwd.disabled?'.4':'1'; back.style.opacity=back.disabled?'.4':'1';
+      save.disabled=!ti.value.trim()||busy; save.style.opacity=save.disabled?'.5':'1'; showPic(); };
+    // 376 · 640: every file in its turn. An HEIC goes to the screen's server and back (amTagShrink), one after the other,
+    // and the card says how far it is ("ממיר 2 מתוך 5"). A file that fails does not take the others with it: those that
+    // were read are in, and the message names the file and says why
+    file.onchange=async()=>{ const fs=Array.from(file.files||[]); file.value=''; if(!fs.length) return;
+      warn.style.display='none'; warn.textContent=''; busy=true; sync();
+      const heic=[]; for(const f of fs) heic.push(typeof amHeicJpeg==='function'&&await amTagIsHeic(f));
+      const nh=heic.filter(Boolean).length, bad=[]; let kh=0;
+      for(let i=0;i<fs.length;i++){
+        if(heic[i]){ kh++; stat.textContent='ממיר '+kh+' מתוך '+nh; }
+        try{ const src=await amTagShrink(fs[i]); pics.push({n:null,src:src}); sel=pics.length-1; showPic(); }
+        catch(e){ bad.push((fs[i].name||'קובץ')+': '+((e&&e.message)||e)); } }
+      stat.textContent=''; busy=false;
+      if(bad.length){ warn.textContent=bad.join('\n'); warn.style.display=''; }
       sync(); };
     ti.oninput=sync;
     ti.onkeydown=e=>{ if(e.key==='Enter'){e.preventDefault(); save.click();} };
     box.appendChild(lab('כותרת')); box.appendChild(ti);
     box.appendChild(lab('טקסט')); box.appendChild(tx);
-    imgRow.appendChild(add); imgRow.appendChild(del); box.appendChild(imgRow); box.appendChild(file);
-    box.appendChild(picBox); box.appendChild(warn);
+    imgRow.appendChild(add); imgRow.appendChild(del); imgRow.appendChild(fwd); imgRow.appendChild(back); imgRow.appendChild(stat);
+    box.appendChild(imgRow); box.appendChild(file);
+    box.appendChild(picBox); box.appendChild(strip); box.appendChild(warn);
     row.appendChild(save); row.appendChild(btn('ביטול',false,()=>done(null))); box.appendChild(row);
     wrap.appendChild(box); document.body.appendChild(wrap); sync();
     setTimeout(()=>ti.focus(),0);
@@ -4508,9 +4565,11 @@ float amStippleA(float a, float lvl){
   const _tagPinGeo=new THREE.SphereGeometry(1,12,8);
   function mkTagType(name,hex){let id; do{ id='tg'+(gSeq++); }while(tagTypes.some(x=>x.id===id));
     const T={id:id,name:name,hex:hex};tagTypes.push(T);return T;}
-  async function tagSrc(g){ if(!g||!g.img) return null;
-    if(!TAG_IMG.has(g.img)){ const v=await imgGet(g.img); if(v) TAG_IMG.set(g.img,v); }
-    return TAG_IMG.get(g.img)||null; }
+  // 640: a tag's photos, for the card and for the export — each with its name and its data, from the device's own store
+  async function tagSrc(g){ const out=[];
+    for(const n of ((g&&g.imgs)||[])){ if(!TAG_IMG.has(n)){ const v=await imgGet(n); if(v) TAG_IMG.set(n,v); }
+      if(TAG_IMG.get(n)) out.push({n:n, src:TAG_IMG.get(n)}); }
+    return out; }
   function tagRebuild(){
     for(const o of [...tagGroup.children]){ forgetOnScreen(o); tagGroup.remove(o);
       if(o.material){ if(o.material.map) o.material.map.dispose(); o.material.dispose(); } }
@@ -4520,7 +4579,7 @@ float amStippleA(float a, float lvl){
       const pin=new THREE.Mesh(_tagPinGeo,new THREE.MeshBasicMaterial({color:T.hex,depthTest:false}));
       pin.position.set(g.p[0],g.p[1],g.p[2]); pin.renderOrder=1000; pin.visible=shown;
       tagGroup.add(keepOnScreen(pin,RUL_PT_K));
-      const sp=amTagSprite(g.title,T.hex,!!g.img);
+      const sp=amTagSprite(g.title,T.hex,!!(g.imgs&&g.imgs.length));
       sp.position.copy(pin.position); sp.visible=shown;
       sp.userData.amTag={kind:'tag',g:g};
       tagGroup.add(keepOnScreen(sp,RUL_LAB_K));
@@ -4528,10 +4587,17 @@ float amStippleA(float a, float lvl){
     rescaleFixed(); invalidate();
   }
   function tagHist(d){ undoStack.push(d); redoStack.length=0; markUnexported(true); updateHB(); buildChips(); }
-  function tagApply(g,v){
+  // 640: the card's list, in its order — a name stays, a new photo gets a name and goes to the device's store. `seen`: the
+  // names the card was shown; a photo it was not shown is not the card's to take off, and stays after the others
+  function tagApply(g,v,seen){
     g.title=v.title; g.text=v.text;
-    if(v.img===null) g.img=null;
-    else if(typeof v.img==='string'){ const nm=amTagId()+'.jpg'; TAG_IMG.set(nm,v.img); imgPut(nm,v.img); g.img=nm; }
+    if(!Array.isArray(v.imgs)) return;
+    const out=[];
+    for(const x of v.imgs){ if(typeof x!=='string') continue;
+      if(x.indexOf('data:')===0){ const nm=amTagId()+'.jpg'; TAG_IMG.set(nm,x); imgPut(nm,x); out.push(nm); }
+      else if(out.indexOf(x)<0) out.push(x); }
+    if(seen) for(const n of (g.imgs||[])) if(seen.indexOf(n)<0&&out.indexOf(n)<0) out.push(n);
+    g.imgs=out;
   }
   async function tagAt(e){
     if(activeG<0) return;
@@ -4541,7 +4607,7 @@ float amStippleA(float a, float lvl){
     if(n.dot(camera.position.clone().sub(h.point))<0) n.negate();       // toward the one who placed it
     const r3=v=>Math.round(v*1000)/1000;
     const g={id:amTagId(),t:T.id,p:[r3(h.point.x),r3(h.point.y),r3(h.point.z)],
-             nrm:[r3(n.x),r3(n.y),r3(n.z)],title:'',text:'',img:null};
+             nrm:[r3(n.x),r3(n.y),r3(n.z)],title:'',text:'',imgs:[]};
     // the point shows while the card is open, so it is clear what is being tagged — drawn
     // apart from the tags, so a save that lands meanwhile never writes a tag with no title
     const ghost=new THREE.Mesh(_tagPinGeo,new THREE.MeshBasicMaterial({color:T.hex,depthTest:false}));
@@ -4553,11 +4619,14 @@ float amStippleA(float a, float lvl){
     tagApply(g,v); tags.push(g); tagRebuild(); tagHist([['G+',g]]);
   }
   async function tagEdit(g){
-    const v=await amTagCard({title:g.title,text:g.text,img:await tagSrc(g)});
+    // 640: the card gets the tag's photos (each with its name) and gives back the list as it should be; a photo the card
+    // was not shown (its data is not here) is not the card's to take off — tagApply keeps it
+    const S=await tagSrc(g);
+    const v=await amTagCard({title:g.title,text:g.text,imgs:S});
     if(!v) return;
-    const before={title:g.title,text:g.text,img:g.img};
-    tagApply(g,v);
-    const after={title:g.title,text:g.text,img:g.img};
+    const before={title:g.title,text:g.text,imgs:(g.imgs||[]).slice()};
+    tagApply(g,v,S.map(q=>q.n));
+    const after={title:g.title,text:g.text,imgs:(g.imgs||[]).slice()};
     if(JSON.stringify(before)===JSON.stringify(after)) return;
     tagRebuild(); tagHist([['GE',{g:g,from:before,to:after}]]);
   }
@@ -4678,7 +4747,7 @@ float amStippleA(float a, float lvl){
       else if(d[0]==='G+'){const k=tags.indexOf(d[1]); inv.push(['G-',{g:d[1],i:k}]); if(k>=0) tags.splice(k,1); tagRebuild(); buildChips();}
       else if(d[0]==='G-'){inv.push(['G+',d[1].g]); tags.splice(Math.min(d[1].i,tags.length),0,d[1].g); tagRebuild(); buildChips();}
       else if(d[0]==='GE'){const g=d[1].g; inv.push(['GE',{g:g,from:d[1].to,to:d[1].from}]);
-        g.title=d[1].from.title; g.text=d[1].from.text; g.img=d[1].from.img; tagRebuild(); buildChips();}
+        g.title=d[1].from.title; g.text=d[1].from.text; g.imgs=(d[1].from.imgs||[]).slice(); tagRebuild(); buildChips();}   // 640: the whole list comes back
       else if(d[0]==='GS'){inv.push(['GS',{from:d[1].to,to:d[1].from}]); tagSetAll(d[1].from.ts,d[1].from.gs);}
       // 391: a deleted volume comes back in its place; redo takes it again
       else if(d[0]==='VD'){inv.push(['VA',d[1]]);MEMBRANES.splice(Math.min(d[1].i,MEMBRANES.length),0,d[1].rec);volRimBuild();volChips();volLayerChips();volCount();}
@@ -5944,10 +6013,11 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
              // 332: a sheet with tags needs a reader that knows them — an older one would
              // drop them without a word
              // 644: a sheet with a volume marking needs reader 10 — an older one would drop the marking without a word
-             minReader:Math.max(H.volMark?10:1, types.some(T=>T.hasProb&&T.prob)?11:1, types.some(T=>(T.ops||[]).some(o=>o.t==='minus'))?12:1, (SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1))))))),   // 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
+             // 640: a tag's photos are a list (`imgs`) — a reader of before it reads `img` and would drop them without a word
+             minReader:Math.max(tags.some(g=>g.imgs&&g.imgs.length)?13:1, H.volMark?10:1, types.some(T=>T.hasProb&&T.prob)?11:1, types.some(T=>(T.ops||[]).some(o=>o.t==='minus'))?12:1, (SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1))))))),   // 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
              tagTypes:tagTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid})),
              tags:tags.map(g=>({id:g.id,t:g.t,p:g.p.slice(),nrm:g.nrm?g.nrm.slice():null,
-                                title:g.title,text:g.text,img:g.img||null})),
+                                title:g.title,text:g.text,imgs:(g.imgs||[]).slice()})),
              ...((typeof TAG_PENDING!=='undefined'&&TAG_PENDING.size)?{tagImgs:Object.fromEntries(TAG_PENDING)}:{}),   // the editor: photos waiting for the server; the iPad adds its own at export
              smooths:SMR.map(r=>Object.assign({id:r.id,at:r.at,level:r.level,faces:r.faces.slice(),
                area:Math.round(r.area*10000)/10000},
@@ -5989,7 +6059,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const sheet=getSheet(true);
     // 332: the photos go out INSIDE the sheet — the computer has no other way to receive them
     const imgs={};
-    for(const g of tags) if(g.img&&!imgs[g.img]){ const v=await tagSrc(g); if(v) imgs[g.img]=v; }
+    for(const g of tags) for(const q of await tagSrc(g)) if(!imgs[q.n]) imgs[q.n]=q.src;   // 640: every photo of every tag
     if(Object.keys(imgs).length) sheet.tagImgs=imgs;
     const fname=(AM.name||'work')+'_gilayon.json';
     const data=JSON.stringify(sheet);
@@ -6650,7 +6720,7 @@ const amPal=(function(){
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
-  const AM_SHEET_READER = 12;  // 651ב: a minus among a layer's acts · 677: a learned layer's probabilities a sub-face (probS) ·  // 644: the volume marking, carried (volMark) · 433: one brush, a level per layer · 571: Ada's acts and their records   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
+  const AM_SHEET_READER = 13;  // 640: a tag names several photos (imgs) · 651ב: a minus among a layer's acts · 677: a learned layer's probabilities a sub-face (probS) ·  // 644: the volume marking, carried (volMark) · 433: one brush, a level per layer · 571: Ada's acts and their records   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
   const AM_SUB_SCHEME = (am.subScheme===2)?2:1;   // 539: 1 — one k; 2 — a target size, k_f = sqrt(cnt) (the work says which)
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -6861,7 +6931,7 @@ const amPal=(function(){
     for(const src of (Array.isArray(sh.tags)?sh.tags:[])){
       if(!src||!Array.isArray(src.p)||src.p.length!==3||!tagTypes.some(T=>T.id===src.t)) continue;
       tags.push({id:src.id||amTagId(),t:src.t,p:src.p.map(Number),nrm:Array.isArray(src.nrm)?src.nrm.map(Number):null,
-                 title:String(src.title||''),text:String(src.text||''),img:(typeof src.img==='string'?src.img:null)});}
+                 title:String(src.title||''),text:String(src.text||''),imgs:amTagImgsOf(src)});}   // 640: `img` of an older sheet — a list of one
     if(tagTypes.length)activeG=0;
     tagRebuild();
     areaTool=(types[activeT]&&types[activeT].am===AM_POLY)?AM_POLY:AM_BRUSH;   // 10
