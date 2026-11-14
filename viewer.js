@@ -185,7 +185,7 @@ function amTagCard(o){
     // the one the card shows large
     const pics=(Array.isArray(o.imgs)?o.imgs:[]).filter(q=>q&&q.src).map(q=>({n:q.n||null,src:q.src}));
     let sel=0, busy=false;
-    const pic=document.createElement('img');
+    const pic=document.createElement('img'); pic.dataset.amPic='1';
     pic.style.cssText='max-width:100%;max-height:38vh;object-fit:contain;display:block;border:1px solid #6b5a33;border-radius:2px';
     // 356 (Eli: "כפתור קטן בפינה של התמונה שפותח אותה על מסך מלא"): the photo on the whole
     // screen, fitted to it; a click on it or Escape returns to the card, which stays open
