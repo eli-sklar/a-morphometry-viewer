@@ -641,7 +641,10 @@ function amSeeRender(renderer,scene,camera,mesh){
     renderer.clear();
     mesh.material=Array.isArray(mat0)?ms.map(sec):sec(m0); renderer.autoClear=false; renderer.render(mesh,camera);
     // (2a) 715: the bodies seen through the model — what of them lies behind the nearest, over the second layer
-    { const thru=[]; for(const c of scene.children) if(c.visible&&c.userData&&c.userData.amThru) thru.push(c);
+    //      (713: wherever they hang in the scene — a polygon's body lives in its group — and seen only if all above it is)
+    { const thru=[]; scene.traverse(c=>{ if(!c.userData||!c.userData.amThru) return;
+        for(let p=c;p;p=p.parent) if(!p.visible) return;
+        thru.push(c); });
       if(thru.length){ AM_THRU.tD1.value=S.rt.depthTexture; AM_THRU.uRes.value.copy(S.size); AM_THRU.uThru.value=1;
         for(const c of thru) renderer.render(c,camera);
         AM_THRU.uThru.value=0; } }
@@ -4312,6 +4315,26 @@ float amStippleA(float a, float lvl){
       const m=new THREE.Mesh(g,mt); m.userData.amWL=true; m.renderOrder=1; out.push(m); }
     return out;
   }
+  // 713 (Eli, 14/11: "אני רוצה שיבנה פוליגון בין הנקודות, ואני רוצה שזה מה שיראו גם משטח בין הנקודות, אם הוא חותך את המשטח
+  // יראו את זה, וזה גם מה שימדד, ולא פני השטח של המודל"; the plan: "כן, לבנות"): a polygon is the surface between its
+  // points, and what is drawn is what is measured — the very triangles its area is summed on (tris: index triples into
+  // pts, the measuring triangulation of the screen), as ONE built body in the layer's colour (amShellMesh: the look, the
+  // opacity and the design of every built surface, 04/10). It is tested for depth against the model: where it passes
+  // under the model's surface it is hidden, and the line where the two meet is the edge seen; through a see-through model
+  // it shows (amThru, 715). The fill painted on the model (pgFill, 335ב) is no longer drawn — it stays for 703's cover.
+  // The tilt: where the body lies ON a near-flat wall its depth and the wall's are all but one, and which of them wins a
+  // pixel is noise; a depth bias of the smallest step toward the eye settles only such ties (amPolyTiltOn — Eli chooses
+  // by pictures; the recommended default is on)
+  var amPolyTiltOn=true;
+  function amPolyBody(pts,tris,col,op,des){
+    if(!tris||!tris.length) return null;
+    const XP=new Float32Array(tris.length*9); let o=0;
+    for(const t of tris) for(let k=0;k<3;k++){ const q=pts[t[k]]; XP[o++]=q[0]; XP[o++]=q[1]; XP[o++]=q[2]; }
+    const mm=amShellMesh(XP,col,op,des), m=mm.material;
+    m.polygonOffset=!!amPolyTiltOn; m.polygonOffsetFactor=-1; m.polygonOffsetUnits=-4;
+    mm.userData.pgBody=true;
+    return (typeof amThru==='function')?amThru(mm):mm;
+  }
   /* 336 (Eli, 29/09): ONE running number per layer, whatever the method — "the numbering of
      the measurements in one layer has to be continuous, also when they are by different
      methods". The polygons first, in marking order (a ring still being drawn takes the next
@@ -4336,6 +4359,7 @@ float amStippleA(float a, float lvl){
   function polyRebuild(){
     for(let i=polyGroup.children.length-1;i>=0;i--){
       const o=polyGroup.children[i]; forgetOnScreen(o); polyGroup.remove(o);
+      if(o.userData&&o.userData.pgBody) amShellFree(o);   // 713: a body's corner lines
       if(o.geometry)o.geometry.dispose();
       if(o.material&&!(o.userData&&o.userData.amShared)){if(o.material.map)o.material.map.dispose();o.material.dispose();}
     }
@@ -4368,12 +4392,11 @@ float amStippleA(float a, float lvl){
         ln.renderOrder=999; ln.userData.pgAt=P.at; ln.userData.pgOpen=!!open; polyGroup.add(ln);   // 545
       }
       if(open) return;
-      // 335ב: the fill on the model, in the wall's law — and on the plane where no model is. Kept on
-      // the polygon for its points (a walk over the model's sub-faces is not a thing to do per frame)
-      { const key=JSON.stringify(P.pts);
-        if(P._fk!==key){ P._fill=pgFill(P.pts,pos,uv,N,pgTexAt); P._fk=key; }
-        if(!P._fill.wall&&P._fill.surf.length) P._fill.wall=pgWallOf(P._fill.surf,pos,uv,pgTexAt);   // the texture came since
-        for(const m of pgMeshes(P._fill,T)){ m.userData.smAt=P.at; if(!open) m.userData.ring=P; polyGroup.add(m); } }
+      // 713: the polygon's own surface — the triangles polyArea sums — as one built body (amPolyBody). Its tags are a
+      // smoothed copy's (smAt, smShell): the layer's colour, opacity and design reach it by the same road (smRecolor),
+      // and `ring` is what a press on it finds (amRingAt)
+      { const mm=amPolyBody(P.pts,polyTriangles(P.pts),col,_op,(T&&typeof T.design==='number')?T.design:0.6);
+        if(mm){ mm.userData.smAt=P.at; mm.userData.smShell=true; mm.userData.ring=P; polyGroup.add(mm); } }
       let cx=0,cy=0,cz=0; for(const q of P.pts){cx+=q[0];cy+=q[1];cz+=q[2];}
       // 265: the ring is numbered 1..n WITHIN ITS LAYER, in marking order — the ruler's
       // rule, and the order the report lists the layer's rings in. A ring still being
