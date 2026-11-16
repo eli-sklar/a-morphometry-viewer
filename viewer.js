@@ -1539,8 +1539,8 @@ mat.onBeforeCompile=sh=>{
   let areaTool=AM_BRUSH;
   function mkType(name,hex){let id; do{ id='t'+(tSeq++); }while(types.some(x=>x.id===id));   // 595
     const T={id:id,name:name,hex:hex,color:hex2rgb(hex),
-    manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,design:0.6,
-    designU:{value:0.6},area:0,
+    manual:new Int8Array(N),faceThr:null,thr:0.50,prob:null,hasProb:false,op:0.75,design:0,
+    designU:{value:0},area:0,
     am:AM_BRUSH};
     types.push(T);return T;}
   const T0=mkType('שטח 1','#38b000'); T0.prob=prob;
@@ -4574,7 +4574,7 @@ float amStippleA(float a, float lvl){
   // not by id); what is looked up by id (chip, polygons, smoothing) finds the first.
   function mkCntType(name,hex){let id; do{ id='c'+(cSeq++); }while(cntTypes.some(x=>x.id===id));
     const T={id:id,name:name,hex:hex,size:cntDefSize(),op:1.0,
-    design:0.6,designU:{value:0.6}};cntTypes.push(T);return T;}
+    design:0,designU:{value:0}};cntTypes.push(T);return T;}   // 719: a layer is made with no design
   function xObj(m){const T=cntTypes.find(x=>x.id===m.t);
     // a standing diamond with VOLUME (round 4): a flat sprite sank into scan bumps.
     // OctahedronGeometry takes a RADIUS; T.size is the true diameter on the model.
@@ -6044,6 +6044,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
              // one wheel for the whole work; additive field, so every older sheet still
              // opens and simply falls back to the default (contract, decisions 18/19)
              designLevel:Math.round((((types[0]||{}).design??0.6))*100)/100,
+             designDef:0,   // 719: written when a layer is made with no design (amDesignIn reads a sheet without it)
              globalThreshold:types[0].thr, faceThr:t0.faceThr, manual:t0.manual, roiFaces:rf,
              roiPainted:rp,
              hasProb:t0.hasProb, prob:t0.prob,
@@ -6285,6 +6286,32 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   // The design wheel, wired exactly as on the desktop — same control, same meaning, and
   // synced through the ONE path every activation crosses. Wiring it around the activate*
   // functions is what failed silently there (decision 87), and the same trap exists here.
+  // 719 (Eli, 16/11: "אני רוצה שכשאני פותח עבודה מחדש שהגדרות השקיפות והעיצוב ישמרו, היום זה מתאפס לדיפולט וגם שהדיפולט
+  // יהיה ללא עיצוב"; on works that exist: "1 - ב"): a sheet written before 719 holds 0.6 on every area layer, and not by
+  // anyone's choice — the screen never read a layer's design back, so each open returned it to the 0.6 a layer was made
+  // with and the next save wrote that. Such a sheet (it carries no designDef) is read here: a layer of a kind that was
+  // made at 0.6 — area, counter, volume — and stands at exactly that, or holds no design at all, opens at 0, the design a
+  // layer is made with from 719 on; any other value was chosen and stays. Tapes and rulers were made at 0, so a 0.6 on one
+  // was chosen. The sheet given is not touched: a copy comes back, and amDesignMoved says how many layers moved — the
+  // screen counts the work as changed, so the sheet on disk follows and every reader of it (the report, the map) sees
+  // what the screen shows. getSheet writes designDef on every sheet from here on.
+  var amDesignMoved=0;
+  function amDesignIn(j){
+    amDesignMoved=0;
+    if(!j||typeof j!=='object'||j.designDef===0) return j;
+    const num=v=>typeof v==='number'&&isFinite(v), was=v=>!num(v)||Math.abs(v-0.6)<0.005;
+    const lv=num(j.designLevel)?j.designLevel:0.6;   // before 14/08: one wheel for the whole work
+    const o=Object.assign({},j,{designDef:0, designLevel:was(lv)?0:lv});
+    if(Array.isArray(j.types)) o.types=j.types.map(T=>{ if(!T||typeof T!=='object') return T;
+      const d=num(T.design)?T.design:lv;
+      if(was(d)){ amDesignMoved++; return Object.assign({},T,{design:0}); }
+      return num(T.design)?T:Object.assign({},T,{design:d}); });
+    else if(was(lv)) amDesignMoved++;                // a sheet of one layer, from before the layers
+    for(const k of ['cntTypes','volLayers']) if(Array.isArray(j[k])) o[k]=j[k].map(T=>{
+      if(!T||typeof T!=='object'||!was(T.design)) return T;
+      amDesignMoved++; return Object.assign({},T,{design:0}); });
+    return o;
+  }
   function amSyncDesign(){
     const ds=document.getElementById('design'), dv=document.getElementById('designV');
     if(!ds) return;
@@ -6307,12 +6334,13 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
   if($('design')) $('design').oninput=e=>{
     const v=e.target.value/100;
     $('designV').textContent=e.target.value+'%';
-    if(activeKind==='cnt'){const T=cntTypes[activeC];if(T){T.design=v;T.designU.value=v;}}
-    else if(activeKind==='len'){const T=lenTypes[activeL];if(T){T.design=v;if(!T.designU)T.designU={value:v};T.designU.value=v;}}
+    // 719: every kind's step is a change not yet exported — it was the ruler's alone
+    if(activeKind==='cnt'){const T=cntTypes[activeC];if(T){T.design=v;T.designU.value=v;markUnexported(true);}}
+    else if(activeKind==='len'){const T=lenTypes[activeL];if(T){T.design=v;if(!T.designU)T.designU={value:v};T.designU.value=v;markUnexported(true);}}
     // 257: the polygon reads the same wheel through a uniform, so the layer's own
     // designU has to move with it — a brush layer repaints, a polygon layer does not
     else if(activeKind==='area'){const T=types[activeT];if(T){T.design=v;
-      if(!T.designU)T.designU={value:v}; T.designU.value=v; amDessSoon(); if(SMR.length) smRecolor();}}   // 448: its smoothed copies too
+      if(!T.designU)T.designU={value:v}; T.designU.value=v; amDessSoon(); if(SMR.length) smRecolor(); markUnexported(true);}}   // 448: its smoothed copies too
     // 25/09: a ruler's design is its dash — the 302 definition
     else if(activeKind==='rul'){const T=rulTypes[activeR];if(T){T.design=v;rulRebuild();markUnexported(true);}}
     // this viewer renders on a continuous tick, so nothing has to be poked to redraw
@@ -6886,6 +6914,7 @@ const amPal=(function(){
     if(_need>AM_SHEET_READER)
       throw new Error('\u05d4\u05d2\u05d9\u05dc\u05d9\u05d5\u05df \u05e0\u05db\u05ea\u05d1 \u05d1\u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d9\u05d5\u05ea\u05e8 \u05e9\u05dc \u05d4\u05ea\u05d5\u05db\u05e0\u05d4. \u05e2\u05d3\u05db\u05df \u05d0\u05ea \u05d4\u05e6\u05e4\u05d9\u05d9\u05df.');
     if(!sh||!(sh._sheet||sh._work)) throw new Error('הקובץ אינו גיליון של התוכנה.');
+    sh=amDesignIn(sh);   // 719: a sheet from before 719 — its 60% layers open with no design (the measurement screen's reading)
     if(sh.Fo!==FO)
       throw new Error('הגיליון אינו תואם לעבודה הפתוחה — בגיליון '+sh.Fo
                       +' פאות, כאן '+FO+'.');
@@ -6918,12 +6947,15 @@ const amPal=(function(){
     for(const fo of (sh.roiPainted||sh.roiFaces||[])) if(fo<FO)
       for(let t=OFF[fo];t<OFF[fo+1];t++){ if(!roi[t]){roi[t]=1;roiCount++;} }
     amOrangeUI();   // 716: the wheel follows the sheet's orange zone
+    const desLv=(typeof sh.designLevel==='number')?sh.designLevel:0;
     const loadT=(T,src)=>{
       T.am=(src.am===AM_POLY)?AM_POLY:AM_BRUSH; T.sm=Math.max(0,Math.min(SM_MAXLEVEL,Math.round(+src.sm||0)));   // 433: the layer's smoothing level   // an older sheet is a brush layer
       if(src.name!==undefined)T.name=src.name;
       if(src.color){T.hex=src.color;T.color=hex2rgb(src.color);}
       if(typeof src.thr==='number')T.thr=src.thr;
       if(typeof src.op==='number')T.op=src.op;
+      T.design=Math.max(0,Math.min(1,(typeof src.design==='number')?src.design:desLv));   // 719: the layer's design, read back
+      if(!T.designU)T.designU={value:T.design}; T.designU.value=T.design;
       T.hid=(src.hid===true); T.repHid=(src.repHid===true);    // 328: the report's own eye, kept
       for(const pr of (src.manual||[])) amEach(MAP,pr[0],t=>{T.manual[t]=pr[1];});
       // 324: the strokes and the grows come back in their order; a sheet from before them has
@@ -6997,7 +7029,8 @@ const amPal=(function(){
     if(polys.length) polyRebuild();
     if(rulTypes.length){activeR=0; rulRebuild();}
     for(const src of (sh.lenTypes||[])){const T=mkLenType(src.name||'',src.color||'#eab308');if(src.id)T.id=src.id;
-      if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true); T.repHid=(src.repHid===true);}
+      if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true); T.repHid=(src.repHid===true);
+      if(typeof src.design==='number'){T.design=src.design;T.designU.value=src.design;}}   // 719
     for(const src of (sh.lengths||[])){
       const L={t:src.t,pts:src.pts.slice(),fit:src.fit||null,
         len:(src.fit&&typeof src.fit.length_m==='number')?src.fit.length_m:lineLen(src.pts),
@@ -7005,7 +7038,8 @@ const amPal=(function(){
       addLine(L);}
     for(const src of (sh.cntTypes||[])){const T=mkCntType(src.name||'',src.color||'#c71f37');if(src.id)T.id=src.id;
       if(typeof src.size==='number')T.size=src.size;
-      if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true); T.repHid=(src.repHid===true);}
+      if(typeof src.op==='number')T.op=src.op; T.hid=(src.hid===true); T.repHid=(src.repHid===true);
+      if(typeof src.design==='number'){T.design=src.design;if(T.designU)T.designU.value=src.design;}}   // 719
     for(const src of (sh.counters||[])){const pts=src.pts||[];
       for(let i=0;i+2<pts.length;i+=3) addX({t:src.t,p:[pts[i],pts[i+1],pts[i+2]],obj:null});}
     if(cntTypes.length)activeC=0;
@@ -7044,7 +7078,7 @@ const amPal=(function(){
       if(!sn||!sn.sheet) return;
       // 494 (3): compared without the derived fields too — a copy written before 494 carries them, and is the same work
       const bare=o=>{ const c=Object.assign({},o); for(const k of ['saved','repairFaces','areaM2','unionM2','typeAreas','lenTotals','cntTotals']) delete c[k]; return JSON.stringify(c); };
-      let same=false; try{ same=bare(sn.sheet)===bare(getSheet(false)); }catch(_){}
+      let same=false; try{ same=bare(amDesignIn(sn.sheet))===bare(getSheet(false)); }catch(_){}   // 719: read as applySheet reads it
       if(same) return;
       const when=new Date(sn.t).toLocaleString('he-IL');
       if(await amAsk('נמצא עותק של העבודה הזאת מהביקור הקודם, עם שינויים שלא יוצאו לגיליון (נשמר '+when+').',
