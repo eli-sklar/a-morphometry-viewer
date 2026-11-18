@@ -3015,7 +3015,14 @@ mat.onBeforeCompile=sh=>{
     if(key===amLabKey) return; amLabKey=key;
     const rc=amLabRc||(amLabRc=new THREE.Raycaster()), O=rc.ray.origin.set(e[12],e[13],e[14]), D=rc.ray.direction;
     rc.near=0;
+    // in an opaque model one hit is the answer: the ray stops at its first (three-mesh-bvh). Not while a display crop is
+    // on (721): what a crop hides is dropped from the list of ALL the hits, and the first may be one of those
+    rc.firstHitOnly=(allow===0&&!((typeof amCropOn==='function')&&amCropOn().length));
+    const V=amLabSee.v||(amLabSee.v=new THREE.Vector3());
     for(let i=0;i<w;i++){ const s=AM_LABS[i], P=s.userData.amLabPts; let seen=!P||allow>=1e9;
+      // a label that is not on the screen is not asked — it is asked when the eye moves, and the eye moves to bring it in
+      // (its place from the object itself: a label just built has no world matrix yet)
+      if(!seen){ s.getWorldPosition(V).project(C); if(!(V.z<=1&&Math.abs(V.x)<=1.3&&Math.abs(V.y)<=1.3)) continue; }
       if(!seen){ const n=P.length, k0=(s.userData.amLabAt||0)%n;              // the point that was seen last is asked first
         for(let j=0;j<n&&!seen;j++){ const k=(k0+j)%n, p=P[k];
           D.set(p[0]-O.x,p[1]-O.y,p[2]-O.z); const d=D.length(); if(!(d>1e-9)){ seen=true; break; }
