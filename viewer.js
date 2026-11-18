@@ -533,6 +533,13 @@ amAboutMount($('logoBtn'),{what:'צפיין האייפד',version:((($('ver')||{
   }
 })();
 const cv=$('cv');
+function amGl1(){
+  if(typeof THREE==='undefined'||!THREE.Material) return false;
+  const P=THREE.Material.prototype;
+  if(!P.extensions) P.extensions={derivatives:true};
+  return P.extensions.derivatives===true;
+}
+amGl1();
 const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
   // a lost GL context is HEARD, not a silent white canvas (field report 25/08);
   // boot restores the embedded sheet and the op-log, so a reload loses nothing
