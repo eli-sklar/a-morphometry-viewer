@@ -590,10 +590,12 @@ function amCropHides(x,y,z,L){ const A=amCropOn(L);
   for(let i=0;i<A.length;i++) if(amCropF1(A[i],x,y,z)>0) return true; return false; }
 // which sub-faces are hidden now (by their centres) — null when no crop is on; made once for each state of the crops.
 // The acts on whole sub-faces (the grow, the threshold, the region, the learning, the overlap) pass over these
-function amCropMask(){ const A=amCropOn(); if(!A.length) return null;
-  if(amCropMaskC&&amCropMaskC.rev===amCropRev&&amCropMaskC.m.length===N) return amCropMaskC.m;
-  const m=new Uint8Array(N);
-  for(let f=0;f<N;f++){ const x=cen[f*3], y=cen[f*3+1], z=cen[f*3+2]; for(let i=0;i<A.length;i++) if(amCropF1(A[i],x,y,z)>0){ m[f]=1; break; } }
+// (n — how many centres `cen` holds: the measurement screen's sub-faces by default, the training screen's faces given)
+function amCropMask(n){ const A=amCropOn(); if(!A.length) return null;
+  const N_=(n===undefined)?N:n;
+  if(amCropMaskC&&amCropMaskC.rev===amCropRev&&amCropMaskC.m.length===N_) return amCropMaskC.m;
+  const m=new Uint8Array(N_);
+  for(let f=0;f<N_;f++){ const x=cen[f*3], y=cen[f*3+1], z=cen[f*3+2]; for(let i=0;i<A.length;i++) if(amCropF1(A[i],x,y,z)>0){ m[f]=1; break; } }
   amCropMaskC={rev:amCropRev, m:m}; return m; }
 // the screen's crops that are on, as the rows a stroke keeps (null — none: the act carries nothing)
 function amCropSnap(){ const A=amCrops.filter(K=>K&&!K.off); if(!A.length) return null;
@@ -649,6 +651,7 @@ function amCropTellBad(){ if(!amCropBad.length&&!amCropBadK) return;
 function amCropTouch(){ amCropRev++; amCropPrepd=null; amCropMaskC=null;
   if(typeof amCropPack==='function') amCropPack();
   if(typeof amCropChips==='function') amCropChips();
+  if(typeof amCropAfter==='function') amCropAfter();   // the screen's own readers of the crops (an id pass, a live selection)
   if(typeof invalidate==='function') invalidate(); }
 // 557 (Eli, Arena_Ashdod at 98%: "במקום בניה הדרגתית של השקיפות אני מקבל הרבה פעמים אזורים שקופים ואזורים אטומים"; "לפי ההמלצה"):
 // the model below 100% drawn as TWO layers. See-through with no depth (265) blends the surfaces along a ray in the order of the
@@ -1871,7 +1874,11 @@ mat.onBeforeCompile=sh=>{
       f=(op.s>=0)?Math.min(f,g):Math.max(f,-g); }
     return f===Infinity?ix.farPos:f;
   }
-  function ccField(en,x,y,z){
+  function ccField(en,x,y,z,nok){
+    // 721: what a display crop hid when a selection was made is not of it — after the inversion too (the training
+    // screen's "crop outside" does not take what was hidden): max(the entry's field, its crops)
+    // `kin` — the entry is the INSIDE of a selection (the red of the training screen): there the crops take away, min(f, -crops)
+    if(en.k&&!nok){ const f=ccField(en,x,y,z,true), g=amCropKField(en,x,y,z); return en.kin?(-g<f?-g:f):(g>f?g:f); }
     if(en._ix){ const f=ccFieldIx(en._ix,en.ops,x,y,z,en); return en.inv?-f:f; }
     let f=en.st?(en.st(en.cur)?-CC_BIG:CC_BIG):Infinity;
     for(const op of en.ops){ if(op.t==='faces'){ const v=op.m.get(en.cur); if(v!==undefined) f=(v>0)?-CC_BIG:CC_BIG; continue; }
