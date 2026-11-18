@@ -642,9 +642,11 @@ function amSeeRender(renderer,scene,camera,mesh){
     mesh.material=Array.isArray(mat0)?ms.map(sec):sec(m0); renderer.autoClear=false; renderer.render(mesh,camera);
     // (2a) 715: the bodies seen through the model — what of them lies behind the nearest, over the second layer
     //      (713: wherever they hang in the scene — a polygon's body lives in its group — and seen only if all above it is)
-    { const thru=[]; scene.traverse(c=>{ if(!c.userData||!c.userData.amThru) return;
-        for(let p=c;p;p=p.parent) if(!p.visible) return;
-        thru.push(c); });
+    //      722: a flagged node is drawn with all that is under it, in one drawing — the polygons' and the ruler's groups
+    //      hold thousands of lines and points, and a drawing each was a frame's time; nothing under it is taken again
+    { const thru=[]; (function walk(c){ if(!c.visible) return;
+        if(c.userData&&c.userData.amThru){ thru.push(c); return; }
+        for(let i=0;i<c.children.length;i++) walk(c.children[i]); })(scene);
       if(thru.length){ AM_THRU.tD1.value=S.rt.depthTexture; AM_THRU.uRes.value.copy(S.size); AM_THRU.uThru.value=1;
         for(const c of thru) renderer.render(c,camera);
         AM_THRU.uThru.value=0; } }
@@ -2935,6 +2937,92 @@ mat.onBeforeCompile=sh=>{
   // run or a ring erased by its tag, a smoothing change: no ⚠ on the export and no recovery copy. Here it is
   // what every other change of the iPad does
   function markDirty(){ markUnexported(true); }
+  // 722 (Eli, 17/11: "הקצוות של הפוליגונים נראים דרך המודל יותר מדי למרחק … אני רואה אותם גם דרך קירות ומכל מקום במודל וזה
+  // מאוד מעמיס ומפריע"): a polygon's lines and corner points, the ruler, a smoothed copy's rim and a volume region's rim were
+  // drawn with no depth test — a straight line on a rough wall is cut by every bump — and so were seen through the whole
+  // model. They are tested for depth again, PULLED toward the eye by AM_LINE_D (20 cm; measured on Kziv_clean, where at
+  // 20 cm 0.34% of the polygons' length is cut — Eli, 17/11): what stands closer than that in front of a line (a bump, a
+  // stone, the wall's own roughness) does not hide it; a wall between it and the eye does. The pull is of the VERTEX, along
+  // its own ray to the eye — the picture does not move — and never more than half the way to the eye (490, mapM3PullOn).
+  // A long line pulled at its two ends only is pulled far less in its middle when it is seen from near (a 41 m ruler
+  // from 2 m: 2 cm), so a line is drawn in pieces of AM_LINE_STEP (amLinePts; the ruler's strip in amRulSeg).
+  // In a see-through model (557) the screen's depth is the nearest surface's alone: the lines are drawn as the bodies of
+  // 715 are (uThru) — what lies behind the nearest in (2a), what lies in front of it in (3) — and are seen through it as
+  // the wall they lie on is. `whole` = a line drawn over everything, as all were (a ring still being drawn, 449; a ring
+  // or a run being dragged): no depth test, no pull, and nothing of it in (2a).
+  // A LABEL goes with its line (Eli, 17/11), whole: a sprite cut by the pixel is half a label. It is seen when one of
+  // its line's points is (amLabSee) — a ray from the eye to the point, pulled as the line is; the surfaces it may cross
+  // are none in an opaque model and one in a see-through one, as the picture has it.
+  var AM_LINE_D=0.20, AM_LINE_STEP=0.10, AM_LINE_U={uAmPull:{value:AM_LINE_D}};
+  function amLineMat(m,whole){
+    if(whole){ m.depthTest=false; return amThruNot(m); }
+    const T=(typeof AM_THRU!=='undefined')?AM_THRU:null;
+    if(T&&!T.uRes.value) T.uRes.value=new THREE.Vector2(1,1);
+    m.depthTest=true; m.depthWrite=false;
+    const base=m.onBeforeCompile, key=m.customProgramCacheKey;
+    m.onBeforeCompile=function(sh,r){ if(base) base.call(this,sh,r);
+      if(sh.vertexShader.indexOf('#include <project_vertex>')>=0){ sh.uniforms.uAmPull=AM_LINE_U.uAmPull;
+        sh.vertexShader='uniform float uAmPull;\n'+sh.vertexShader.replace('#include <project_vertex>',
+          '#include <project_vertex>\n{ float amL=length(mvPosition.xyz); mvPosition.xyz*=max(amL-uAmPull,0.5*amL)/max(amL,1e-6); gl_Position=projectionMatrix*mvPosition; }'); }
+      if(T){ Object.assign(sh.uniforms,T);
+        sh.fragmentShader='uniform sampler2D tD1;uniform vec2 uRes;uniform float uEps;uniform float uThru;\n'+sh.fragmentShader.replace('#include <clipping_planes_fragment>',
+          'if(uThru>0.5&&gl_FragCoord.z<=texture2D(tD1,gl_FragCoord.xy/uRes).x+uEps) discard;   // 715: (2a) draws only what is behind the nearest\n#include <clipping_planes_fragment>'); } };
+    m.customProgramCacheKey=function(){ return 'amLineD'+(T?'T':'')+'|'+(key?key.call(this):''); };
+    m.userData.amThru=1;                    // amThru(o) leaves it as it is: its part in (2a) is written here
+    m.needsUpdate=true; return m;
+  }
+  // what is drawn in (3) alone — a whole line, a label, a number disc — and sits in a group that (2a) draws: not in (2a).
+  // Its depth test stays as it is
+  function amThruNot(m){
+    const T=(typeof AM_THRU!=='undefined')?AM_THRU:null;
+    if(!T||(m.userData&&m.userData.amThru)) return m;
+    const base=m.onBeforeCompile, key=m.customProgramCacheKey;
+    m.onBeforeCompile=function(sh,r){ if(base) base.call(this,sh,r); sh.uniforms.uThru=T.uThru;
+      sh.fragmentShader='uniform float uThru;\n'+sh.fragmentShader.replace('#include <clipping_planes_fragment>',
+        'if(uThru>0.5) discard;   // 722: drawn in (3) alone, not in (2a)\n#include <clipping_planes_fragment>'); };
+    m.customProgramCacheKey=function(){ return 'amThruNot|'+(key?key.call(this):''); };
+    m.userData.amThru=1; m.needsUpdate=true; return m;
+  }
+  // a straight line from a to b ([x,y,z]) as points no farther apart than AM_LINE_STEP — as many as its length asks for
+  function amLinePts(a,b){
+    const L=Math.hypot(b[0]-a[0],b[1]-a[1],b[2]-a[2]), n=(L>0&&isFinite(L))?Math.max(1,Math.ceil(L/AM_LINE_STEP)):1, P=[];
+    for(let i=0;i<=n;i++){ const t=i/n; P.push(new THREE.Vector3(a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t)); }
+    return P;
+  }
+  // a label and the points of its line ([x,y,z], in the model's coordinates); no points = always seen
+  var AM_LABS=[], amLabKey='', amLabRc=null;
+  function amLabLine(sp,pts){
+    sp.userData.amLabPts=(pts&&pts.length)?pts:null; sp.material.visible=true;
+    amThruNot(sp.material);                 // a label is not drawn in (2a)
+    AM_LABS.push(sp); amLabKey=''; return sp;
+  }
+  // before every picture (rescaleFixed): asked again only when the eye moved, the labels were built again, the model
+  // turned see-through or opaque, or a display crop changed
+  function amLabSee(){
+    if(!AM_LABS.length) return;
+    let M=null, C=null, Rn=null; try{ M=mesh; C=camera; Rn=renderer; }catch(_){ return; }   // not before the screen has its model
+    if(!M||!M.geometry||!C) return;
+    let w=0; for(let i=0;i<AM_LABS.length;i++){ const s=AM_LABS[i]; if(s.parent) AM_LABS[w++]=s; } AM_LABS.length=w;
+    if(!w) return;
+    const m0=Array.isArray(M.material)?M.material[0]:M.material;
+    const see=!!(m0&&m0.transparent&&m0.opacity<0.999), gl2=!!(Rn&&Rn.capabilities&&Rn.capabilities.isWebGL2);
+    // the picture's own law: nothing written to depth (a hidden model, a see-through one where there is no two-layer
+    // drawing) hides nothing; a see-through model drawn in two layers lets one surface stand in front
+    const allow=(!M.visible||!M.parent||!m0)?1e9:(!see?0:(gl2?1:1e9));
+    C.updateMatrixWorld();
+    const e=C.matrixWorld.elements, D0=AM_LINE_U.uAmPull.value;
+    let key=allow+'|'+w+'|'+D0+'|'+((typeof amCropRev!=='undefined')?amCropRev:0); for(let i=0;i<16;i++) key+='|'+e[i];
+    if(key===amLabKey) return; amLabKey=key;
+    const rc=amLabRc||(amLabRc=new THREE.Raycaster()), O=rc.ray.origin.set(e[12],e[13],e[14]), D=rc.ray.direction;
+    rc.near=0;
+    for(let i=0;i<w;i++){ const s=AM_LABS[i], P=s.userData.amLabPts; let seen=!P||allow>=1e9;
+      if(!seen){ const n=P.length, k0=(s.userData.amLabAt||0)%n;              // the point that was seen last is asked first
+        for(let j=0;j<n&&!seen;j++){ const k=(k0+j)%n, p=P[k];
+          D.set(p[0]-O.x,p[1]-O.y,p[2]-O.z); const d=D.length(); if(!(d>1e-9)){ seen=true; break; }
+          D.multiplyScalar(1/d); rc.far=Math.max(d-D0,0.5*d);
+          if(rc.intersectObject(M,false).length<=allow){ seen=true; s.userData.amLabAt=k; } } }
+      if(s.material.visible!==seen) s.material.visible=seen; }
+  }
   /* 25/09 · THE RULER'S LINE, WITH A WIDTH AND A DASH (Eli: "גם עיצוב (שיהפוך למקווקוו) וגם
      גלגלת רוחב קו, כמו לסרט המדידה"). WebGL draws a THREE.Line one pixel wide and ignores any
      other width, so each segment is drawn as a STRIP: four corners, which the vertex shader
@@ -2945,8 +3033,8 @@ mat.onBeforeCompile=sh=>{
      The dash is cut by the distance ALONG the segment in model units — the 302 definition,
      unchanged: a dash of 1.2% of the model's radius, a gap of 3·design times that. */
   const AM_RUL_VS=[
-    'attribute vec3 aA; attribute vec3 aB;',
-    'uniform vec2 uRes; uniform float uWidth;',
+    'attribute vec3 aA; attribute vec3 aB; attribute float aU;',
+    'uniform vec2 uRes; uniform float uWidth; uniform float uAmPull;',
     'varying float vDist;',
     'void amTrim(const in vec4 s, inout vec4 e){',
     '  float a=projectionMatrix[2][2], b=projectionMatrix[3][2];',
@@ -2954,7 +3042,9 @@ mat.onBeforeCompile=sh=>{
     'void main(){',
     '  vec4 s=modelViewMatrix*vec4(aA,1.0), e=modelViewMatrix*vec4(aB,1.0);',
     '  if(projectionMatrix[2][3]==-1.0){',          // perspective: an end behind the eye is cut back to it
-    '    if(s.z<0.0&&e.z>=0.0) amTrim(s,e); else if(e.z<0.0&&s.z>=0.0) amTrim(e,s); }',
+    '    if(s.z<0.0&&e.z>=0.0) amTrim(s,e); else if(e.z<0.0&&s.z>=0.0) amTrim(e,s);',
+    '    float ls=length(s.xyz), le=length(e.xyz);',          // 722: each end pulled toward the eye, never more than half the way
+    '    s.xyz*=max(ls-uAmPull,0.5*ls)/max(ls,1e-6); e.xyz*=max(le-uAmPull,0.5*le)/max(le,1e-6); }',
     '  vec4 cs=projectionMatrix*s, ce=projectionMatrix*e;',
     '  float asp=uRes.x/max(uRes.y,1.0);',
     '  vec2 d=ce.xy/ce.w-cs.xy/cs.w; d.x*=asp;',
@@ -2963,12 +3053,14 @@ mat.onBeforeCompile=sh=>{
     '  vec4 c=(position.x<0.5)?cs:ce;',
     '  c.xy+=off*position.y*c.w;',
     '  gl_Position=c;',
-    '  vDist=(position.x<0.5)?0.0:distance(aA,aB);',
+    '  vDist=aU+((position.x<0.5)?0.0:distance(aA,aB));',          // 722: aU — where this piece begins along the line
     '}'].join('\n');
   const AM_RUL_FS=[
     'uniform vec3 diffuse; uniform float opacity; uniform float uDash; uniform float uGap;',
+    'uniform sampler2D tD1; uniform vec2 uBuf; uniform float uEps; uniform float uThru; uniform float uWhole;',
     'varying float vDist;',
     'void main(){',
+    '  if(uThru>0.5&&(uWhole>0.5||gl_FragCoord.z<=texture2D(tD1,gl_FragCoord.xy/uBuf).x+uEps)) discard;',   // 715 · 722: (2a) draws only what is behind the nearest
     '  if(uGap>0.0&&mod(vDist,uDash+uGap)>uDash) discard;',
     '  gl_FragColor=vec4(diffuse,opacity);',
     '  #include <colorspace_fragment>',
@@ -2981,19 +3073,33 @@ mat.onBeforeCompile=sh=>{
     Math.round(1+(v-mn)/Math.max(1,mx-mn)*(AM_RUL_WMAX-1))));}
   function amRulWToSlider(w,mn,mx){return Math.round(mn+(w-1)/(AM_RUL_WMAX-1)*(mx-mn));}
   const _amRulRes=new THREE.Vector2();
-  function amRulSeg(A,B,col,op,wPx){
+  function amRulSeg(A,B,col,op,wPx,whole){
     const g=new THREE.BufferGeometry();
-    // x: which end (0 = A, 1 = B), y: which side of the line; the ends themselves ride in aA/aB
-    g.setAttribute('position',new THREE.Float32BufferAttribute([0,1,0, 0,-1,0, 1,1,0, 1,-1,0],3));
-    const a=[A.x,A.y,A.z], b=[B.x,B.y,B.z];
-    g.setAttribute('aA',new THREE.Float32BufferAttribute([].concat(a,a,a,a),3));
-    g.setAttribute('aB',new THREE.Float32BufferAttribute([].concat(b,b,b,b),3));
-    g.setIndex([0,2,1, 2,3,1]);
+    // x: which end (0 = A, 1 = B), y: which side of the line; the ends themselves ride in aA/aB.
+    // 722: the line is a row of pieces no longer than AM_LINE_STEP, each with its own two ends — the pull toward the eye
+    // is of the ends, and a long piece is pulled far less in its middle; aU is where a piece begins along the line (the dash)
+    const L=Math.hypot(B.x-A.x,B.y-A.y,B.z-A.z), n=(L>0&&isFinite(L))?Math.max(1,Math.ceil(L/AM_LINE_STEP)):1;
+    const P=new Float32Array(n*12), aA=new Float32Array(n*12), aB=new Float32Array(n*12), aU=new Float32Array(n*4), I=[];
+    for(let i=0;i<n;i++){ const t0=i/n, t1=(i+1)/n, o=i*12;
+      const ax=A.x+(B.x-A.x)*t0, ay=A.y+(B.y-A.y)*t0, az=A.z+(B.z-A.z)*t0, bx=A.x+(B.x-A.x)*t1, by=A.y+(B.y-A.y)*t1, bz=A.z+(B.z-A.z)*t1;
+      P.set([0,1,0, 0,-1,0, 1,1,0, 1,-1,0],o);
+      for(let k=0;k<4;k++){ aA[o+k*3]=ax; aA[o+k*3+1]=ay; aA[o+k*3+2]=az; aB[o+k*3]=bx; aB[o+k*3+1]=by; aB[o+k*3+2]=bz; aU[i*4+k]=L*t0; }
+      const v=i*4; I.push(v,v+2,v+1, v+2,v+3,v+1); }
+    g.setAttribute('position',new THREE.BufferAttribute(P,3));
+    g.setAttribute('aA',new THREE.BufferAttribute(aA,3));
+    g.setAttribute('aB',new THREE.BufferAttribute(aB,3));
+    g.setAttribute('aU',new THREE.BufferAttribute(aU,1));
+    g.setIndex(I);
+    if(!AM_THRU.uRes.value) AM_THRU.uRes.value=new THREE.Vector2(1,1);
+    // 722: tested for depth and pulled toward the eye, as a polygon's lines are (amLineDepth); `whole` — a run being
+    // dragged — over everything, as it was. In a see-through model: behind the nearest in (2a), in front of it in (3)
     const u={diffuse:{value:new THREE.Color(col)},opacity:{value:(typeof op==='number')?op:1},
              uRes:{value:new THREE.Vector2(1,1)},uWidth:{value:wPx||AM_RUL_W0},
-             uDash:{value:1},uGap:{value:0}};
+             uDash:{value:1},uGap:{value:0},
+             uAmPull:whole?{value:0}:AM_LINE_U.uAmPull, uWhole:{value:whole?1:0},
+             tD1:AM_THRU.tD1, uBuf:AM_THRU.uRes, uEps:AM_THRU.uEps, uThru:AM_THRU.uThru};
     const mat=new THREE.ShaderMaterial({uniforms:u,vertexShader:AM_RUL_VS,fragmentShader:AM_RUL_FS,
-                                        transparent:true,depthTest:false,depthWrite:false,
+                                        transparent:true,depthTest:!whole,depthWrite:false,
                                         side:THREE.DoubleSide});
     // the names every other overlay answers to, so the gold highlight and the opacity
     // wheels reach this line exactly as they reached the old one
@@ -3004,6 +3110,7 @@ mat.onBeforeCompile=sh=>{
     m.frustumCulled=false;                  // its positions are corner codes, not places
     m.raycast=function(){};                 // nor a surface to be hit
     m.userData.amRulLine=true; m.userData.col=new THREE.Color(col);
+    mat.userData.amThru=1;                  // 722: its part in (2a) is in its own shader — amThru(o) leaves it
     m.onBeforeRender=function(r){
       r.getSize(_amRulRes);
       const cw=(r.domElement&&r.domElement.clientWidth)||_amRulRes.x;
@@ -3095,6 +3202,8 @@ mat.onBeforeCompile=sh=>{
       if(o.geometry)o.geometry.dispose();
       if(o.material){if(o.material.map)o.material.map.dispose();o.material.dispose();}
     }
+    rulGroup.userData.amThru=true;      // 722: in a see-through model the whole group is drawn in (2a) once (amSeeRender)
+    let _grab=null; try{ _grab=amGrab; }catch(_){}   // 722: what is being dragged
     for(const T of rulTypes){
       // 711 (Eli, 14/11: "אורך מדידות סרגל לא מתעדכן מעצמו בשורה השכבות, אלא רק אחרי לחיצה על השכבה"): the layer's
       // total on its chip follows every rebuild — a point placed, dropped, dragged, taken back or brought forward, a
@@ -3109,11 +3218,15 @@ mat.onBeforeCompile=sh=>{
       // ALWAYS in the transparent pass, even at 100% (24/09): an opaque overlay is drawn in the
       // opaque pass, BEFORE the transparent model and layers, which then paint over it — the
       // ruler vanished at 100% and came back at 99% (Eli).
+      // 722: the ruler as a polygon's lines — tested for depth, pulled 20 cm toward the eye (amLineMat, amRulSeg); the
+      // run whose point is being dragged is drawn whole, over everything, until the point is let go
+      const _gid=(_grab&&_grab.kind==='rul')?_grab.id:null, _wh=new Set();
+      if(_gid!==null) for(const run of _runs) if(run.pts.some(x=>x.id===_gid)) for(const x of run.pts) _wh.add(x.id);
       const _lm=()=>({color:col,depthTest:false,transparent:true,opacity:_op});
       for(const q of rulPts){
         if(q.t!==T.id) continue;
         const m=new THREE.Mesh(new THREE.SphereGeometry(1,14,10),
-          new THREE.MeshBasicMaterial(_lm()));
+          amLineMat(new THREE.MeshBasicMaterial(_lm()),_wh.has(q.id)));
         m.position.set(q.x,q.y,q.z); m.renderOrder=999;
         rulGroup.add(m); keepOnScreen(m,RUL_PT_K);
       }
@@ -3122,7 +3235,7 @@ mat.onBeforeCompile=sh=>{
       for(const g of rulSegs){
         if(g.t!==T.id) continue;
         const A=rulPtById(g.a), B=rulPtById(g.b); if(!A||!B) continue;
-        const ln=amRulSeg(A,B,col,_op,_w);
+        const ln=amRulSeg(A,B,col,_op,_w,_wh.has(g.a));
         amRulSegStyle(ln,_w,T.design,bs.radius);
         rulGroup.add(ln);
       }
@@ -3132,6 +3245,13 @@ mat.onBeforeCompile=sh=>{
         const sp=rulTag(run.len.toFixed(2)+' מ\u05f3', T.hex);   // 373: the reading, without the report's number
         sp.userData.amTag={kind:'rul', t:T.id, ids:run.pts.map(x=>x.id)};   // 321: the run, by its tag
         sp.position.set(run.c.x,run.c.y,run.c.z);
+        // 722 (Eli, 17/11): the label goes with its line — seen when one of the run's points, or the middle of one of its
+        // segments, is (amLabSee); the label of a run being dragged stays
+        { let tp=null;
+          if(!run.pts.some(x=>_wh.has(x.id))){ const ids=new Set(run.pts.map(x=>x.id)); tp=run.pts.map(x=>[x.x,x.y,x.z]);
+            for(const g of rulSegs){ if(g.t!==T.id||!ids.has(g.a)) continue; const A=rulPtById(g.a), B=rulPtById(g.b);
+              if(A&&B) tp.push([(A.x+B.x)/2,(A.y+B.y)/2,(A.z+B.z)/2]); } }
+          amLabLine(sp,tp); }
         rulGroup.add(sp); keepOnScreen(sp,RUL_LAB_K);
       }
     }
@@ -3306,6 +3426,7 @@ mat.onBeforeCompile=sh=>{
       if(f.obj.isSprite) f.obj.scale.set(f.tag?s*2.37:(s*f.obj.userData.aspect||s*2.37),s,1);   // a tag-wheel label keeps the report's fixed shape; any other label its own
       else f.obj.scale.setScalar(s);
     }
+    if(typeof amLabSee==='function') amLabSee();   // 722: a label goes with its line
   }
   /* ---- polygon area (decision 253), the EDITOR'S code, character for character.
      Same discipline as the ruler above and for the same reason: an area whose definition
@@ -4097,7 +4218,9 @@ float amStippleA(float a, float lvl){
       // model, as a polygon's outline is, so the edge reads where the model shows through
       { const L=W.L;
         if(L.length){ const lg=new THREE.BufferGeometry(); lg.setAttribute('position',new THREE.BufferAttribute(Float32Array.from(L),3));
-          const ln=new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:col,depthTest:false,transparent:true,opacity:1}));
+          // 722 (Eli, 17/11): as a polygon's lines — tested for depth, pulled 20 cm toward the eye; seen through a see-through model
+          const ln=new THREE.LineSegments(lg,amLineMat(new THREE.LineBasicMaterial({color:col,depthTest:false,transparent:true,opacity:1})));
+          ln.userData.amThru=true;
           ln.userData.smLine=r.at; ln.userData.smReg=r; ln.renderOrder=999; smGroup.add(ln); } }
       let cx=0,cy=0,cz=0; const nv=r.X.length/3;
       for(let v=0;v<nv;v++){ cx+=r.X[v*3]; cy+=r.X[v*3+1]; cz+=r.X[v*3+2]; }
@@ -4363,6 +4486,8 @@ float amStippleA(float a, float lvl){
       if(o.geometry)o.geometry.dispose();
       if(o.material&&!(o.userData&&o.userData.amShared)){if(o.material.map)o.material.map.dispose();o.material.dispose();}
     }
+    polyGroup.userData.amThru=true;     // 722: in a see-through model the whole group is drawn in (2a) once (amSeeRender)
+    let _grab=null; try{ _grab=amGrab; }catch(_){}   // 722: what is being dragged (a screen that has no dragging, or has not come to its line yet: none)
     const draw=(P,open)=>{
       const T=types.find(t=>t.id===P.at)||types[0];
       const col=new THREE.Color((T&&T.hex)||'#38b000');
@@ -4376,19 +4501,22 @@ float amStippleA(float a, float lvl){
       // 449 (Eli, 05/10: "the polygon does not draw — no points appear on a tap"): a ring still being drawn
       // shows its points and lines whole — they are the drawing's aid; at the layer's opacity (14% on his
       // work) they were all but invisible. A closed ring fades with its layer, as before (24/09)
+      // 722 (Eli, 17/11: the lines "נראים … גם דרך קירות ומכל מקום במודל"): a closed ring's lines and points are tested
+      // for depth, pulled 20 cm toward the eye (amLineMat) — a bump does not cut them, a wall hides them. A ring still
+      // being drawn (449) and a ring whose point is being dragged are drawn whole, over everything, as all were
+      const _whole=open||(!!_grab&&_grab.ring===P);
       const _lm=()=>({color:col,depthTest:false,transparent:true,opacity:open?1:_op});
       for(const q of P.pts){
         const m=new THREE.Mesh(new THREE.SphereGeometry(1,14,10),
-          new THREE.MeshBasicMaterial(_lm()));
+          amLineMat(new THREE.MeshBasicMaterial(_lm()),_whole));
         m.position.set(q[0],q[1],q[2]); m.renderOrder=999; m.userData.pgAt=P.at; m.userData.pgOpen=!!open;   // 545
         polyGroup.add(m); keepOnScreen(m,RUL_PT_K);
       }
       const n=P.pts.length;
       for(let i=0;i+1<n||(!open&&i<n);i++){
         const a=P.pts[i], b=P.pts[(i+1)%n];
-        const gm=new THREE.BufferGeometry().setFromPoints(
-          [new THREE.Vector3(a[0],a[1],a[2]),new THREE.Vector3(b[0],b[1],b[2])]);
-        const ln=new THREE.Line(gm,new THREE.LineBasicMaterial(_lm()));
+        const gm=new THREE.BufferGeometry().setFromPoints(amLinePts(a,b));   // 722: in short pieces — the pull is of the vertices
+        const ln=new THREE.Line(gm,amLineMat(new THREE.LineBasicMaterial(_lm()),_whole));
         ln.renderOrder=999; ln.userData.pgAt=P.at; ln.userData.pgOpen=!!open; polyGroup.add(ln);   // 545
       }
       if(open) return;
@@ -4509,7 +4637,9 @@ float amStippleA(float a, float lvl){
     const q=(h.kind==='rul')?rulPtById(h.id):null;
     if(h.kind==='rul'&&!q) return false;
     h.from=(h.kind==='rul')?[q.x,q.y,q.z]:h.ring.pts[h.i].slice();
-    amGrab=h; return true;
+    amGrab=h;
+    if(h.kind==='rul') rulRebuild(); else polyRebuild();   // 722: what is being dragged is drawn whole, from the press
+    return true;
   }
   function amGrabMove(e){
     if(!amGrab) return;
@@ -4530,6 +4660,7 @@ float amStippleA(float a, float lvl){
   function amGrabEnd(){
     if(!amGrab) return;
     const h=amGrab; amGrab=null;
+    if(h.kind==='rul') rulRebuild(); else polyRebuild();   // 722: let go — hidden again where the model hides it
     let now=null;
     if(h.kind==='rul'){const q=rulPtById(h.id); if(q) now=[q.x,q.y,q.z];}
     else if(h.ring.pts[h.i]) now=h.ring.pts[h.i].slice();
