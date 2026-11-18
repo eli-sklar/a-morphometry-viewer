@@ -2959,14 +2959,15 @@ mat.onBeforeCompile=sh=>{
     const T=(typeof AM_THRU!=='undefined')?AM_THRU:null;
     if(T&&!T.uRes.value) T.uRes.value=new THREE.Vector2(1,1);
     m.depthTest=true; m.depthWrite=false;
+    const W={value:0}; m.userData.amWholeU=W;   // the line whole for a while (amLineWhole): through everything, in (3) alone
     const base=m.onBeforeCompile, key=m.customProgramCacheKey;
     m.onBeforeCompile=function(sh,r){ if(base) base.call(this,sh,r);
       if(sh.vertexShader.indexOf('#include <project_vertex>')>=0){ sh.uniforms.uAmPull=AM_LINE_U.uAmPull;
         sh.vertexShader='uniform float uAmPull;\n'+sh.vertexShader.replace('#include <project_vertex>',
           '#include <project_vertex>\n{ float amL=length(mvPosition.xyz); mvPosition.xyz*=max(amL-uAmPull,0.5*amL)/max(amL,1e-6); gl_Position=projectionMatrix*mvPosition; }'); }
-      if(T){ Object.assign(sh.uniforms,T);
-        sh.fragmentShader='uniform sampler2D tD1;uniform vec2 uRes;uniform float uEps;uniform float uThru;\n'+sh.fragmentShader.replace('#include <clipping_planes_fragment>',
-          'if(uThru>0.5&&gl_FragCoord.z<=texture2D(tD1,gl_FragCoord.xy/uRes).x+uEps) discard;   // 715: (2a) draws only what is behind the nearest\n#include <clipping_planes_fragment>'); } };
+      if(T){ Object.assign(sh.uniforms,T); sh.uniforms.uAmWhole=W;
+        sh.fragmentShader='uniform sampler2D tD1;uniform vec2 uRes;uniform float uEps;uniform float uThru;uniform float uAmWhole;\n'+sh.fragmentShader.replace('#include <clipping_planes_fragment>',
+          'if(uThru>0.5&&(uAmWhole>0.5||gl_FragCoord.z<=texture2D(tD1,gl_FragCoord.xy/uRes).x+uEps)) discard;   // 715: (2a) draws only what is behind the nearest — and nothing of a line that is whole\n#include <clipping_planes_fragment>'); } };
     m.customProgramCacheKey=function(){ return 'amLineD'+(T?'T':'')+'|'+(key?key.call(this):''); };
     m.userData.amThru=1;                    // amThru(o) leaves it as it is: its part in (2a) is written here
     m.needsUpdate=true; return m;
@@ -2983,6 +2984,38 @@ mat.onBeforeCompile=sh=>{
     m.customProgramCacheKey=function(){ return 'amThruNot|'+(key?key.call(this):''); };
     m.userData.amThru=1; m.needsUpdate=true; return m;
   }
+  // 722 (Eli, 18/11: "פריט מודגש מוצג שלם דרך הכול כל עוד הוא מודגש"): a line's object shown WHOLE for a while, and back.
+  // Its material's own switch — no depth test, drawn in (3) alone — for a material of amLineMat and for the ruler's line
+  // (amRulSeg's uWhole); a line made whole from its start (a ring being drawn, a run being dragged) is not touched.
+  // A label goes with its line: amLabWhole on it, and the labels are asked again
+  function amLineWhole(o,on){
+    if(!o) return false; let did=false; on=!!on;
+    const mm=o.material?(Array.isArray(o.material)?o.material:[o.material]):[];
+    for(const m of mm){ const U=m.userData||{};
+      if(U.amWholeU){ if((U.amWholeU.value>0.5)!==on){ U.amWholeU.value=on?1:0; m.depthTest=!on; } did=true; }
+      else if(U.amRulLine&&!U.amWhole0&&m.uniforms&&m.uniforms.uWhole){ if((m.uniforms.uWhole.value>0.5)!==on){ m.uniforms.uWhole.value=on?1:0; m.depthTest=!on; } did=true; } }
+    if(o.userData&&('amLabPts' in o.userData)&&(o.userData.amLabWhole===true)!==on){ o.userData.amLabWhole=on; amLabKey=''; did=true; }
+    return did; }
+  // the picture's own law for what stands in front of a line: how many surfaces may — nothing written to depth (a hidden
+  // model, a see-through one where there is no two-layer drawing) hides nothing; a see-through model drawn in two layers
+  // lets one surface stand in front; an opaque one, none
+  function amSeeAllow(M,Rn){
+    const m0=Array.isArray(M.material)?M.material[0]:M.material;
+    const see=!!(m0&&m0.transparent&&m0.opacity<0.999), gl2=!!(Rn&&Rn.capabilities&&Rn.capabilities.isWebGL2);
+    return (!M.visible||!M.parent||!m0)?1e9:(!see?0:(gl2?1:1e9)); }
+  // 722 (Eli, 18/11: "נתפסת רק נקודה שנראית"): is a point of a line SEEN — by the law its line is drawn by: a ray from the
+  // eye to the point, pulled toward the eye as the line is, and no more surfaces in front than the picture lets. A pick
+  // on the screen (by nearness in pixels) asks this of the point it would take
+  function amPtSeen(x,y,z){
+    let M=null, C=null, Rn=null; try{ M=mesh; C=camera; Rn=renderer; }catch(_){ return true; }
+    if(!M||!M.geometry||!C) return true;
+    const allow=amSeeAllow(M,Rn); if(allow>=1e9) return true;
+    C.updateMatrixWorld();
+    const e=C.matrixWorld.elements, rc=amPtSeen.rc||(amPtSeen.rc=new THREE.Raycaster()), O=rc.ray.origin.set(e[12],e[13],e[14]), D=rc.ray.direction;
+    D.set(x-O.x,y-O.y,z-O.z); const d=D.length(); if(!(d>1e-9)) return true;
+    D.multiplyScalar(1/d); rc.near=0; rc.far=Math.max(d-AM_LINE_U.uAmPull.value,0.5*d);
+    rc.firstHitOnly=(allow===0&&!((typeof amCropOn==='function')&&amCropOn().length));
+    return rc.intersectObject(M,false).length<=allow; }
   // a straight line from a to b ([x,y,z]) as points no farther apart than AM_LINE_STEP — as many as its length asks for
   function amLinePts(a,b){
     const L=Math.hypot(b[0]-a[0],b[1]-a[1],b[2]-a[2]), n=(L>0&&isFinite(L))?Math.max(1,Math.ceil(L/AM_LINE_STEP)):1, P=[];
@@ -2994,6 +3027,8 @@ mat.onBeforeCompile=sh=>{
   function amLabLine(sp,pts){
     sp.userData.amLabPts=(pts&&pts.length)?pts:null; sp.material.visible=true;
     amThruNot(sp.material);                 // a label is not drawn in (2a)
+    // 722 (Eli, 18/11): a label that is not seen is not picked either — whatever asks (a press on a tag, a hover)
+    if(!sp.userData.amLabRay){ const r0=sp.raycast; sp.raycast=function(rc,hits){ if(this.material&&this.material.visible) r0.call(this,rc,hits); }; sp.userData.amLabRay=1; }
     AM_LABS.push(sp); amLabKey=''; return sp;
   }
   // before every picture (rescaleFixed): asked again only when the eye moved, the labels were built again, the model
@@ -3004,11 +3039,7 @@ mat.onBeforeCompile=sh=>{
     if(!M||!M.geometry||!C) return;
     let w=0; for(let i=0;i<AM_LABS.length;i++){ const s=AM_LABS[i]; if(s.parent) AM_LABS[w++]=s; } AM_LABS.length=w;
     if(!w) return;
-    const m0=Array.isArray(M.material)?M.material[0]:M.material;
-    const see=!!(m0&&m0.transparent&&m0.opacity<0.999), gl2=!!(Rn&&Rn.capabilities&&Rn.capabilities.isWebGL2);
-    // the picture's own law: nothing written to depth (a hidden model, a see-through one where there is no two-layer
-    // drawing) hides nothing; a see-through model drawn in two layers lets one surface stand in front
-    const allow=(!M.visible||!M.parent||!m0)?1e9:(!see?0:(gl2?1:1e9));
+    const allow=amSeeAllow(M,Rn);            // the picture's own law
     C.updateMatrixWorld();
     const e=C.matrixWorld.elements, D0=AM_LINE_U.uAmPull.value;
     let key=allow+'|'+w+'|'+D0+'|'+((typeof amCropRev!=='undefined')?amCropRev:0); for(let i=0;i<16;i++) key+='|'+e[i];
@@ -3019,7 +3050,7 @@ mat.onBeforeCompile=sh=>{
     // on (721): what a crop hides is dropped from the list of ALL the hits, and the first may be one of those
     rc.firstHitOnly=(allow===0&&!((typeof amCropOn==='function')&&amCropOn().length));
     const V=amLabSee.v||(amLabSee.v=new THREE.Vector3());
-    for(let i=0;i<w;i++){ const s=AM_LABS[i], P=s.userData.amLabPts; let seen=!P||allow>=1e9;
+    for(let i=0;i<w;i++){ const s=AM_LABS[i], P=s.userData.amLabPts; let seen=!P||allow>=1e9||s.userData.amLabWhole===true;   // whole: its line is highlighted
       // a label that is not on the screen is not asked — it is asked when the eye moves, and the eye moves to bring it in
       // (its place from the object itself: a label just built has no world matrix yet)
       if(!seen){ s.getWorldPosition(V).project(C); if(!(V.z<=1&&Math.abs(V.x)<=1.3&&Math.abs(V.y)<=1.3)) continue; }
@@ -3108,6 +3139,7 @@ mat.onBeforeCompile=sh=>{
     const mat=new THREE.ShaderMaterial({uniforms:u,vertexShader:AM_RUL_VS,fragmentShader:AM_RUL_FS,
                                         transparent:true,depthTest:!whole,depthWrite:false,
                                         side:THREE.DoubleSide});
+    mat.userData.amRulLine=1; if(whole) mat.userData.amWhole0=1;   // amLineWhole: its switch is uWhole; made whole — not switched
     // the names every other overlay answers to, so the gold highlight and the opacity
     // wheels reach this line exactly as they reached the old one
     mat.color=u.diffuse.value;
@@ -3292,7 +3324,7 @@ mat.onBeforeCompile=sh=>{
       v.set(q.x,q.y,q.z).project(camera);
       if(v.z<-1||v.z>1) continue;
       const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
-      if(d<bd){bd=d;best=q;}
+      if(d<bd&&amPtSeen(q.x,q.y,q.z)){bd=d;best=q;}   // 722 (Eli, 18/11): only a point that is seen is taken
     }
     return best;
   }
@@ -3392,7 +3424,7 @@ mat.onBeforeCompile=sh=>{
     // a press on one of its points is the point's (the eraser asks: the point or the ring, 252)
     const R=h[0].object.userData.ring, v=new THREE.Vector3();
     for(const q of R.pts){ v.set(q[0],q[1],q[2]).project(camera);
-      if(Math.hypot((v.x+1)*r.width/2-(e.clientX-r.left),(1-v.y)*r.height/2-(e.clientY-r.top))<14) return null; }
+      if(Math.hypot((v.x+1)*r.width/2-(e.clientX-r.left),(1-v.y)*r.height/2-(e.clientY-r.top))<14&&amPtSeen(q[0],q[1],q[2])) return null; }   // 722: a point that is seen
     return R;
   }
   function amTagErase(e){
@@ -4625,7 +4657,7 @@ float amStippleA(float a, float lvl){
       v.set(q.x,q.y,q.z).project(camera);
       if(v.z<-1||v.z>1) continue;
       const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
-      if(d<bd){bd=d; best={kind:'rul',id:q.id};}
+      if(d<bd&&amPtSeen(q.x,q.y,q.z)){bd=d; best={kind:'rul',id:q.id};}   // 722 (Eli, 18/11): only a point that is seen is taken
     }
     // a ring still being drawn is grabbable too — that is when a point is most often wrong
     const rings=curPoly?polys.concat([curPoly]):polys;
@@ -4635,7 +4667,7 @@ float amStippleA(float a, float lvl){
       v.set(q[0],q[1],q[2]).project(camera);
       if(v.z<-1||v.z>1) continue;
       const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
-      if(d<bd){bd=d; best={kind:'poly',ring:P,i:i};}
+      if(d<bd&&(P===curPoly||amPtSeen(q[0],q[1],q[2]))){bd=d; best={kind:'poly',ring:P,i:i};}   // 722: a ring being drawn is whole
     }
     return best;
   }
