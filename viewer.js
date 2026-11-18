@@ -90,6 +90,12 @@ const $=id=>document.getElementById(id);
    when there is a photo, a camera drawn beside it. No number (Eli: "לא מופיע מספר").
    The card is the program's own dialog window (amAsk): the same frame, colours and buttons. */
 const AM_TAG_SIDE=2048, AM_TAG_Q=0.85, AM_TAG_TITLE_MAX=20;
+/* 726 (Eli, 18/11: "לחיצה אחת = פעולה אחת"): one press of Esc closes ONE thing. A held key repeats, and the repeats of
+   the Esc that closed a window went on to whatever was under it (a dialog swallows only the event it sees): to a
+   rejection in Ada's review, to an open polygon, to the map's cutting frame; in a tag's card — out of the full photo
+   and then out of the card, with what was typed. The repeats of Esc are taken HERE, first of the page's listeners
+   (capture, on the window, before any other is registered), and reach no one. A new press closes the next thing. */
+window.addEventListener('keydown',function amEscOnce(e){ if((e.key||'')==='Escape'&&e.repeat){ e.preventDefault(); e.stopImmediatePropagation(); } },true);
 function amTagId(){ return 'g'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 // 640: the photos a tag of a sheet names, in their order — `imgs`, or the one `img` of a sheet written before it (a list
 // of one). Only names of the tags' folder, each once
@@ -4624,6 +4630,17 @@ float amStippleA(float a, float lvl){
     if(typeof updateHB==='function') updateHB();   // 527: ↶ is live while a polygon is open — it takes back its last point
   }
   function polyCancel(){ if(curPoly){ curPoly=null; polyRebuild(); if(typeof updateHB==='function') updateHB(); } }
+  /* 726 (Eli, 18/11): Ctrl+Z, and what a HELD Ctrl+Z does. A press takes back the last point of an open shape (256), or,
+     with none open, a step of the history. The keyboard's repeats go on undoing — but a hold that BEGAN inside an open
+     shape belongs to the shape: when its points are gone the hold does nothing more, and does not go on into the
+     general history (one would undo whole earlier acts without meaning to). Released and pressed again, it goes on. */
+  var amUndoHold=null;
+  function amUndoKey(rep){
+    const pt=()=>!!((activeKind==='rul'&&rulLast!==null&&rulUndoPoint())||(activeKind==='area'&&curPoly&&polyUndoPoint()));
+    if(!rep){ amUndoHold=pt()?'shape':'hist'; if(amUndoHold==='hist') undo(); return; }
+    if(amUndoHold==='shape'){ pt(); return; }
+    if(!pt()) undo();
+  }
   function polyUndoPoint(){
     if(!curPoly||!curPoly.pts.length) return false;
     curPoly.pts.pop();
@@ -6393,11 +6410,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const k=(ev.key||'').toLowerCase();
     const z=(ev.code==='KeyZ')||k==='z', y=(ev.code==='KeyY')||k==='y';
     // 256: while a shape is open, Ctrl+Z takes back the last POINT and nothing else
-    if(z&&!ev.shiftKey){
-      if(activeKind==='rul'&&rulLast!==null&&rulUndoPoint()){ev.preventDefault();return;}
-      if(activeKind==='area'&&curPoly&&polyUndoPoint()){ev.preventDefault();return;}
-    }
-    if(z&&!ev.shiftKey){ev.preventDefault();undo();}
+    // 726: and a HELD Ctrl+Z that began inside an open shape stops with the shape (amUndoKey)
+    if(z&&!ev.shiftKey){ev.preventDefault();amUndoKey(!!ev.repeat);}
     else if(y||(z&&ev.shiftKey)){ev.preventDefault();redo();}
   });
   $('auto').onclick=autoComplete;
