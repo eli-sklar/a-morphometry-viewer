@@ -2910,7 +2910,7 @@ mat.onBeforeCompile=sh=>{
     updateArea(); invalidate();
   }
   function amMarkAll(){
-    amMarkTimer=0; const w=amCutCancel(true); amCutUI(false);
+    amMarkTimer=0; const w=amCutCancel(true).concat(amCutOrph.splice(0)); amCutUI(false);
     const g=amMarkAllG(types.slice()); while(!g.next().done){}
     for(const fn of w){ try{ fn(); }catch(e){ console.error(e); } }   // what waited for a job, now the cut is whole
   }
@@ -2923,13 +2923,20 @@ mat.onBeforeCompile=sh=>{
   // The steps follow one another as tasks (a MessageChannel), each within its budget — the browser draws and takes input
   // between them. One a frame (requestAnimationFrame) took the line 45 s against 20 at once on Kennedy (8 ms of 16.7)
   var amCutJob=null, AM_CUT_BUDGET=24, amCutPmHome=null, amCutMC=null, amCutSeq=0, amCutSched=null;
+  // 741 (ניסויים 730 (2): "הפק דוח" said "waiting" and then nothing for a quarter of an hour): a stop that is not the end of the
+  // work — another sheet comes in, a learning recolours — keeps what waited for the cut (amCutPark); the next cut takes it
+  // (amCutStart, amMarkAll), and amCutResume starts one when nothing else does. A cut whose step fails ends: the layer it was
+  // in back whole, and each one waiting is called with the error (a sheet request answers 'sheet-error'), not left waiting
+  var amCutOrph=[];
+  function amCutPark(w){ for(const fn of w||[]) amCutOrph.push(fn); }
+  function amCutResume(){ if(amCutOrph.length&&!amCutJob&&!amMarkTimer) amCutStart(); }
   function amCutPost(J){
     if(amCutSched){ amCutSched(()=>{ if(amCutJob===J) amCutStep(); }); return; }   // the QA layer's own clock
     if(!amCutMC){ amCutMC=new MessageChannel(); amCutMC.port1.onmessage=e=>{ if(amCutJob&&e.data===amCutJob.id) amCutStep(); }; }
     amCutMC.port2.postMessage(J.id);
   }
   function amCutStart(){
-    amMarkTimer=0; const w=amCutCancel(true);   // a new request: the one running stops, and what waited, waits for this one
+    amMarkTimer=0; const w=amCutCancel(true).concat(amCutOrph.splice(0));   // a new request: the one running stops, and what waited, waits for this one
     const order=types.slice(), a=types[activeT]; if(a){ order.splice(order.indexOf(a),1); order.unshift(a); }   // the open layer first
     amCutJob={gen:null, T:null, f:0, wait:w, id:++amCutSeq, t:performance.now()};
     window.__amCutCancel=amCutCancel;   // the iPad: a new work, opened in the same page, stops the old one's job
@@ -2945,7 +2952,10 @@ mat.onBeforeCompile=sh=>{
     if(J.end){ const g=t0-J.end; J.ov=J.ov===undefined?g:0.7*J.ov+0.3*g; }
     const B=Math.max(AM_CUT_BUDGET,Math.min(80,6*(J.ov||0)));
     let n=0;   // the clock read every 4 steps — a read each time was a tenth of the job at x4; every 16 let heavy ones run on
-    do{ r=J.gen.next(); if(!r.done) J.f=+r.value||J.f; } while(!r.done&&((++n&3)!==0||performance.now()-t0<B));
+    try{ do{ r=J.gen.next(); if(!r.done) J.f=+r.value||J.f; } while(!r.done&&((++n&3)!==0||performance.now()-t0<B)); }
+    catch(err){ console.error(err);   // 741: the cut failed — it ends, and those waiting hear why
+      const w=(amCutJob===J)?amCutCancel(true):J.wait; amCutUI(false); amMarkDraw(); updateArea(); invalidate();
+      for(const fn of w){ try{ fn(err); }catch(e){ console.error(e); } } return; }
     if(r.done){ amCutJob=null; amCutUI(false,1); for(const fn of J.wait){ try{ fn(); }catch(e){ console.error(e); } } return; }
     amCutUI(true,J.f); J.end=performance.now();
     if(t0-J.t>2000){ J.t=t0; amMarkDraw(); invalidate(); }   // the line as it comes in, every two seconds
@@ -6597,7 +6607,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
             [{t:'לבטל את הלמידה',v:true,primary:true},{t:'להמשיך',v:false}],false)))return;
           if(LEARN_OP===op){ LEARN_OP=null; cb.disabled=true; cb.textContent='מבטל…'; } }; }
       veil.style.display='flex'; if(window.__pmStart)window.__pmStart('לומד את הסימונים',{progress:true}); },1500);
-    amCutCancel();   // 555: the learning recolours all after it, and the cut starts again then
+    amCutPark(amCutCancel(true));   // 555: the learning recolours all after it, and the cut starts again then · 741: what waited, waits for it
     let r=null,ok=false;
     try{
       r=await amLearnRun({types:types,activeT:activeT,N:N,roi:roi,roiCount:roiCount,sq:SFEAT.sq,su:SFEAT.su,uof:SFEAT.uof,K:AM_LEARN_K,stats:LSTATS,
@@ -6606,7 +6616,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         cancelled:()=>LEARN_OP!==op});
       ok=true;
     }finally{
-      clearTimeout(tv); if(LEARN_OP===op)LEARN_OP=null; if(cb)cb.hidden=true;
+      clearTimeout(tv); if(LEARN_OP===op)LEARN_OP=null; if(cb)cb.hidden=true; amCutResume();   // 741
       if(shown){ const hide=()=>{veil.style.display='none';};
         if(ok&&r&&!r.few&&window.__pmFinish)window.__pmFinish(hide); else{ if(window.__pmStop)window.__pmStop(); hide(); } }
     }
@@ -7555,7 +7565,7 @@ const amPal=(function(){
     return -1;
   }
   function applySheet(sh){
-    if(amCutBusy()){ amCutCancel(); setTimeout(()=>{ if(!amCutBusy()) amMarkSoon(); },0); }   // 555: another sheet stops the cut; it starts again after
+    if(amCutBusy()){ amCutPark(amCutCancel(true)); setTimeout(()=>{ if(!amCutBusy()) amMarkSoon(); },0); }   // 555: another sheet stops the cut; it starts again after · 741: what waited, waits for that one
     const _need=(sh&&typeof sh.minReader==='number')?sh.minReader:1;
     if(_need>AM_SHEET_READER)
       throw new Error('\u05d4\u05d2\u05d9\u05dc\u05d9\u05d5\u05df \u05e0\u05db\u05ea\u05d1 \u05d1\u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d9\u05d5\u05ea\u05e8 \u05e9\u05dc \u05d4\u05ea\u05d5\u05db\u05e0\u05d4. \u05e2\u05d3\u05db\u05df \u05d0\u05ea \u05d4\u05e6\u05e4\u05d9\u05d9\u05df.');
