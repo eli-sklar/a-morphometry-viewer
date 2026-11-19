@@ -82,6 +82,12 @@ function snapRead(){
 
 /* ================= boot: renderer first, engine wires up per loaded file ====== */
 const $=id=>document.getElementById(id);
+/* 726 (Eli, 18/11: "לחיצה אחת = פעולה אחת"): one press of Esc closes ONE thing. A held key repeats, and the repeats of
+   the Esc that closed a window went on to whatever was under it (a dialog swallows only the event it sees): to a
+   rejection in Ada's review, to an open polygon, to the map's cutting frame; in a tag's card — out of the full photo
+   and then out of the card, with what was typed. The repeats of Esc are taken HERE, first of the page's listeners
+   (capture, on the window, before any other is registered), and reach no one. A new press closes the next thing. */
+window.addEventListener('keydown',function amEscOnce(e){ if((e.key||'')==='Escape'&&e.repeat){ e.preventDefault(); e.stopImmediatePropagation(); } },true);
 /*AM_TAGCORE_START*/
 /* 332 — tags: a title, a text and a photo on a point of the model (Eli, 28/09). The SAME
    text in the measurement screen, the iPad and the viewer (a gate compares the three), so
@@ -90,12 +96,6 @@ const $=id=>document.getElementById(id);
    when there is a photo, a camera drawn beside it. No number (Eli: "לא מופיע מספר").
    The card is the program's own dialog window (amAsk): the same frame, colours and buttons. */
 const AM_TAG_SIDE=2048, AM_TAG_Q=0.85, AM_TAG_TITLE_MAX=20;
-/* 726 (Eli, 18/11: "לחיצה אחת = פעולה אחת"): one press of Esc closes ONE thing. A held key repeats, and the repeats of
-   the Esc that closed a window went on to whatever was under it (a dialog swallows only the event it sees): to a
-   rejection in Ada's review, to an open polygon, to the map's cutting frame; in a tag's card — out of the full photo
-   and then out of the card, with what was typed. The repeats of Esc are taken HERE, first of the page's listeners
-   (capture, on the window, before any other is registered), and reach no one. A new press closes the next thing. */
-window.addEventListener('keydown',function amEscOnce(e){ if((e.key||'')==='Escape'&&e.repeat){ e.preventDefault(); e.stopImmediatePropagation(); } },true);
 function amTagId(){ return 'g'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 // 640: the photos a tag of a sheet names, in their order — `imgs`, or the one `img` of a sheet written before it (a list
 // of one). Only names of the tags' folder, each once
