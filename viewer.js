@@ -575,6 +575,410 @@ document.addEventListener('visibilitychange',()=>{ amDown=0; window.amInvalidate
 function amCamMoved(){ camera.updateMatrixWorld(); const a=camera.matrixWorld.elements, b=camera.projectionMatrix.elements; let ch=false;
   for(let i=0;i<16;i++){ if(amCamLast[i]!==a[i]){ amCamLast[i]=a[i]; ch=true; } if(amCamLast[16+i]!==b[i]){ amCamLast[16+i]=b[i]; ch=true; } }
   return ch; }
+const AXV=[new THREE.Vector3(1,0,0),new THREE.Vector3(0,1,0),new THREE.Vector3(0,0,1)];
+function concaveSpike(len,rad){          // lathe spike, concave sides, tip at +Y
+  const prof=[];for(let i=0;i<=10;i++){const t=i/10;prof.push(new THREE.Vector2(rad*Math.pow(1-t,1.55),len*t));}
+  return new THREE.LatheGeometry(prof,20);
+}
+function boxEdges(h,size,col){   // 721: col — the edges' colour (the display crop's); none — the frame's gold
+  const mn={x:-h.x,y:-h.y,z:-h.z},mx={x:h.x,y:h.y,z:h.z};
+  const c=[[mn.x,mn.y,mn.z],[mx.x,mn.y,mn.z],[mx.x,mx.y,mn.z],[mn.x,mx.y,mn.z],
+           [mn.x,mn.y,mx.z],[mx.x,mn.y,mx.z],[mx.x,mx.y,mx.z],[mn.x,mx.y,mx.z]];
+  const E=[[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+  const pts=[];for(const [a,b] of E){pts.push(...c[a],...c[b]);}
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+  const dash=size*0.05;
+  const m=new THREE.LineDashedMaterial({color:(col===undefined)?0xb8934a:col,dashSize:dash,gapSize:dash*0.6,linewidth:2,transparent:true,opacity:0.95});
+  const ls=new THREE.LineSegments(g,m);ls.computeLineDistances();return ls;
+}
+// the frame of `box` as a group (placed and turned like the box) and its handles, for the
+// caller to add to its scene; `rotAxes` — the box axes it may turn about (since 473/6 both
+// screens give all three: the map's box tilts too)
+// 721: `look` — another screen's colours for the same frame: {edge, spike, arc, rose}; none — the frame's own
+function amFrameGroup(box,size,rotAxes,look){
+  const group=new THREE.Group(),handles=[];
+  group.position.copy(box.c);group.quaternion.copy(box.q);
+  group.add(boxEdges(box.h,size,look?look.edge:undefined));
+  const hs=size*0.05, up=new THREE.Vector3(0,1,0);
+  const LK=look||{}, gold=(LK.spike!==undefined)?LK.spike:0xb8934a, green=(LK.arc!==undefined)?LK.arc:0x38b000,
+        rose=(LK.rose!==undefined)?LK.rose:0x38b000, blue=0x0d47a1;   // --amber --rep --acc (292)
+  const faces=[[0,1],[0,-1],[1,1],[1,-1],[2,1],[2,-1]];
+  for(const [axis,sign] of faces){
+    const p=new THREE.Vector3();p.setComponent(axis,sign*box.h.getComponent(axis));
+    const spike=new THREE.Mesh(concaveSpike(hs*1.7,hs*0.5),
+      new THREE.MeshBasicMaterial({color:gold,depthTest:false,transparent:true,opacity:0.95}));
+    const dir=AXV[axis].clone().multiplyScalar(sign);
+    spike.quaternion.setFromUnitVectors(up,dir);spike.position.copy(p);
+    spike.renderOrder=999;spike.userData={axis,sign};group.add(spike);handles.push(spike);
+  }
+  // rotation grabbers (round 5, reference UX): a green ARC at every edge midpoint,
+  // curling around the edge; dragging spins the box about the axis PARALLEL to that
+  // edge, and a full rotation ring appears for the duration of the drag
+  // right-handed basis per edge axis, so the torus plane and the outward angle are
+  // exact: the arc is CENTRED on the outward diagonal and curls around its edge
+  const PAIRS=[[1,2],[2,0],[0,1]];
+  const ARCLEN=1.2;
+  for(const ax of rotAxes){
+    const [u,v]=PAIRS[ax];
+    for(const su of [1,-1]) for(const sv of [1,-1]){
+      const p=new THREE.Vector3();
+      p.setComponent(u,su*box.h.getComponent(u));
+      p.setComponent(v,sv*box.h.getComponent(v));
+      const arc=new THREE.Mesh(new THREE.TorusGeometry(hs*0.85,hs*0.10,8,20,ARCLEN),
+        new THREE.MeshBasicMaterial({color:green,depthTest:false,transparent:true,opacity:0.95}));
+      arc.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(AXV[u],AXV[v],AXV[ax]));
+      // the arc is centred on the TRUE 45° outward diagonal — signs only. Weighting the
+      // angle by the box half-extents skewed every arc toward the long axis on an
+      // elongated box (user report 12/08: "not random, but not arranged right") —
+      // on the 5:1 wall the arcs collapsed to ~11° instead of 45°.
+      arc.rotateZ(Math.atan2(sv,su)-ARCLEN/2);
+      arc.position.copy(p);arc.renderOrder=999;arc.userData={rot:true,axis:ax};
+      group.add(arc);handles.push(arc);
+      // an invisible fatter grab collider, so a finger can actually catch the arc
+      const grab2=new THREE.Mesh(new THREE.SphereGeometry(hs*0.7,8,6),
+        new THREE.MeshBasicMaterial({visible:false}));
+      grab2.position.copy(p);grab2.userData={rot:true,axis:ax};
+      group.add(grab2);handles.push(grab2);
+    }
+  }
+  // center: 6 arrows radiating in all axes (green) + invisible grab sphere
+  const cg=new THREE.Group();
+  const al=hs*1.0;
+  for(const s of [1,-1]) for(let ax=0;ax<3;ax++){
+    const dir=AXV[ax].clone().multiplyScalar(s);
+    const stem=new THREE.Mesh(new THREE.CylinderGeometry(hs*0.09,hs*0.09,al*0.7,10),
+      new THREE.MeshBasicMaterial({color:rose,depthTest:false,transparent:true,opacity:0.85}));
+    stem.quaternion.setFromUnitVectors(up,dir);stem.position.copy(dir.clone().multiplyScalar(al*0.35));cg.add(stem);
+    const head=new THREE.Mesh(concaveSpike(al*0.5,hs*0.30),
+      new THREE.MeshBasicMaterial({color:rose,depthTest:false,transparent:true,opacity:0.95}));
+    head.quaternion.setFromUnitVectors(up,dir);head.position.copy(dir.clone().multiplyScalar(al*0.72));cg.add(head);
+  }
+  const grab=new THREE.Mesh(new THREE.SphereGeometry(hs*0.95,12,10),
+    new THREE.MeshBasicMaterial({visible:false}));grab.userData={center:true};cg.add(grab);handles.push(grab);
+  group.add(cg);
+  return {group,handles};
+}
+// the handle under the ray (already set from the press), or null — one raycast, at the press only
+function amFrameHit(ray,handles){const h=ray.intersectObjects(handles,false);return h.length?h[0].object:null;}
+// a press on handle h (the ray already set from it): the drag's state. A turn shows its full
+// ring in `scene` for the duration of the drag — the caller removes boxDrag.ring at the release
+function amFrameStart(h,ray,camera,box,scene,size,look){
+  const n=camera.getWorldDirection(new THREE.Vector3()).clone();
+  const wp=h.getWorldPosition(new THREE.Vector3());
+  const plane=new THREE.Plane().setFromNormalAndCoplanarPoint(n,wp);
+  const p0=new THREE.Vector3();ray.ray.intersectPlane(plane,p0);
+  if(h.userData.center){return {center:true,plane,start:p0,cStart:box.c.clone()};}
+  if(h.userData.rot){
+    // rotate about the box axis PARALLEL to the grabbed edge (round 5 reference)
+    const ax=h.userData.axis;
+    const axisW=AXV[ax].clone().applyQuaternion(box.q).normalize();
+    const rotPlane=new THREE.Plane().setFromNormalAndCoplanarPoint(axisW,box.c.clone());
+    const r0=new THREE.Vector3();ray.ray.intersectPlane(rotPlane,r0);
+    // the full rotation ring, shown for the duration of the drag
+    const [u,v]=[[1,2],[0,2],[0,1]][ax];
+    const R=Math.hypot(box.h.getComponent(u),box.h.getComponent(v))*1.25;
+    const ring=new THREE.Mesh(new THREE.TorusGeometry(R,size*0.006,8,96),
+      new THREE.MeshBasicMaterial({color:(look&&look.arc!==undefined)?look.arc:0x38b000,depthTest:false,transparent:true,opacity:0.9}));
+    ring.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),axisW);
+    ring.position.copy(box.c);ring.renderOrder=998;scene.add(ring);
+    return {rot:true,axisW,rotPlane,v0:r0.clone().sub(box.c),qStart:box.q.clone(),ring};
+  }
+  const axis=h.userData.axis,sign=h.userData.sign;
+  return {axis,sign,plane,start:p0,hStart:box.h.getComponent(axis),cStart:box.c.clone()};}
+// the drag moves (the ray set from the pointer): `box` changes in place and done() follows;
+// a ray that misses the drag's plane changes nothing
+function amFrameMove(boxDrag,ray,box,size,done){
+  if(boxDrag.rot){
+    const p=new THREE.Vector3();if(!ray.ray.intersectPlane(boxDrag.rotPlane,p))return;
+    const v1=p.clone().sub(box.c);
+    if(v1.lengthSq()<1e-10||boxDrag.v0.lengthSq()<1e-10)return;
+    const ang=Math.atan2(boxDrag.v0.clone().cross(v1).dot(boxDrag.axisW),boxDrag.v0.dot(v1));
+    box.q.copy(new THREE.Quaternion().setFromAxisAngle(boxDrag.axisW,ang).multiply(boxDrag.qStart));
+    done();return;}
+  const p=new THREE.Vector3();if(!ray.ray.intersectPlane(boxDrag.plane,p))return;
+  if(boxDrag.center){const d=p.clone().sub(boxDrag.start);
+    box.c.copy(boxDrag.cStart).add(d);done();return;}
+  // resize one face along the box's OWN axis: half-size grows by delta/2 and the
+  // centre shifts with it, so the opposite face stays put
+  const dirW=AXV[boxDrag.axis].clone().applyQuaternion(box.q).multiplyScalar(boxDrag.sign);
+  const delta=p.clone().sub(boxDrag.start).dot(dirW);
+  const eps=size*0.01;
+  const nh=Math.max(eps,boxDrag.hStart+delta/2);
+  const grow=nh-boxDrag.hStart;
+  box.h.setComponent(boxDrag.axis,nh);
+  box.c.copy(boxDrag.cStart).addScaledVector(dirW,grow);
+  done();}
+var amCrops=[], amCropAlt=null, amCropRev=0, amCropPrepd=null, amCropMaskC=null, amCropBad=[], amCropBadK=0;
+// the screen's own origin in the model's coordinates: a screen that draws the model centred keeps its crops (and its
+// strokes) in its own coordinates, and the list goes out and comes in in the model's
+var amCropOrg=[0,0,0];
+// the box's own axes (unit), in the model's coordinates: the columns of q's rotation — the box of clip.js
+function amCropAxes(q){ const L=Math.hypot(q[0],q[1],q[2],q[3])||1, x=q[0]/L,y=q[1]/L,z=q[2]/L,w=q[3]/L;   // of any length, as the server reads it
+  return [[1-2*(y*y+z*z),2*(x*y+z*w),2*(x*z-y*w)],[2*(x*y-z*w),1-2*(x*x+z*z),2*(y*z+x*w)],[2*(x*z+y*w),2*(y*z-x*w),1-2*(x*x+y*y)]]; }
+// a crop, or its row on a stroke, made ready for the field: s = +1 hides the outside, -1 the inside
+function amCropPrep(K){
+  const P=Array.isArray(K)?{c:[+K[0],+K[1],+K[2]],q:[+K[3],+K[4],+K[5],+K[6]],h:[+K[7],+K[8],+K[9]],out:!!K[10]}:K;
+  return {c:P.c, a:amCropAxes(P.q), h:P.h, s:P.out?1:-1}; }
+// one crop's field at a point: > 0 — hidden, by that many metres from the wall (the measure of clip.js's box)
+function amCropF1(p,x,y,z){ const dx=x-p.c[0], dy=y-p.c[1], dz=z-p.c[2]; let m=-Infinity;
+  for(let j=0;j<3;j++){ const a=p.a[j], e=Math.abs(dx*a[0]+dy*a[1]+dz*a[2])-p.h[j]; if(e>m) m=e; }
+  return p.s*m; }
+// the crops that are on, ready: the screen's own, or the set given for one pass (amCropUse)
+function amCropOn(L){
+  if(L) return L.filter(K=>K&&!K.off).map(amCropPrep);
+  if(amCropAlt) return amCropAlt;
+  if(!amCropPrepd) amCropPrepd=amCrops.filter(K=>K&&!K.off).map(amCropPrep);
+  return amCropPrepd; }
+// the field of a list of crops at a point (the screen's when none is given): > 0 — a crop hides the point
+function amCropField(x,y,z,L){ const A=amCropOn(L); let f=-Infinity;
+  for(let i=0;i<A.length;i++){ const g=amCropF1(A[i],x,y,z); if(g>f) f=g; } return f; }
+function amCropHides(x,y,z,L){ const A=amCropOn(L);
+  for(let i=0;i<A.length;i++) if(amCropF1(A[i],x,y,z)>0) return true; return false; }
+// which sub-faces are hidden now (by their centres) — null when no crop is on; made once for each state of the crops.
+// The acts on whole sub-faces (the grow, the threshold, the region, the learning, the overlap) pass over these
+// (n — how many centres `cen` holds: the measurement screen's sub-faces by default, the training screen's faces given)
+function amCropMask(n){ const A=amCropOn(); if(!A.length) return null;
+  const N_=(n===undefined)?N:n;
+  if(amCropMaskC&&amCropMaskC.rev===amCropRev&&amCropMaskC.m.length===N_) return amCropMaskC.m;
+  const m=new Uint8Array(N_);
+  for(let f=0;f<N_;f++){ const x=cen[f*3], y=cen[f*3+1], z=cen[f*3+2]; for(let i=0;i<A.length;i++) if(amCropF1(A[i],x,y,z)>0){ m[f]=1; break; } }
+  amCropMaskC={rev:amCropRev, m:m}; return m; }
+// the screen's crops that are on, as the rows a stroke keeps (null — none: the act carries nothing)
+function amCropSnap(){ const A=amCrops.filter(K=>K&&!K.off); if(!A.length) return null;
+  const r=v=>Math.round(v*1e5)/1e5;
+  return A.map(K=>[r(K.c[0]),r(K.c[1]),r(K.c[2]), r(K.q[0]),r(K.q[1]),r(K.q[2]),r(K.q[3]), r(K.h[0]),r(K.h[1]),r(K.h[2]), K.out?1:0]); }
+// a stroke's rows, read from a sheet: only whole rows of numbers are believed (null — none). A row that cannot be read
+// is counted (amCropBadK — the strokes that had one) and said to the person when the sheet is in (amCropTellBad)
+function amCropKIn(k){ if(k===undefined||k===null) return null; if(!Array.isArray(k)){ amCropBadK++; return null; }
+  const out=k.filter(r=>Array.isArray(r)&&r.length>=11&&r.slice(0,11).every(v=>typeof v==='number'&&isFinite(v))&&r[7]>0&&r[8]>0&&r[9]>0).map(r=>r.slice(0,11));
+  if(out.length!==k.length) amCropBadK++;
+  return out.length?out:null; }
+// the rows carried from one form of a stroke to the next (dst gets src's)
+function amCropKOf(dst,src){ if(src&&src.k&&src.t==='balls'){ dst.k=src.k; } return dst; }
+function amCropKSet(dst,k){ const kk=amCropKIn(k); if(kk) dst.k=kk; return dst; }
+// a stroke's own crops at a point: > 0 — the point was hidden when the stroke was made (so it is not of the stroke)
+function amCropKField(op,x,y,z){ let P=op._kp; if(!P||op._kq!==op.k){ P=op._kp=op.k.map(amCropPrep); op._kq=op.k; }
+  let f=-Infinity; for(let i=0;i<P.length;i++){ const g=amCropF1(P[i],x,y,z); if(g>f) f=g; } return f; }
+// why a crop of a sheet cannot be read ('' — it can). Eli, 17/11: what is dropped is said, with its reason — not in silence
+function amCropWhy(K){ const n=(a,k)=>Array.isArray(a)&&a.length===k&&a.every(v=>typeof v==='number'&&isFinite(v));
+  if(!K||typeof K!=='object'||Array.isArray(K)) return 'אינו רשומה של קיצוץ';
+  if(!n(K.c,3)) return 'חסר המרכז (שלושה מספרים)';
+  if(!n(K.h,3)) return 'חסר הגודל (שלושה מספרים)';
+  if(!(K.h[0]>0&&K.h[1]>0&&K.h[2]>0)) return 'הגודל אינו חיובי';
+  if(!n(K.q,4)) return 'חסר הסיבוב (ארבעה מספרים)';
+  if(!(Math.hypot(K.q[0],K.q[1],K.q[2],K.q[3])>1e-9)) return 'הסיבוב ריק';
+  return ''; }
+// a crop of the sheet, read: only a whole box is believed
+function amCropIn(K,i){ if(amCropWhy(K)) return null;
+  const L=Math.hypot(K.q[0],K.q[1],K.q[2],K.q[3]);
+  return {id:(typeof K.id==='string'&&/^k[0-9]{1,6}$/.test(K.id))?K.id:('k'+(i+1)), name:String(K.name||('קיצוץ '+(i+1))),
+          c:K.c.map((v,j)=>v-amCropOrg[j]), h:K.h.map(Number), q:K.q.map(v=>v/L), out:K.out===true, off:K.off===true}; }
+// the list as the sheet and the server keep it
+function amCropsOut(){ const r=v=>Math.round(v*1000)/1000, rq=v=>Math.round(v*1e6)/1e6;
+  return amCrops.map(K=>Object.assign({id:K.id, name:K.name, c:K.c.map((v,j)=>r(v+amCropOrg[j])), h:K.h.map(r), q:K.q.map(rq), out:!!K.out}, K.off?{off:true}:{})); }
+// the list set from outside (a sheet, the server): the handles go, the picture and the chips follow
+function amCropsSet(list){
+  amCrops.length=0; const seen=new Set();
+  (Array.isArray(list)?list:[]).forEach((K,i)=>{ const c=amCropIn(K,i);
+    if(!c){ amCropBad.push('קיצוץ '+(i+1)+((K&&typeof K.name==='string'&&K.name)?' ("'+K.name+'")':'')+': '+amCropWhy(K)); return; }
+    while(seen.has(c.id)) c.id='k'+(+c.id.slice(1)+1); seen.add(c.id); amCrops.push(c); });
+  if(typeof amCropSel!=='undefined'){ amCropSel=-1; if(typeof amCropFrameShow==='function') amCropFrameShow(); }
+  amCropTouch();
+  if(amCropBad.length||amCropBadK) setTimeout(amCropTellBad,0); }   // once the whole sheet is in — the strokes' rows are read beside this list
+// what could not be read is said: which crops and why, and how many strokes lost their cut and what that means
+function amCropTellBad(){ if(!amCropBad.length&&!amCropBadK) return;
+  const t=[], n=amCropBadK;
+  if(amCropBad.length) t.push('בגיליון נמצאו קיצוצי תצוגה שאינם תקינים, והם לא נטענו:\n'+amCropBad.map(s=>'• '+s).join('\n'));
+  if(n) t.push((n===1?'במשיכה אחת':'ב-'+n+' משיכות')+' נמצאו שורות של קיצוץ תצוגה שאינן תקינות (חסר מספר, או גודל שאינו חיובי). השורות האלה לא נטענו, ולכן '
+    +(n===1?'המשיכה נטענה':'המשיכות נטענו')+' בלי החיתוך שלהן: השטח עשוי לכלול גם את מה שהיה מוסתר בזמן הסימון.');
+  amCropBad=[]; amCropBadK=0;
+  if(typeof amTell==='function') amTell(t.join('\n\n')); }
+// a change of the list or of a box: every reader starts again from the list
+function amCropTouch(){ amCropRev++; amCropPrepd=null; amCropMaskC=null;
+  if(typeof amCropPack==='function') amCropPack();
+  if(typeof amCropChips==='function') amCropChips();
+  if(typeof amCropAfter==='function') amCropAfter();   // the screen's own readers of the crops (an id pass, a live selection)
+  if(typeof invalidate==='function') invalidate(); }
+/* The hiding in the picture: every material that is drawn is wrapped once (amCropMat) — its own shader change runs
+   first, as amThru's — and throws away a fragment a crop hides, in the model's coordinates. The injection is at the
+   clipping-planes chunks, which every built-in material carries and no hook of ours replaces; a material written by
+   hand (the id passes, the ruler's line) gets it at the opening of its main(). A sprite goes whole, by its anchor.
+   The crops reach the shader in a DATA TEXTURE (four texels a crop, 32-bit floats, read by texelFetch — without WebGL2
+   by texture2D at the texel centres, in a loop to 256 that stops at their number; Eli, 18/11) and their
+   number in a uniform the loop runs to: there is no limit on the number of crops and nothing is compiled again when
+   one is opened, closed or switched by its eye (Eli, 17/11: no cap). All the materials read the one texture: a drag
+   of a box is an update of four texels. */
+var AM_CROP_U={amCropT:{value:null}, amCropN:{value:0}, amCropH:{value:4}}, amCropRows=0, amCropLive=false, amCropDone=new WeakSet();
+function amCropPack(){
+  const A=amCropOn();
+  if(amCrops.length||A.length) amCropLive=true;
+  if(!amCropLive) return;
+  if(!AM_CROP_U.amCropT.value||A.length>amCropRows){          // the texture's rows only grow: room, not a limit
+    let rows=Math.max(4,amCropRows); while(rows<A.length) rows*=2;
+    if(AM_CROP_U.amCropT.value) AM_CROP_U.amCropT.value.dispose();
+    const t=new THREE.DataTexture(new Float32Array(16*rows),4,rows,THREE.RGBAFormat,THREE.FloatType);
+    t.minFilter=THREE.NearestFilter; t.magFilter=THREE.NearestFilter; t.generateMipmaps=false; t.flipY=false;
+    AM_CROP_U.amCropT.value=t; amCropRows=rows; AM_CROP_U.amCropH.value=rows; }
+  const T=AM_CROP_U.amCropT.value, B=T.image.data; B.fill(0);
+  for(let i=0;i<A.length;i++){ const p=A[i], o=i*16;
+    for(let j=0;j<3;j++){ const a=p.a[j], ih=1/Math.max(p.h[j],1e-9);
+      B[o+j*4]=a[0]*ih; B[o+j*4+1]=a[1]*ih; B[o+j*4+2]=a[2]*ih; B[o+j*4+3]=-(a[0]*p.c[0]+a[1]*p.c[1]+a[2]*p.c[2])*ih; }
+    B[o+12]=p.s; B[o+13]=p.h[0]; B[o+14]=p.h[1]; B[o+15]=p.h[2]; }
+  T.needsUpdate=true;
+  AM_CROP_U.amCropN.value=A.length; }
+function amCropShader(sh,line,posx,gl1){
+  if(!amCropLive||sh.fragmentShader.indexOf('amCropT')>=0) return;
+  sh.uniforms.amCropT=AM_CROP_U.amCropT; sh.uniforms.amCropN=AM_CROP_U.amCropN; if(gl1) sh.uniforms.amCropH=AM_CROP_U.amCropH;
+  const vs=sh.vertexShader, mainRe=/void\s+main\s*\(\s*\)\s*\x7b/;
+  if(vs.indexOf('#include <clipping_planes_vertex>')>=0){
+    const w=(vs.indexOf('#include <begin_vertex>')>=0)
+      ? '#ifdef USE_INSTANCING\n vAmW=(modelMatrix*instanceMatrix*vec4(transformed,1.0)).xyz;\n#else\n vAmW=(modelMatrix*vec4(transformed,1.0)).xyz;\n#endif\n'
+      : ' vAmW=modelMatrix[3].xyz;\n';                                   // a sprite: whole, by its anchor
+    sh.vertexShader='varying vec3 vAmW;\n'+vs.replace('#include <clipping_planes_vertex>',w+'#include <clipping_planes_vertex>'); }
+  // a material written by hand: its point in the model is `position`, or what the material says it is (userData.amCropPos —
+  // the ruler's line is drawn between two ends kept in attributes of their own)
+  else sh.vertexShader='varying vec3 vAmW;\n'+vs.replace(mainRe,m=>m+' vAmW=(modelMatrix*vec4('+(posx||'position')+',1.0)).xyz;\n');
+  // the distance to the nearest wall is kept only where the cut's line is drawn (the model's own material)
+  // without WebGL2 (723; Eli, 18/11): no texelFetch and no loop to a uniform — the same texels by texture2D at their
+  // centres, and a loop to 256 that stops at the number of crops
+  const body=(gl1
+    ? 'for(int i=0;i<256;i++)\x7b if(i>=amCropN) break;\n   float amV=(float(i)+0.5)/amCropH;\n'
+      +'   vec4 a=texture2D(amCropT,vec2(0.125,amV)), b=texture2D(amCropT,vec2(0.375,amV)), c=texture2D(amCropT,vec2(0.625,amV)), d=texture2D(amCropT,vec2(0.875,amV));\n'
+    : 'for(int i=0;i<amCropN;i++){\n'
+      +'   vec4 a=texelFetch(amCropT,ivec2(0,i),0), b=texelFetch(amCropT,ivec2(1,i),0), c=texelFetch(amCropT,ivec2(2,i),0), d=texelFetch(amCropT,ivec2(3,i),0);\n')
+    +'   vec3 q=abs(vec3(dot(a.xyz,vAmW)+a.w, dot(b.xyz,vAmW)+b.w, dot(c.xyz,vAmW)+c.w));\n'
+    +'   if((max(q.x,max(q.y,q.z))-1.0)*d.x>0.0) discard;\n'
+    +(line?'   vec3 w=(q-1.0)*d.yzw; amCropL=min(amCropL, d.x>0.0 ? -max(w.x,max(w.y,w.z)) : length(max(w,0.0)));\n':'')
+    +' }\n';
+  let fs=sh.fragmentShader;
+  if(fs.indexOf('#include <clipping_planes_fragment>')>=0) fs=fs.replace('#include <clipping_planes_fragment>',body+'#include <clipping_planes_fragment>');
+  else fs=fs.replace(mainRe,m=>m+'\n'+body);
+  // the cut's line on the model: a thin half-clear line where the model meets a crop's wall (#8a8272; no red)
+  if(line&&fs.indexOf('#include <opaque_fragment>')>=0) fs=fs.replace('#include <opaque_fragment>',
+    '#include <opaque_fragment>\n if(amCropN>0){ float aw=fwidth(amCropL); if(amCropL<1.5*aw) gl_FragColor.rgb=mix(gl_FragColor.rgb,vec3(0.541,0.510,0.447),0.5); }');
+  sh.fragmentShader=(gl1
+    ? '#ifdef GL_FRAGMENT_PRECISION_HIGH\nuniform highp sampler2D amCropT;\n#else\nuniform mediump sampler2D amCropT;\n#endif\nuniform float amCropH; '
+    : 'uniform highp sampler2D amCropT; ')+'uniform int amCropN; varying vec3 vAmW; float amCropL=1e9;\n'+fs; }
+// a material, wrapped once: the hook it already has runs first and is kept (another feature's change of the same
+// material — the design, the see-through pass, a pull toward the eye — stays as it was)
+function amCropMat(m){
+  if(!m||!amCropLive||(m.userData&&m.userData.amCropFree)||amCropDone.has(m)) return m;
+  const base=m.onBeforeCompile, key=m.customProgramCacheKey;
+  m.onBeforeCompile=function(sh,r){ if(base) base.call(this,sh,r);
+    amCropShader(sh,!!(this.userData&&this.userData.amCropLine),this.userData&&this.userData.amCropPos,!!(r&&r.capabilities&&r.capabilities.isWebGL2===false)); };
+  m.customProgramCacheKey=function(){ return 'amCrop'+((this.userData&&this.userData.amCropLine)?'L':'')+'|'+(key?key.call(this):'')+'|'+(base?base.toString():''); };
+  amCropDone.add(m); m.needsUpdate=true;
+  return m; }
+// every material under `root` — run before each picture while the work has (or had) crops, so what was made after a
+// crop was opened (a ring closed, a tape, a patch, a copy of a material) is hidden from its first frame
+function amCropSweep(root){
+  if(!amCropLive||!root) return;
+  root.traverse(o=>{ const mm=o.material; if(!mm) return;
+    if(o.userData&&o.userData.amCropFree){ for(const m of (Array.isArray(mm)?mm:[mm])) if(m.userData) m.userData.amCropFree=true; return; }
+    if(Array.isArray(mm)){ for(let i=0;i<mm.length;i++) amCropMat(mm[i]); } else amCropMat(mm); }); }
+// one pass with another set of crops (Ada's own, or the screen's with some of them off for her eyes only): fn draws —
+// the picture, the rays and the acts on whole sub-faces all read the set given — and the screen's set comes back
+function amCropUse(list,fn){
+  const was=amCropAlt; amCropAlt=(list||[]).filter(K=>K&&!K.off).map(amCropPrep); amCropRev++; amCropMaskC=null; amCropPack();
+  try{ return fn(); } finally{ amCropAlt=was; amCropRev++; amCropMaskC=null; amCropPack(); } }
+/* The hand: a ray passes through what is hidden. Every pick on the model, on a body, on a line or on a sprite goes
+   through the Raycaster's two entries — the hits a crop hides are dropped there, once, whatever asked (the brush,
+   the ruler, the polygon, the tags, the navigation). A sprite by its anchor, as it is drawn. The crop's own handles
+   (userData.amCropFree) are never hidden. Picks made on the screen, without a ray, ask amCropHides themselves. */
+function amCropRayKeep(hits,from){
+  const A=amCropOn(); if(!A.length||!hits||!hits.length) return hits;
+  let w=from||0; const v=amCropRayKeep.v||(amCropRayKeep.v=new THREE.Vector3());
+  for(let i=from||0;i<hits.length;i++){ const h=hits[i], o=h.object; let hid=false;
+    if(!(o&&o.userData&&o.userData.amCropFree)){
+      const p=(o&&o.isSprite)?o.getWorldPosition(v):h.point;
+      if(p){ for(let k=0;k<A.length;k++) if(amCropF1(A[k],p.x,p.y,p.z)>0){ hid=true; break; } } }
+    if(!hid) hits[w++]=h; }
+  hits.length=w; return hits; }
+function amCropRayOn(){
+  const P=THREE.Raycaster.prototype; if(P.amCrop) return; P.amCrop=true;
+  const one=P.intersectObject, many=P.intersectObjects;
+  P.intersectObject=function(o,rec,out){ const n=out?out.length:0; return amCropRayKeep(one.call(this,o,rec,out),n); };
+  P.intersectObjects=function(os,rec,out){ const n=out?out.length:0; return amCropRayKeep(many.call(this,os,rec,out),n); }; }
+/* The crop's chips and handles. A chip a crop: its name, inside/outside, the eye (open — the crop is off), ✕ (the
+   crop is closed; the model is whole again). No "do it" button — the drag hides as it goes. The handles (the frame of
+   frame.js, in the crop's own colours) are shown for ONE crop, the chosen chip's: a press on the chip again, Esc or
+   a move to another tool takes them away; choosing a chip does not change the tool in the hand. Every screen edits
+   (Eli, 17/11: the iPad and the delivered viewer too); `amCropEdit` false would leave a name and an eye only.
+   A finger (a touch or a pen pressed last) gets handles of a finger's size: the spike at least 44 pixels long.
+   Not in the history: Ctrl+Z does not touch a crop. */
+var amCropSel=-1, amCropFr=null, amCropDrag=null, amCropEdit=true, amCropSaveT=0, amCropFinger=false;
+const AM_CROP_LOOK={edge:0x2196F3, arc:0x90CAF9, spike:0x8a8272, rose:0x8a8272};
+function amCropChips(){
+  const box=document.getElementById('chipsK'); if(!box) return; box.innerHTML='';
+  const grp=document.getElementById('palCrop'); if(grp&&!amCropEdit) grp.style.display=amCrops.length?'':'none';
+  amCrops.forEach((K,i)=>{
+    const c=document.createElement('span'); c.className='chip crop'+(i===amCropSel?' on':''); c.style.setProperty('--c','#2196F3'); c.dataset.crop=K.id;
+    const sw=document.createElement('i'); sw.className='sw'; c.appendChild(sw);
+    if(amCropEdit){ const inp=document.createElement('input'); inp.value=K.name; inp.placeholder='שם הקיצוץ';
+      inp.onchange=()=>{ K.name=inp.value; amCropChanged(); }; inp.onclick=e=>e.stopPropagation(); c.appendChild(inp);
+      const io=document.createElement('button'); io.className='cropio'; io.textContent=K.out?'בחוץ':'פנים';
+      io.title=K.out?'מוסתר מה שמחוץ לתיבה. לחיצה: להסתיר את מה שבתוכה':'מוסתר מה שבתוך התיבה. לחיצה: להסתיר את מה שמחוצה לה';
+      io.onclick=e=>{ e.stopPropagation(); K.out=!K.out; amCropChanged(); }; c.appendChild(io); }
+    else { const nm=document.createElement('span'); nm.textContent=K.name; nm.style.fontSize='12px'; c.appendChild(nm); }
+    if(K.off) c.style.opacity='0.45';
+    const eye=document.createElement('i'); eye.className='eye'+(K.off?'':' off'); eye.textContent='👁';   // open — the model is whole
+    eye.title=K.off?'הקיצוץ כבוי: המודל מוצג שלם. לחיצה: להסתיר שוב':'הקיצוץ מסתיר. לחיצה: להציג את המודל שלם';
+    eye.onclick=e=>{ e.stopPropagation(); K.off=!K.off; amCropChanged(); }; c.appendChild(eye);
+    if(amCropEdit){ const x=document.createElement('i'); x.className='del'; x.textContent='✕'; x.title='סגירת הקיצוץ: המודל חוזר להיות שלם';
+      x.onclick=e=>{ e.stopPropagation(); amCropClose(i); }; c.appendChild(x);
+      c.onclick=()=>amCropPick(i===amCropSel?-1:i); }
+    box.appendChild(c); }); }
+// a change by the hand: the list is new for every reader, and is kept with the work
+function amCropChanged(){ amCropTouch(); if(typeof amCropKeep==='function'){ clearTimeout(amCropSaveT); amCropSaveT=setTimeout(amCropKeep,400); } }
+// a new crop: a box around the middle of the view, hiding its inside, chosen (its handles shown)
+function amCropAdd(c,half){
+  let n=1; while(amCrops.some(K=>K.id==='k'+n)) n++;
+  let m=1; while(amCrops.some(K=>K.name==='קיצוץ '+m)) m++;
+  amCrops.push({id:'k'+n, name:'קיצוץ '+m, c:[c.x,c.y,c.z], h:[half,half,half], q:[0,0,0,1], out:false});
+  amCropPick(amCrops.length-1); amCropChanged(); return amCrops[amCrops.length-1]; }
+function amCropClose(i){ if(!amCrops[i]) return; amCrops.splice(i,1);
+  amCropSel=(amCropSel===i)?-1:(amCropSel>i?amCropSel-1:amCropSel); amCropFrameShow(); amCropChanged(); }
+// the chip chosen (-1: none): its handles shown, the others' gone
+// the tool in the hand is not changed (Eli, 17/11): a press on a handle takes the handle, a press that misses marks as always
+function amCropPick(i){ const on=(i>=0&&!!amCrops[i]);
+  amCropSel=on?i:-1; amCropDrag=null; amCropFrameShow(); amCropChips(); if(typeof invalidate==='function') invalidate(); }
+function amCropFrameShow(){
+  if(amCropFr){ if(amCropFr.group.parent) amCropFr.group.parent.remove(amCropFr.group);
+    amCropFr.group.traverse(o=>{ if(o.geometry) o.geometry.dispose(); if(o.material) o.material.dispose(); }); amCropFr=null; }
+  const K=amCrops[amCropSel]; if(!K||!amCropEdit||typeof scene==='undefined') return;
+  const box={c:new THREE.Vector3(K.c[0],K.c[1],K.c[2]), h:new THREE.Vector3(K.h[0],K.h[1],K.h[2]), q:new THREE.Quaternion(K.q[0],K.q[1],K.q[2],K.q[3])};
+  const size=amCropSize();
+  const F=amFrameGroup(box,size,[0,1,2],AM_CROP_LOOK);
+  F.group.traverse(o=>{ o.userData=Object.assign(o.userData||{},{amCropFree:true}); if(o.material&&o.material.userData) o.material.userData.amCropFree=true; });
+  scene.add(F.group); amCropFr={group:F.group, handles:F.handles, box:box, size:size, K:K}; }
+// the handles' size: a part of what the view holds (the screen says how far its eye is — amCropDist)
+function amCropSize(){ let s=Math.max(1e-3,((typeof amCropDist==='function')?amCropDist():1)*0.4);
+  // a finger: the spike (0.085 of the size) at least 44 pixels where the box is — the screen says how long a pixel is there
+  if(amCropFinger&&typeof amCropWpp==='function'){ const w=amCropWpp(); if(w>0&&isFinite(w)) s=Math.max(s,44*w/0.085); }
+  return s; }
+// the last press was a finger (touch / pen) or a mouse: the handles follow
+function amCropFingerSet(on){ on=!!on; if(on===amCropFinger) return; amCropFinger=on; if(amCropFr&&!amCropDrag) amCropFrameShow(); }   // during a drag: at its lift
+// a press: on a handle of the chosen crop — the drag begins (true); else nothing here
+function amCropPress(ray){
+  if(!amCropFr) return false;
+  const h=amFrameHit(ray,amCropFr.handles); if(!h) return false;
+  amCropDrag=amFrameStart(h,ray,camera,amCropFr.box,scene,amCropFr.size,AM_CROP_LOOK);
+  if(amCropDrag.ring){ amCropDrag.ring.userData.amCropFree=true; amCropDrag.ring.material.userData.amCropFree=true; }
+  return true; }
+function amCropMove(ray){
+  if(!amCropDrag||!amCropFr) return;
+  const F=amCropFr, K=F.K;
+  amFrameMove(amCropDrag,ray,F.box,F.size,()=>{
+    K.c=[F.box.c.x,F.box.c.y,F.box.c.z]; K.h=[F.box.h.x,F.box.h.y,F.box.h.z]; K.q=[F.box.q.x,F.box.q.y,F.box.q.z,F.box.q.w];
+    amCropMaskC=null;
+    // the picture hides as the hand goes (no "do it" button); the frame is laid again around the box, as the training
+    // screen's is — the drag's own state holds nothing of the frame
+    amCropRev++; amCropPrepd=null; amCropPack(); amCropFrameShow(); if(typeof amCropAfter==='function') amCropAfter();
+    if(typeof invalidate==='function') invalidate(); }); }
+function amCropLift(){
+  if(!amCropDrag) return false;
+  if(amCropDrag.ring&&amCropDrag.ring.parent) amCropDrag.ring.parent.remove(amCropDrag.ring);
+  amCropDrag=null; amCropFrameShow(); amCropChanged(); return true; }
 // 557 (Eli, Arena_Ashdod at 98%: "במקום בניה הדרגתית של השקיפות אני מקבל הרבה פעמים אזורים שקופים ואזורים אטומים"; "לפי ההמלצה"):
 // the model below 100% drawn as TWO layers. See-through with no depth (265) blends the surfaces along a ray in the order of the
 // file, not of distance — at 98% the last drawn of the roof, its underside or the stand below wins, in patches with straight
@@ -633,15 +1037,17 @@ function amSeeRender(renderer,scene,camera,mesh){
       S.sec.set(m,q); }
     if(q.map!==m.map||q.side!==m.side||q.vertexColors!==m.vertexColors){ q.map=m.map; q.side=m.side; q.vertexColors=m.vertexColors; q.needsUpdate=true; }
     q.color.copy(m.color); q.transparent=false; q.opacity=1; q.depthWrite=true; q.depthTest=true;
-    return q; };
+    return (typeof amCropMat==='function')?amCropMat(q):q; };   // 721: the second layer is hidden as the nearest is
   // 557b: the nearest's depth, by the model's OWN program (its vertex stage is the one (3) runs: the depths agree to the bit),
   // colour off
   const pre=m=>{ let q=S.pre.get(m);
     if(!q){ q=m.clone(); q.onBeforeCompile=m.onBeforeCompile; q.customProgramCacheKey=m.customProgramCacheKey; S.pre.set(m,q); }
     if(q.map!==m.map||q.side!==m.side||q.vertexColors!==m.vertexColors){ q.map=m.map; q.side=m.side; q.vertexColors=m.vertexColors; q.needsUpdate=true; }
     q.colorWrite=false; q.transparent=false; q.opacity=1; q.depthWrite=true; q.depthTest=true; q.depthFunc=THREE.LessEqualDepth;
-    return q; };
-  const dep=m=>(S.dep[m.side]||(S.dep[m.side]=new THREE.MeshBasicMaterial({side:m.side, colorWrite:false})));
+    return (typeof amCropMat==='function')?amCropMat(q):q; };
+  // 721: the nearest's depth is the nearest SEEN — what a display crop hides is not there for it
+  const dep=m=>{ const q=(S.dep[m.side]||(S.dep[m.side]=new THREE.MeshBasicMaterial({side:m.side, colorWrite:false})));
+    return (typeof amCropMat==='function')?amCropMat(q):q; };
   const bg=scene.background, ac=renderer.autoClear, prevRT=renderer.getRenderTarget(), mat0=mesh.material;
   const cc=renderer.getClearColor(S.col).clone(), ca=renderer.getClearAlpha(), dw=ms.map(m=>m.depthWrite);
   try{
@@ -678,6 +1084,7 @@ function amSeeRender(renderer,scene,camera,mesh){
 (function tick(){requestAnimationFrame(tick);if(window.amMarkTick)window.amMarkTick();
   const now=performance.now(); if(amCamMoved()) amRenderUntil=Math.max(amRenderUntil,now+120);
   if(amDown>0||now<amRenderUntil){ if(window.amRescaleFixed)window.amRescaleFixed();
+    if(typeof amCropSweep==='function') amCropSweep(scene);   // 721: what a display crop hides is not drawn
     if(window.amColFlush)window.amColFlush();
     if(!(window.amSeeMesh&&amSeeRender(renderer,scene,camera,window.amSeeMesh))) renderer.render(scene,camera); } })();   // 494: the recoloured sub-faces by their ranges · 557: below 100% in two layers
 
@@ -985,7 +1392,7 @@ function load(buf){
   // the model on the mean of its points (core.quantize_positions) and the sheet's points — rings, rulers, tapes,
   // counters, tags — are written in that frame; the package carries the model where it was scanned. Centred
   // here the same way, the iPad and the computer share one frame (on Eli's work the shift was 3 m)
-  amCentre(pos);
+  amCropOrg=amCentre(pos);     // 721: the display crops — and only they — are written in the model's coordinates (the computer's)
   const uv=bview(g,g.bin,acc[1].bufferView,Float32Array);
   const area=bview(g,g.bin,app.area,Float32Array);
   const qprob=bview(g,g.bin,app.prob,Uint8Array);
@@ -1253,6 +1660,7 @@ vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
   geo.computeBoundingSphere();
   // flat-mix marking (user round 11/08): aFlat=1 paints pure colour OVER the texture
   const mat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});    // ---- the marking's look (decision 75: the stipple, option 6) --------------------------
+  mat.userData.amCropLine=true;   // 721: the cut's line where the model meets a display crop's wall
     // Ordered Bayer dithering in SCREEN space: the marking is drawn as a lattice of solid
     // colour dots over the untouched wall, the register of the 1968 plates. The layer's own
     // opacity drives dot coverage; the design wheel morphs from the old flat wash (0) to full
@@ -1615,7 +2023,9 @@ mat.onBeforeCompile=sh=>{
     g={cs:cs,m:m,n:c.length,lo:[lo[0]-pad,lo[1]-pad,lo[2]-pad],hi:[hi[0]+pad,hi[1]+pad,hi[2]+pad]};
     CC_GRID.set(op,g); return g;
   }
-  function ccOpField(op,x,y,z){
+  function ccOpField(op,x,y,z,nok){
+    // 721: a stroke made while display crops were on is cut at their walls — its field is max(its balls, its crops)
+    if(op.k&&!nok){ const g=ccOpField(op,x,y,z,true), gk=amCropKField(op,x,y,z); return gk>g?gk:g; }
     if(op.t==='balls'){ const c=op.c; let m=Infinity;
       if(c.length>60){ const g=ccGrid(op);
         // the key collides now and then: every dab it returns is measured, so a collision
@@ -1790,10 +2200,15 @@ mat.onBeforeCompile=sh=>{
         else{ const v=fo.m.get(en?en.cur:-1); if(v!==undefined) f=(v>0)?-CC_BIG:CC_BIG; } fi++; }
       if(q===nt) break;
       const op=ops[T[q]], r=op.r, d2=B[T[q]];
-      const g=(d2>4*r*r)?r:Math.sqrt(d2)-r; f=(op.s>=0)?Math.min(f,g):Math.max(f,-g); }
+      let g=(d2>4*r*r)?r:Math.sqrt(d2)-r; if(op.k){ const gk=amCropKField(op,x,y,z); if(gk>g) g=gk; }   // 721: the stroke's own crops
+      f=(op.s>=0)?Math.min(f,g):Math.max(f,-g); }
     return f===Infinity?ix.farPos:f;
   }
-  function ccField(en,x,y,z){
+  function ccField(en,x,y,z,nok){
+    // 721: what a display crop hid when a selection was made is not of it — after the inversion too (the training
+    // screen's "crop outside" does not take what was hidden): max(the entry's field, its crops)
+    // `kin` — the entry is the INSIDE of a selection (the red of the training screen): there the crops take away, min(f, -crops)
+    if(en.k&&!nok){ const f=ccField(en,x,y,z,true), g=amCropKField(en,x,y,z); return en.kin?(-g<f?-g:f):(g>f?g:f); }
     if(en._ix){ const f=ccFieldIx(en._ix,en.ops,x,y,z,en); return en.inv?-f:f; }
     let f=en.st?(en.st(en.cur)?-CC_BIG:CC_BIG):Infinity;
     for(const op of en.ops){ if(op.t==='faces'){ const v=op.m.get(en.cur); if(v!==undefined) f=(v>0)?-CC_BIG:CC_BIG; continue; }
@@ -2268,7 +2683,7 @@ mat.onBeforeCompile=sh=>{
           if(x>=zl[0]&&x<=zh[0]&&y>=zl[1]&&y<=zh[1]&&z>=zl[2]&&z<=zh[2]) q.push(x,y,z); }
       for(const i of ex) q.push(c[i],c[i+1],c[i+2]);
       if(!q.length&&k===rk) q.push(c[0],c[1],c[2]);
-      cut=true; if(q.length) keep.push({t:'balls', c:q, r:op.r, s:op.s}); }
+      cut=true; if(q.length) keep.push(Object.assign({t:'balls', c:q, r:op.r, s:op.s}, op.k?{k:op.k}:{})); }   // 721
     // 552: a run of face-level acts — one
     const out=[];
     for(let i=0;i<keep.length;){ if(keep[i].t!=='faces'){ out.push(keep[i++]); continue; }
@@ -2307,7 +2722,7 @@ mat.onBeforeCompile=sh=>{
           for(const f of a.fs) if(ccPtTri(x,y,z,pos,f*9)<=R){ near=true; break; }
           if(near) break; }
         if(near) q.push(x,y,z); }
-      if(q.length) ops.push({t:'balls', c:q, r:op.r, s:op.s}); }
+      if(q.length) ops.push(Object.assign({t:'balls', c:q, r:op.r, s:op.s}, op.k?{k:op.k}:{})); }   // 721
     const st=new Set(); if(enK.st) for(const f of F) if(enK.st(f)) st.add(f);
     return amMinusBox({t:'minus', at:K.id, F:F, W:new Set(W||[]), k:{ops:ops, st:st}});
   }
@@ -2345,14 +2760,16 @@ mat.onBeforeCompile=sh=>{
   // field alone would leave it whole (and two cuts by the field would empty it: the first try's 0.037 m² beyond the
   // overlap). In the act, not in an act before it: one act has no order to keep (a step forward in the history puts a
   // step's acts back in reverse)
-  function amMinusOf(ti,K,F){ const T=types[ti]; return amMinus(K,F,F.filter(f=>!(T.band&&T.band.has(f))&&isType(ti,f))); }
+  function amMinusOf(ti,K,F){ const T=types[ti];
+    { const hm=(typeof amCropMask==='function')?amCropMask():null; if(hm) F=F.filter(f=>!hm[f]); }   // 721: the overlap's act passes over what a display crop hides
+    return amMinus(K,F,F.filter(f=>!(T.band&&T.band.has(f))&&isType(ti,f))); }
   // the box of a minus's sub-faces, kept on it (ccBBox)
   function amMinusBox(op){ const lo=[Infinity,Infinity,Infinity], hi=[-Infinity,-Infinity,-Infinity];
     for(const f of op.F){ const o=f*9; for(let c=0;c<9;c+=3) for(let k=0;k<3;k++){ const v=pos[o+c+k]; if(v<lo[k]) lo[k]=v; if(v>hi[k]) hi[k]=v; } }
     op.bb=[lo,hi]; return op; }
   // the sheet's form of a minus, and back (the sub-faces through the layout's map, as a face-level act's)
   function amMinusOut(op){ return {t:'minus', at:op.at, F:[...op.F], W:[...(op.W||[])], k:{st:[...op.k.st],
-    ops:op.k.ops.map(o=>o.t==='balls'?{t:'balls', r:o.r, s:o.s, c:o.c.slice()}:{t:'faces', f:[...o.m.keys()], v:[...o.m.values()]})}}; }
+    ops:op.k.ops.map(o=>o.t==='balls'?Object.assign({t:'balls', r:o.r, s:o.s, c:o.c.slice()}, o.k?{k:o.k}:{}):{t:'faces', f:[...o.m.keys()], v:[...o.m.values()]})}}; }
   function amMinusIn(MAP,o){
     if(!o||o.t!=='minus'||!Array.isArray(o.F)||!o.k||!Array.isArray(o.k.ops)) return null;
     const F=new Set(), W=new Set(), st=new Set(), ops=[];
@@ -2360,7 +2777,7 @@ mat.onBeforeCompile=sh=>{
     for(const f of (o.W||[])) amEach(MAP,f,t=>W.add(t));
     for(const f of (o.k.st||[])) amEach(MAP,f,t=>st.add(t));
     for(const q of o.k.ops){
-      if(q&&q.t==='balls'&&Array.isArray(q.c)&&q.c.length&&q.c.length%3===0&&+q.r>0) ops.push({t:'balls', r:+q.r, s:(q.s<0)?-1:1, c:q.c.map(Number)});
+      if(q&&q.t==='balls'&&Array.isArray(q.c)&&q.c.length&&q.c.length%3===0&&+q.r>0) ops.push((b=>(typeof amCropKSet==='function')?amCropKSet(b,q.k):b)({t:'balls', r:+q.r, s:(q.s<0)?-1:1, c:q.c.map(Number)}));
       else if(q&&q.t==='faces'&&Array.isArray(q.f)){ const m=new Map(); q.f.forEach((f,i)=>amEach(MAP,f,t=>m.set(t,(q.v&&q.v[i]<0)?-1:1))); if(m.size) ops.push({t:'faces', m:m}); } }
     if(!F.size) return null;
     return amMinusBox({t:'minus', at:(typeof o.at==='string')?o.at:null, F:F, W:W, k:{ops:ops, st:st}});
@@ -2682,6 +3099,7 @@ mat.onBeforeCompile=sh=>{
     const T=types[activeT]; if(!T) return;
     if(!T.ops) T.ops=[]; if(!T.S) amSOf(T);
     amLive={t:'balls',c:[],r:brushR,s:(mode==='add')?1:-1,by:'h'}; amLiveT=activeT; T.ops.push(amLive);   // 571: a person's act
+    { const kk=(typeof amCropSnap==='function')?amCropSnap():null; if(kk) amLive.k=kk; }   // 721: the display crops that are on ride on the stroke — it is cut at their walls, for good
     if(curDiff) curDiff.push(['OP',activeT,amLive]);
     amWatch={T:T, m:new Map()};
   }
@@ -2730,7 +3148,7 @@ mat.onBeforeCompile=sh=>{
   function amSUpd(ti,f){ const T=types[ti]; if(T&&T.S) T.S[f]=isType(ti,f)?1:0; }
   // the sheet: the strokes' balls and the grows' sub-faces, in their order
   function amOpsOut(T){ return (T.ops||[]).map(op=>amOpSrc(op.t==='balls'
-      ? {t:'balls', r:Math.round(op.r*1e5)/1e5, s:op.s, c:op.c.map(v=>Math.round(v*1e5)/1e5)}
+      ? Object.assign({t:'balls', r:Math.round(op.r*1e5)/1e5, s:op.s, c:op.c.map(v=>Math.round(v*1e5)/1e5)}, op.k?{k:op.k}:{})   // 721: with its crops
       : op.t==='minus' ? amMinusOut(op)
       : {t:'faces', f:[...op.m.keys()], v:[...op.m.values()]}, op)).filter(o=>o.t!=='balls'||o.c.length); }
   function amOpSrc(dst,src){
@@ -3156,6 +3574,7 @@ mat.onBeforeCompile=sh=>{
     // the names every other overlay answers to, so the gold highlight and the opacity
     // wheels reach this line exactly as they reached the old one
     mat.color=u.diffuse.value;
+    mat.userData.amCropPos='(position.x<0.5)?aA:aB';   // 721: the line's point in the model, for a display crop — the end the corner belongs to
     Object.defineProperty(mat,'opacity',{get(){return u.opacity.value;},
                                          set(v){u.opacity.value=v;},configurable:true});
     const m=new THREE.Mesh(g,mat);
@@ -3334,6 +3753,7 @@ mat.onBeforeCompile=sh=>{
     let best=null, bd=14;                       // pixels; the same feel as the hole picking
     for(const q of rulPts){
       if(activeR>=0 && q.t!==rulTypes[activeR].id) continue;
+      if(typeof amCropHides==='function'&&amCropHides(q.x,q.y,q.z)) continue;   // 721
       v.set(q.x,q.y,q.z).project(camera);
       if(v.z<-1||v.z>1) continue;
       const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
@@ -3436,7 +3856,8 @@ mat.onBeforeCompile=sh=>{
     const h=_amTagRay.intersectObjects(fills,false); if(!h.length) return null;
     // a press on one of its points is the point's (the eraser asks: the point or the ring, 252)
     const R=h[0].object.userData.ring, v=new THREE.Vector3();
-    for(const q of R.pts){ v.set(q[0],q[1],q[2]).project(camera);
+    for(const q of R.pts){ if(typeof amCropHides==='function'&&amCropHides(q[0],q[1],q[2])) continue;   // 721
+      v.set(q[0],q[1],q[2]).project(camera);
       if(Math.hypot((v.x+1)*r.width/2-(e.clientX-r.left),(1-v.y)*r.height/2-(e.clientY-r.top))<14&&amPtSeen(q[0],q[1],q[2])) return null; }   // 722: a point that is seen
     return R;
   }
@@ -4654,6 +5075,7 @@ float amStippleA(float a, float lvl){
     let best=-1, bd=14;
     for(let i=0;i<polys.length;i++){
       for(const q of polys[i].pts){
+        if(typeof amCropHides==='function'&&amCropHides(q[0],q[1],q[2])) continue;   // 721: a point a display crop hides is not there for the hand
         v.set(q[0],q[1],q[2]).project(camera);
         if(v.z<-1||v.z>1) continue;
         const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
@@ -4678,6 +5100,7 @@ float amStippleA(float a, float lvl){
     let best=null, bd=AM_GRAB_PX;
     for(const q of rulPts){
       if(amHidOf(rulTypes,q.t)) continue;       // 9: what is not on screen cannot be grabbed
+      if(typeof amCropHides==='function'&&amCropHides(q.x,q.y,q.z)) continue;   // 721: nor what a display crop hides
       v.set(q.x,q.y,q.z).project(camera);
       if(v.z<-1||v.z>1) continue;
       const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
@@ -4688,6 +5111,7 @@ float amStippleA(float a, float lvl){
     for(const P of rings) for(let i=0;i<P.pts.length;i++){
       if(P!==curPoly&&amHidOf(types,P.at)) break;
       const q=P.pts[i];
+      if(typeof amCropHides==='function'&&amCropHides(q[0],q[1],q[2])) continue;   // 721
       v.set(q[0],q[1],q[2]).project(camera);
       if(v.z<-1||v.z>1) continue;
       const d=Math.hypot((v.x+1)*hw-px,(1-v.y)*hh-py);
@@ -5063,6 +5487,21 @@ float amStippleA(float a, float lvl){
   const el=cv;
   const ptrs=new Map(); let pinch=null; let dragId=null;
   const pdist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+  /* 721 (ג): the display crop on the iPad (Eli, 17/11: made and edited here too). A crop is made around the middle of the
+     view, its handles take a finger or the pencil — a finger's size —, its chip switches it and closes it. The crops go
+     out with the sheet (getSheet: viewCrops) and the computer takes them when it loads the sheet. These are the core's
+     hooks, and the core is outside this closure: they are set on the window */
+  amCropRayOn();
+  window.amCropDist=()=>dist;
+  window.amCropWpp=()=>2*dist*Math.tan(camera.fov*Math.PI/360)/Math.max(1,el.clientHeight||1);
+  window.amCropRayAt=e=>{ const r=el.getBoundingClientRect(), rc=new THREE.Raycaster();
+    rc.setFromCamera(new THREE.Vector2(((e.clientX-r.left)/Math.max(1,r.width))*2-1,-((e.clientY-r.top)/Math.max(1,r.height))*2+1),camera); return rc; };
+  window.amCropAfter=()=>{ if(window.amInvalidate) window.amInvalidate(); };
+  window.amCropKeep=()=>{ if(typeof markUnexported==='function') markUnexported(true); };   // a change the sheet has not taken out yet
+  if($('addCrop')) $('addCrop').onclick=()=>{ amCropAdd(target,Math.max(1e-3,dist*0.18)); };
+  window.addEventListener('keydown',e=>{ if((e.key||'')==='Escape'&&amCropSel>=0) amCropPick(-1); });
+  amCropFinger=true;
+  amCropChips();
   const touchList=()=>[...ptrs.values()].filter(p=>p.type==='touch');
   const hasPen=()=>{for(const p of ptrs.values())if(p.type==='pen')return true;return false;};
   function startPinch(){const t=touchList();if(t.length<2)return;amPinchH=undefined;
@@ -5277,6 +5716,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       if(dragging==='paint'&&paintManual){amStrokeEnd();commitH();}
       if(dragging==='line')endLine();
       startPinch();dragging='pinch';return;}
+    // 721: a handle of the chosen display crop takes the press — a finger or the pencil — before every tool
+    if(amCropFr&&amCropPress(amCropRayAt(e))){dragging='crop';amCropFingerSet(e.pointerType!=='mouse');return;}
+    amCropFingerSet(e.pointerType!=='mouse');   // the handles as they were took the press; a finger's size follows
     // a finger ALWAYS navigates — marking/erasing/growing is pencil-only
     // (user decision 08/08/2026; also the original editor's behaviour)
     // 258: a finger rotates, and a finger that STAYS on a point for a moment grabs it
@@ -5324,6 +5766,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       if(on) amYawInPlace(pinch.on?da:tw);
       pinch={d:nd,mx:nmx,my:nmy,a:na,tw:on?0:tw,on:on};return;}
     if(dragId!==null&&e.pointerId!==dragId) return;       // palm guard
+    if(dragging==='crop'){amCropMove(amCropRayAt(e));return;}   // 721
     // a finger that travels is navigating, not holding — the grab must not fire behind it
     if(amHold&&Math.hypot(e.clientX-amHold.x,e.clientY-amHold.y)>AM_HOLD_SLOP) amHoldClear();
     const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];
@@ -5340,6 +5783,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     if(e){ ptrs.delete(e.pointerId); if(e.pointerId===dragId) dragId=null; }
     if(dragging==='pinch'){ if(touchList().length>=2)startPinch(); else {pinch=null;dragging=null;} return; }
     if(dragging==='grab')amGrabEnd();
+    if(dragging==='crop'&&typeof amCropLift==='function')amCropLift();   // 721
     if(dragging==='wallshape')wallEnd();
     if(dragging==='volpaint')volCommit();
     if(dragging==='smpaint')smStrokeEnd();
@@ -5435,6 +5879,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const M=types[activeT].manual;
     beginH();
     const gop={t:'faces', m:new Map(), by:'h'};   // 324: the grow, as an act in the layer's order; 571: a person's
+    const hm=(typeof amCropMask==='function')?amCropMask():null;   // 721: the grow does not enter what a display crop hides
     while(head<q.length && added<CAP){const s=q[head++];
       gop.m.set(s,1);
       if(M[s]!==1){recH(activeT,s);M[s]=1;amSUpd(activeT,s);recolorFace(s);} added++;
@@ -5446,7 +5891,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
         const a=grid.get(ckey(ix,iy,iz)); if(!a)continue;
         for(let n=0;n<a.length;n++){const g=a[n]; if(visited[g])continue;
           const dx=cen[g*3]-cx,dy=cen[g*3+1]-cy,dz=cen[g*3+2]-cz; if(dx*dx+dy*dy+dz*dz>RG2)continue;
-          const ok = Math.abs(lum[FACEOF[g]]-seedVal) <= growTol;
+          const ok = Math.abs(lum[FACEOF[g]]-seedVal) <= growTol && !(hm&&hm[g]);
           if(ok){visited[g]=1; q.push(g);} else visited[g]=1;
         }}
     }
@@ -5477,7 +5922,10 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
           side:THREE.DoubleSide});
         AMID.n=n; AMID.cam=null;
       }
-      if(AMID.cam&&camera.matrixWorld.equals(AMID.cam)&&AMID.rt) return true;
+      // 721: the id of what is SEEN — the pass throws away what a display crop hides, and is drawn again when the crops change
+      const crev=(typeof amCropRev!=='undefined')?amCropRev:0; if(typeof amCropMat==='function') amCropMat(AMID.mat);
+      if(AMID.cam&&camera.matrixWorld.equals(AMID.cam)&&AMID.rt&&AMID.crev===crev) return true;
+      AMID.crev=crev;
       const sz=renderer.getDrawingBufferSize(new THREE.Vector2());
       const W=Math.max(16,Math.min(2048,Math.round(sz.x))), H=Math.max(16,Math.min(2048,Math.round(sz.y)));
       if(!AMID.rt||AMID.rt.width!==W||AMID.rt.height!==H){
@@ -5638,6 +6086,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     const val=(mode==='add')?1:-1;
     amStrokeDab(p); if(val<0&&smLevelOf(types[activeT])>0) smLiveHide(types[activeT].id,p,brushR);   // 433                               // 324: the stroke's balls
     const seen=amSeenUnder(e,p);                  // 6: null = the ball; a set = the flat cut
+    const hm=(typeof amCropMask==='function')?amCropMask():null;   // 721: a sub-face a display crop hides is not marked whole (the line is cut at the wall)
     const ix0=Math.floor((p.x-brushR)/CELL),ix1=Math.floor((p.x+brushR)/CELL);
     const iy0=Math.floor((p.y-brushR)/CELL),iy1=Math.floor((p.y+brushR)/CELL);
     const iz0=Math.floor((p.z-brushR)/CELL),iz1=Math.floor((p.z+brushR)/CELL);
@@ -5645,7 +6094,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       const a=grid.get(ckey(ix,iy,iz)); if(!a)continue;
       for(let n=0;n<a.length;n++){const f=a[n];
         const dx=cen[f*3]-p.x,dy=cen[f*3+1]-p.y,dz=cen[f*3+2]-p.z;
-        if(dx*dx+dy*dy+dz*dz<=r2&&(!seen||seen.has(f))){
+        if(dx*dx+dy*dy+dz*dz<=r2&&(!seen||seen.has(f))&&!(hm&&hm[f])){
           { const M=types[activeT].manual;
             if(M[f]!==val){recH(activeT,f);M[f]=val;amSUpd(activeT,f);
               // 548: in a stroke of the line, the sub-face is coloured by the tick, after the line has taken it (amMarkTick) —
@@ -6293,6 +6742,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
              // 644: a sheet with a volume marking needs reader 10 — an older one would drop the marking without a word
              // 640: a tag's photos are a list (`imgs`) — a reader of before it reads `img` and would drop them without a word
              minReader:Math.max(tags.some(g=>g.imgs&&g.imgs.length)?13:1, H.volMark?10:1, types.some(T=>T.hasProb&&T.prob)?11:1, types.some(T=>(T.ops||[]).some(o=>o.t==='minus'))?12:1, (SMR.length?8:SMR.some(r=>r.level>SM_SOFT)?7:((SMR.some(r=>r.pc)||[...smTs.values()].some(t=>t.ops.length))?6:(tags.length?5:(SMR.length?4:((rulPts.length||polys.length)?3:(MEMBRANES.length?2:1))))))),   // 335: a smooth line needs reader 6 · 382: a level above 10, reader 7
+             viewCrops:(typeof amCropsOut==='function')?amCropsOut():[],   // 721: the display crops, in the model's coordinates — one list for the three screens
              tagTypes:tagTypes.map(T=>({id:T.id,name:T.name,color:T.hex,hid:!!T.hid,repHid:!!T.repHid})),
              tags:tags.map(g=>({id:g.id,t:g.t,p:g.p.slice(),nrm:g.nrm?g.nrm.slice():null,
                                 title:g.title,text:g.text,imgs:(g.imgs||[]).slice()})),
@@ -6304,6 +6754,8 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
              // 433: no smoothed marking apart from the brush's — the brush's marking and the layer's level (sm) are all
              saved:new Date().toISOString(),
              jobId:H.jobId, exportedBy:H.exportedBy};   // the iPad's identity fields, now on every sheet
+    // 721: a stroke cut by a display crop (op.k) needs reader 14 — an older one would give it back what was cut
+    if(types.some(T=>(T.ops||[]).some(q=>q.t==='balls'&&q.k))) o.minReader=Math.max(o.minReader,14);
     if(withDerived){
       // 324: every layer with the parts of the sub-faces on its line — the report counts them
       // as the screen does, and draws them as the screen does
@@ -6358,6 +6810,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
     // the wall's shaping ends when another tool is taken — also after a turn of the model (421)
     if((mode==='wallshape'||(mode==='nav'&&amKeepMode==='wallshape'))&&m!=='wallshape'&&m!=='nav'&&typeof wallTeardown==='function') wallTeardown();
     if(mode!=='nav'&&m==='nav') amKeepMode=mode; else if(m!=='nav') amKeepMode=m;
+    // 721: a move to another tool — the display crop's handles go. Not a one-stroke flip of the same tool, where the
+    // screen has one (amCropSameTool — the measurement screen's Shift, 701)
+    if(m!==mode&&typeof amCropSel!=='undefined'&&amCropSel>=0&&!(typeof amCropSameTool==='function'&&amCropSameTool())) amCropPick(-1);
     mode=m;
     document.getElementById('mNav').classList.toggle('on',m==='nav');
     document.getElementById('mAdd').classList.toggle('on',m==='add');
@@ -7026,7 +7481,7 @@ const amPal=(function(){
   // Same translator as the editor, in the same words: a flat sub-face index means something
   // only together with the counts it was written against, and the sheet carries those
   // counts. The file alone decides — no history, no server, no memory of another device.
-  const AM_SHEET_READER = 13;  // 640: a tag names several photos (imgs) · 651ב: a minus among a layer's acts · 677: a learned layer's probabilities a sub-face (probS) ·  // 644: the volume marking, carried (volMark) · 433: one brush, a level per layer · 571: Ada's acts and their records   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
+  const AM_SHEET_READER = 14;  // 721: a stroke cut by a display crop (op.k) · 640: a tag names several photos (imgs) · 651ב: a minus among a layer's acts · 677: a learned layer's probabilities a sub-face (probS) ·  // 644: the volume marking, carried (volMark) · 433: one brush, a level per layer · 571: Ada's acts and their records   // 1 = marks only; 2 = membranes; 3 = the ruler (251); 5 = tags (332); 6 = the smooth line (335); 7 = levels 11-20 (382)
   const AM_SUB_SCHEME = (am.subScheme===2)?2:1;   // 539: 1 — one k; 2 — a target size, k_f = sqrt(cnt) (the work says which)
   function amB64u8(b){ const t=atob(b), a=new Uint8Array(t.length);
     for(let i=0;i<t.length;i++) a[i]=t.charCodeAt(i); return a; }
@@ -7126,6 +7581,7 @@ const amPal=(function(){
     }
     MEMBRANES = Array.isArray(sh.membranes) ? sh.membranes : [];
     VOL_LAYERS = Array.isArray(sh.volLayers) ? sh.volLayers : [];
+    amCropsSet(sh.viewCrops);   // 721: the work's display crops — kept, and written back with the sheet
     VOL_MARK = (sh.volMark && typeof sh.volMark === 'object') ? sh.volMark : null;      // 644: carried, as it came
     for(const L of [...lines]) delLine(L);
     for(const m of [...xmarks]) delX(m);
@@ -7153,7 +7609,7 @@ const amPal=(function(){
       // its marks as one face-level act, so a new eraser stroke cuts into them smoothly too
       T.ops=[];
       if(Array.isArray(src.ops)){ for(const o of src.ops){   // 571: each act with its source (amOpSrc)
-          if(o&&o.t==='balls'&&Array.isArray(o.c)&&o.c.length) T.ops.push(amOpSrc({t:'balls',r:(+o.r>0)?+o.r:0.1,s:(o.s<0)?-1:1,c:o.c.slice()},o));
+          if(o&&o.t==='balls'&&Array.isArray(o.c)&&o.c.length) T.ops.push(amCropKSet(amOpSrc({t:'balls',r:(+o.r>0)?+o.r:0.1,s:(o.s<0)?-1:1,c:o.c.slice()},o),o.k));   // 721: with its crops
           else if(o&&o.t==='faces'&&Array.isArray(o.f)){ const m=new Map();
             o.f.forEach((f,i)=>amEach(MAP,f,t=>m.set(t,(o.v&&o.v[i]<0)?-1:1))); if(m.size) T.ops.push(amOpSrc({t:'faces',m:m},o)); }
           else if(o&&o.t==='minus'){ const mo=amMinusIn(MAP,o); if(mo) T.ops.push(amOpSrc(mo,o)); } } }   // 651ב
