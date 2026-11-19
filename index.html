@@ -88,6 +88,13 @@
   #openBtn{font-size:17px;padding:13px 30px;background:var(--amber);color:#161310;border-color:var(--amber);font-weight:600}
   #err{color:var(--non);font-size:13px;max-width:340px;text-align:center}
   #ver{color:#5c5342;font-size:12px}
+  /* 721: the display crop's chips */
+  #chipsK .chip.on{border-color:#2196F3;box-shadow:0 0 0 1px #2196F3 inset}
+  #chipsK .chip .sw{background:#2196F3}
+  #chipsK .chip .cropio{font-size:12px;padding:3px 8px;background:transparent;border:1px solid #2196F3;color:#90CAF9;border-radius:3px}
+  #chipsK .chip .eye{font-style:normal;font-size:15px;line-height:1;padding:0 3px}
+  #chipsK .chip .eye.off{opacity:.3;filter:grayscale(1)}
+  #chipsK .chip .del{font-style:normal;font-size:14px;opacity:.6;padding:0 3px}
 </style>
 </head>
 <body>
@@ -143,6 +150,10 @@
     <label>תגיות</label><span id="chipsG"></span>
     <button id="addTag" title="שכבת תגיות: נגיעה בעט על המודל מניחה נקודה ופותחת כרטיס — כותרת, טקסט ותמונה מהמצלמה או מהתמונות. נגיעה על תגית פותחת אותה לעריכה">🏷 ＋ תגיות</button>
     <input id="tagColor" type="color" value="#7dd3fc" style="width:0;height:0;opacity:0;position:absolute">
+  </div>
+    <div class="grp" id="palCrop">
+    <label>קיצוץ תצוגה</label><span id="chipsK"></span>
+    <button id="addCrop" title="מסתיר חלק מהמודל בתוך תיבה, או מחוצה לה, כדי לראות את מה שמאחוריו ולסמן עליו. שום דבר לא נמחק, ומה שמוסתר מוגן מהסימון. גרירת הידיות באצבע או בעט מסתירה מיד; נגיעה בשבב מציגה או מסירה את הידיות.">＋ קיצוץ</button>
   </div>
   </div>
   <span id="area" hidden>0.00 מ"ר</span>

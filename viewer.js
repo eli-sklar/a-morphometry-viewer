@@ -569,6 +569,139 @@ document.addEventListener('visibilitychange',()=>{ amDown=0; window.amInvalidate
 function amCamMoved(){ camera.updateMatrixWorld(); const a=camera.matrixWorld.elements, b=camera.projectionMatrix.elements; let ch=false;
   for(let i=0;i<16;i++){ if(amCamLast[i]!==a[i]){ amCamLast[i]=a[i]; ch=true; } if(amCamLast[16+i]!==b[i]){ amCamLast[16+i]=b[i]; ch=true; } }
   return ch; }
+const AXV=[new THREE.Vector3(1,0,0),new THREE.Vector3(0,1,0),new THREE.Vector3(0,0,1)];
+function concaveSpike(len,rad){          // lathe spike, concave sides, tip at +Y
+  const prof=[];for(let i=0;i<=10;i++){const t=i/10;prof.push(new THREE.Vector2(rad*Math.pow(1-t,1.55),len*t));}
+  return new THREE.LatheGeometry(prof,20);
+}
+function boxEdges(h,size,col){   // 721: col — the edges' colour (the display crop's); none — the frame's gold
+  const mn={x:-h.x,y:-h.y,z:-h.z},mx={x:h.x,y:h.y,z:h.z};
+  const c=[[mn.x,mn.y,mn.z],[mx.x,mn.y,mn.z],[mx.x,mx.y,mn.z],[mn.x,mx.y,mn.z],
+           [mn.x,mn.y,mx.z],[mx.x,mn.y,mx.z],[mx.x,mx.y,mx.z],[mn.x,mx.y,mx.z]];
+  const E=[[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+  const pts=[];for(const [a,b] of E){pts.push(...c[a],...c[b]);}
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+  const dash=size*0.05;
+  const m=new THREE.LineDashedMaterial({color:(col===undefined)?0xb8934a:col,dashSize:dash,gapSize:dash*0.6,linewidth:2,transparent:true,opacity:0.95});
+  const ls=new THREE.LineSegments(g,m);ls.computeLineDistances();return ls;
+}
+// the frame of `box` as a group (placed and turned like the box) and its handles, for the
+// caller to add to its scene; `rotAxes` — the box axes it may turn about (since 473/6 both
+// screens give all three: the map's box tilts too)
+// 721: `look` — another screen's colours for the same frame: {edge, spike, arc, rose}; none — the frame's own
+function amFrameGroup(box,size,rotAxes,look){
+  const group=new THREE.Group(),handles=[];
+  group.position.copy(box.c);group.quaternion.copy(box.q);
+  group.add(boxEdges(box.h,size,look?look.edge:undefined));
+  const hs=size*0.05, up=new THREE.Vector3(0,1,0);
+  const LK=look||{}, gold=(LK.spike!==undefined)?LK.spike:0xb8934a, green=(LK.arc!==undefined)?LK.arc:0x38b000,
+        rose=(LK.rose!==undefined)?LK.rose:0x38b000, blue=0x0d47a1;   // --amber --rep --acc (292)
+  const faces=[[0,1],[0,-1],[1,1],[1,-1],[2,1],[2,-1]];
+  for(const [axis,sign] of faces){
+    const p=new THREE.Vector3();p.setComponent(axis,sign*box.h.getComponent(axis));
+    const spike=new THREE.Mesh(concaveSpike(hs*1.7,hs*0.5),
+      new THREE.MeshBasicMaterial({color:gold,depthTest:false,transparent:true,opacity:0.95}));
+    const dir=AXV[axis].clone().multiplyScalar(sign);
+    spike.quaternion.setFromUnitVectors(up,dir);spike.position.copy(p);
+    spike.renderOrder=999;spike.userData={axis,sign};group.add(spike);handles.push(spike);
+  }
+  // rotation grabbers (round 5, reference UX): a green ARC at every edge midpoint,
+  // curling around the edge; dragging spins the box about the axis PARALLEL to that
+  // edge, and a full rotation ring appears for the duration of the drag
+  // right-handed basis per edge axis, so the torus plane and the outward angle are
+  // exact: the arc is CENTRED on the outward diagonal and curls around its edge
+  const PAIRS=[[1,2],[2,0],[0,1]];
+  const ARCLEN=1.2;
+  for(const ax of rotAxes){
+    const [u,v]=PAIRS[ax];
+    for(const su of [1,-1]) for(const sv of [1,-1]){
+      const p=new THREE.Vector3();
+      p.setComponent(u,su*box.h.getComponent(u));
+      p.setComponent(v,sv*box.h.getComponent(v));
+      const arc=new THREE.Mesh(new THREE.TorusGeometry(hs*0.85,hs*0.10,8,20,ARCLEN),
+        new THREE.MeshBasicMaterial({color:green,depthTest:false,transparent:true,opacity:0.95}));
+      arc.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(AXV[u],AXV[v],AXV[ax]));
+      // the arc is centred on the TRUE 45° outward diagonal — signs only. Weighting the
+      // angle by the box half-extents skewed every arc toward the long axis on an
+      // elongated box (user report 12/08: "not random, but not arranged right") —
+      // on the 5:1 wall the arcs collapsed to ~11° instead of 45°.
+      arc.rotateZ(Math.atan2(sv,su)-ARCLEN/2);
+      arc.position.copy(p);arc.renderOrder=999;arc.userData={rot:true,axis:ax};
+      group.add(arc);handles.push(arc);
+      // an invisible fatter grab collider, so a finger can actually catch the arc
+      const grab2=new THREE.Mesh(new THREE.SphereGeometry(hs*0.7,8,6),
+        new THREE.MeshBasicMaterial({visible:false}));
+      grab2.position.copy(p);grab2.userData={rot:true,axis:ax};
+      group.add(grab2);handles.push(grab2);
+    }
+  }
+  // center: 6 arrows radiating in all axes (green) + invisible grab sphere
+  const cg=new THREE.Group();
+  const al=hs*1.0;
+  for(const s of [1,-1]) for(let ax=0;ax<3;ax++){
+    const dir=AXV[ax].clone().multiplyScalar(s);
+    const stem=new THREE.Mesh(new THREE.CylinderGeometry(hs*0.09,hs*0.09,al*0.7,10),
+      new THREE.MeshBasicMaterial({color:rose,depthTest:false,transparent:true,opacity:0.85}));
+    stem.quaternion.setFromUnitVectors(up,dir);stem.position.copy(dir.clone().multiplyScalar(al*0.35));cg.add(stem);
+    const head=new THREE.Mesh(concaveSpike(al*0.5,hs*0.30),
+      new THREE.MeshBasicMaterial({color:rose,depthTest:false,transparent:true,opacity:0.95}));
+    head.quaternion.setFromUnitVectors(up,dir);head.position.copy(dir.clone().multiplyScalar(al*0.72));cg.add(head);
+  }
+  const grab=new THREE.Mesh(new THREE.SphereGeometry(hs*0.95,12,10),
+    new THREE.MeshBasicMaterial({visible:false}));grab.userData={center:true};cg.add(grab);handles.push(grab);
+  group.add(cg);
+  return {group,handles};
+}
+// the handle under the ray (already set from the press), or null — one raycast, at the press only
+function amFrameHit(ray,handles){const h=ray.intersectObjects(handles,false);return h.length?h[0].object:null;}
+// a press on handle h (the ray already set from it): the drag's state. A turn shows its full
+// ring in `scene` for the duration of the drag — the caller removes boxDrag.ring at the release
+function amFrameStart(h,ray,camera,box,scene,size,look){
+  const n=camera.getWorldDirection(new THREE.Vector3()).clone();
+  const wp=h.getWorldPosition(new THREE.Vector3());
+  const plane=new THREE.Plane().setFromNormalAndCoplanarPoint(n,wp);
+  const p0=new THREE.Vector3();ray.ray.intersectPlane(plane,p0);
+  if(h.userData.center){return {center:true,plane,start:p0,cStart:box.c.clone()};}
+  if(h.userData.rot){
+    // rotate about the box axis PARALLEL to the grabbed edge (round 5 reference)
+    const ax=h.userData.axis;
+    const axisW=AXV[ax].clone().applyQuaternion(box.q).normalize();
+    const rotPlane=new THREE.Plane().setFromNormalAndCoplanarPoint(axisW,box.c.clone());
+    const r0=new THREE.Vector3();ray.ray.intersectPlane(rotPlane,r0);
+    // the full rotation ring, shown for the duration of the drag
+    const [u,v]=[[1,2],[0,2],[0,1]][ax];
+    const R=Math.hypot(box.h.getComponent(u),box.h.getComponent(v))*1.25;
+    const ring=new THREE.Mesh(new THREE.TorusGeometry(R,size*0.006,8,96),
+      new THREE.MeshBasicMaterial({color:(look&&look.arc!==undefined)?look.arc:0x38b000,depthTest:false,transparent:true,opacity:0.9}));
+    ring.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),axisW);
+    ring.position.copy(box.c);ring.renderOrder=998;scene.add(ring);
+    return {rot:true,axisW,rotPlane,v0:r0.clone().sub(box.c),qStart:box.q.clone(),ring};
+  }
+  const axis=h.userData.axis,sign=h.userData.sign;
+  return {axis,sign,plane,start:p0,hStart:box.h.getComponent(axis),cStart:box.c.clone()};}
+// the drag moves (the ray set from the pointer): `box` changes in place and done() follows;
+// a ray that misses the drag's plane changes nothing
+function amFrameMove(boxDrag,ray,box,size,done){
+  if(boxDrag.rot){
+    const p=new THREE.Vector3();if(!ray.ray.intersectPlane(boxDrag.rotPlane,p))return;
+    const v1=p.clone().sub(box.c);
+    if(v1.lengthSq()<1e-10||boxDrag.v0.lengthSq()<1e-10)return;
+    const ang=Math.atan2(boxDrag.v0.clone().cross(v1).dot(boxDrag.axisW),boxDrag.v0.dot(v1));
+    box.q.copy(new THREE.Quaternion().setFromAxisAngle(boxDrag.axisW,ang).multiply(boxDrag.qStart));
+    done();return;}
+  const p=new THREE.Vector3();if(!ray.ray.intersectPlane(boxDrag.plane,p))return;
+  if(boxDrag.center){const d=p.clone().sub(boxDrag.start);
+    box.c.copy(boxDrag.cStart).add(d);done();return;}
+  // resize one face along the box's OWN axis: half-size grows by delta/2 and the
+  // centre shifts with it, so the opposite face stays put
+  const dirW=AXV[boxDrag.axis].clone().applyQuaternion(box.q).multiplyScalar(boxDrag.sign);
+  const delta=p.clone().sub(boxDrag.start).dot(dirW);
+  const eps=size*0.01;
+  const nh=Math.max(eps,boxDrag.hStart+delta/2);
+  const grow=nh-boxDrag.hStart;
+  box.h.setComponent(boxDrag.axis,nh);
+  box.c.copy(boxDrag.cStart).addScaledVector(dirW,grow);
+  done();}
 var amCrops=[], amCropAlt=null, amCropRev=0, amCropPrepd=null, amCropMaskC=null, amCropBad=[], amCropBadK=0;
 // the screen's own origin in the model's coordinates: a screen that draws the model centred keeps its crops (and its
 // strokes) in its own coordinates, and the list goes out and comes in in the model's
@@ -660,6 +793,186 @@ function amCropTouch(){ amCropRev++; amCropPrepd=null; amCropMaskC=null;
   if(typeof amCropChips==='function') amCropChips();
   if(typeof amCropAfter==='function') amCropAfter();   // the screen's own readers of the crops (an id pass, a live selection)
   if(typeof invalidate==='function') invalidate(); }
+/* The hiding in the picture: every material that is drawn is wrapped once (amCropMat) — its own shader change runs
+   first, as amThru's — and throws away a fragment a crop hides, in the model's coordinates. The injection is at the
+   clipping-planes chunks, which every built-in material carries and no hook of ours replaces; a material written by
+   hand (the id passes, the ruler's line) gets it at the opening of its main(). A sprite goes whole, by its anchor.
+   The crops reach the shader in a DATA TEXTURE (four texels a crop, 32-bit floats, read by texelFetch — without WebGL2
+   by texture2D at the texel centres, in a loop to 256 that stops at their number; Eli, 18/11) and their
+   number in a uniform the loop runs to: there is no limit on the number of crops and nothing is compiled again when
+   one is opened, closed or switched by its eye (Eli, 17/11: no cap). All the materials read the one texture: a drag
+   of a box is an update of four texels. */
+var AM_CROP_U={amCropT:{value:null}, amCropN:{value:0}, amCropH:{value:4}}, amCropRows=0, amCropLive=false, amCropDone=new WeakSet();
+function amCropPack(){
+  const A=amCropOn();
+  if(amCrops.length||A.length) amCropLive=true;
+  if(!amCropLive) return;
+  if(!AM_CROP_U.amCropT.value||A.length>amCropRows){          // the texture's rows only grow: room, not a limit
+    let rows=Math.max(4,amCropRows); while(rows<A.length) rows*=2;
+    if(AM_CROP_U.amCropT.value) AM_CROP_U.amCropT.value.dispose();
+    const t=new THREE.DataTexture(new Float32Array(16*rows),4,rows,THREE.RGBAFormat,THREE.FloatType);
+    t.minFilter=THREE.NearestFilter; t.magFilter=THREE.NearestFilter; t.generateMipmaps=false; t.flipY=false;
+    AM_CROP_U.amCropT.value=t; amCropRows=rows; AM_CROP_U.amCropH.value=rows; }
+  const T=AM_CROP_U.amCropT.value, B=T.image.data; B.fill(0);
+  for(let i=0;i<A.length;i++){ const p=A[i], o=i*16;
+    for(let j=0;j<3;j++){ const a=p.a[j], ih=1/Math.max(p.h[j],1e-9);
+      B[o+j*4]=a[0]*ih; B[o+j*4+1]=a[1]*ih; B[o+j*4+2]=a[2]*ih; B[o+j*4+3]=-(a[0]*p.c[0]+a[1]*p.c[1]+a[2]*p.c[2])*ih; }
+    B[o+12]=p.s; B[o+13]=p.h[0]; B[o+14]=p.h[1]; B[o+15]=p.h[2]; }
+  T.needsUpdate=true;
+  AM_CROP_U.amCropN.value=A.length; }
+function amCropShader(sh,line,posx,gl1){
+  if(!amCropLive||sh.fragmentShader.indexOf('amCropT')>=0) return;
+  sh.uniforms.amCropT=AM_CROP_U.amCropT; sh.uniforms.amCropN=AM_CROP_U.amCropN; if(gl1) sh.uniforms.amCropH=AM_CROP_U.amCropH;
+  const vs=sh.vertexShader, mainRe=/void\s+main\s*\(\s*\)\s*\x7b/;
+  if(vs.indexOf('#include <clipping_planes_vertex>')>=0){
+    const w=(vs.indexOf('#include <begin_vertex>')>=0)
+      ? '#ifdef USE_INSTANCING\n vAmW=(modelMatrix*instanceMatrix*vec4(transformed,1.0)).xyz;\n#else\n vAmW=(modelMatrix*vec4(transformed,1.0)).xyz;\n#endif\n'
+      : ' vAmW=modelMatrix[3].xyz;\n';                                   // a sprite: whole, by its anchor
+    sh.vertexShader='varying vec3 vAmW;\n'+vs.replace('#include <clipping_planes_vertex>',w+'#include <clipping_planes_vertex>'); }
+  // a material written by hand: its point in the model is `position`, or what the material says it is (userData.amCropPos —
+  // the ruler's line is drawn between two ends kept in attributes of their own)
+  else sh.vertexShader='varying vec3 vAmW;\n'+vs.replace(mainRe,m=>m+' vAmW=(modelMatrix*vec4('+(posx||'position')+',1.0)).xyz;\n');
+  // the distance to the nearest wall is kept only where the cut's line is drawn (the model's own material)
+  // without WebGL2 (723; Eli, 18/11): no texelFetch and no loop to a uniform — the same texels by texture2D at their
+  // centres, and a loop to 256 that stops at the number of crops
+  const body=(gl1
+    ? 'for(int i=0;i<256;i++)\x7b if(i>=amCropN) break;\n   float amV=(float(i)+0.5)/amCropH;\n'
+      +'   vec4 a=texture2D(amCropT,vec2(0.125,amV)), b=texture2D(amCropT,vec2(0.375,amV)), c=texture2D(amCropT,vec2(0.625,amV)), d=texture2D(amCropT,vec2(0.875,amV));\n'
+    : 'for(int i=0;i<amCropN;i++){\n'
+      +'   vec4 a=texelFetch(amCropT,ivec2(0,i),0), b=texelFetch(amCropT,ivec2(1,i),0), c=texelFetch(amCropT,ivec2(2,i),0), d=texelFetch(amCropT,ivec2(3,i),0);\n')
+    +'   vec3 q=abs(vec3(dot(a.xyz,vAmW)+a.w, dot(b.xyz,vAmW)+b.w, dot(c.xyz,vAmW)+c.w));\n'
+    +'   if((max(q.x,max(q.y,q.z))-1.0)*d.x>0.0) discard;\n'
+    +(line?'   vec3 w=(q-1.0)*d.yzw; amCropL=min(amCropL, d.x>0.0 ? -max(w.x,max(w.y,w.z)) : length(max(w,0.0)));\n':'')
+    +' }\n';
+  let fs=sh.fragmentShader;
+  if(fs.indexOf('#include <clipping_planes_fragment>')>=0) fs=fs.replace('#include <clipping_planes_fragment>',body+'#include <clipping_planes_fragment>');
+  else fs=fs.replace(mainRe,m=>m+'\n'+body);
+  // the cut's line on the model: a thin half-clear line where the model meets a crop's wall (#8a8272; no red)
+  if(line&&fs.indexOf('#include <opaque_fragment>')>=0) fs=fs.replace('#include <opaque_fragment>',
+    '#include <opaque_fragment>\n if(amCropN>0){ float aw=fwidth(amCropL); if(amCropL<1.5*aw) gl_FragColor.rgb=mix(gl_FragColor.rgb,vec3(0.541,0.510,0.447),0.5); }');
+  sh.fragmentShader=(gl1
+    ? '#ifdef GL_FRAGMENT_PRECISION_HIGH\nuniform highp sampler2D amCropT;\n#else\nuniform mediump sampler2D amCropT;\n#endif\nuniform float amCropH; '
+    : 'uniform highp sampler2D amCropT; ')+'uniform int amCropN; varying vec3 vAmW; float amCropL=1e9;\n'+fs; }
+// a material, wrapped once: the hook it already has runs first and is kept (another feature's change of the same
+// material — the design, the see-through pass, a pull toward the eye — stays as it was)
+function amCropMat(m){
+  if(!m||!amCropLive||(m.userData&&m.userData.amCropFree)||amCropDone.has(m)) return m;
+  const base=m.onBeforeCompile, key=m.customProgramCacheKey;
+  m.onBeforeCompile=function(sh,r){ if(base) base.call(this,sh,r);
+    amCropShader(sh,!!(this.userData&&this.userData.amCropLine),this.userData&&this.userData.amCropPos,!!(r&&r.capabilities&&r.capabilities.isWebGL2===false)); };
+  m.customProgramCacheKey=function(){ return 'amCrop'+((this.userData&&this.userData.amCropLine)?'L':'')+'|'+(key?key.call(this):'')+'|'+(base?base.toString():''); };
+  amCropDone.add(m); m.needsUpdate=true;
+  return m; }
+// every material under `root` — run before each picture while the work has (or had) crops, so what was made after a
+// crop was opened (a ring closed, a tape, a patch, a copy of a material) is hidden from its first frame
+function amCropSweep(root){
+  if(!amCropLive||!root) return;
+  root.traverse(o=>{ const mm=o.material; if(!mm) return;
+    if(o.userData&&o.userData.amCropFree){ for(const m of (Array.isArray(mm)?mm:[mm])) if(m.userData) m.userData.amCropFree=true; return; }
+    if(Array.isArray(mm)){ for(let i=0;i<mm.length;i++) amCropMat(mm[i]); } else amCropMat(mm); }); }
+// one pass with another set of crops (Ada's own, or the screen's with some of them off for her eyes only): fn draws —
+// the picture, the rays and the acts on whole sub-faces all read the set given — and the screen's set comes back
+function amCropUse(list,fn){
+  const was=amCropAlt; amCropAlt=(list||[]).filter(K=>K&&!K.off).map(amCropPrep); amCropRev++; amCropMaskC=null; amCropPack();
+  try{ return fn(); } finally{ amCropAlt=was; amCropRev++; amCropMaskC=null; amCropPack(); } }
+/* The hand: a ray passes through what is hidden. Every pick on the model, on a body, on a line or on a sprite goes
+   through the Raycaster's two entries — the hits a crop hides are dropped there, once, whatever asked (the brush,
+   the ruler, the polygon, the tags, the navigation). A sprite by its anchor, as it is drawn. The crop's own handles
+   (userData.amCropFree) are never hidden. Picks made on the screen, without a ray, ask amCropHides themselves. */
+function amCropRayKeep(hits,from){
+  const A=amCropOn(); if(!A.length||!hits||!hits.length) return hits;
+  let w=from||0; const v=amCropRayKeep.v||(amCropRayKeep.v=new THREE.Vector3());
+  for(let i=from||0;i<hits.length;i++){ const h=hits[i], o=h.object; let hid=false;
+    if(!(o&&o.userData&&o.userData.amCropFree)){
+      const p=(o&&o.isSprite)?o.getWorldPosition(v):h.point;
+      if(p){ for(let k=0;k<A.length;k++) if(amCropF1(A[k],p.x,p.y,p.z)>0){ hid=true; break; } } }
+    if(!hid) hits[w++]=h; }
+  hits.length=w; return hits; }
+function amCropRayOn(){
+  const P=THREE.Raycaster.prototype; if(P.amCrop) return; P.amCrop=true;
+  const one=P.intersectObject, many=P.intersectObjects;
+  P.intersectObject=function(o,rec,out){ const n=out?out.length:0; return amCropRayKeep(one.call(this,o,rec,out),n); };
+  P.intersectObjects=function(os,rec,out){ const n=out?out.length:0; return amCropRayKeep(many.call(this,os,rec,out),n); }; }
+/* The crop's chips and handles. A chip a crop: its name, inside/outside, the eye (open — the crop is off), ✕ (the
+   crop is closed; the model is whole again). No "do it" button — the drag hides as it goes. The handles (the frame of
+   frame.js, in the crop's own colours) are shown for ONE crop, the chosen chip's: a press on the chip again, Esc or
+   a move to another tool takes them away; choosing a chip does not change the tool in the hand. Every screen edits
+   (Eli, 17/11: the iPad and the delivered viewer too); `amCropEdit` false would leave a name and an eye only.
+   A finger (a touch or a pen pressed last) gets handles of a finger's size: the spike at least 44 pixels long.
+   Not in the history: Ctrl+Z does not touch a crop. */
+var amCropSel=-1, amCropFr=null, amCropDrag=null, amCropEdit=true, amCropSaveT=0, amCropFinger=false;
+const AM_CROP_LOOK={edge:0x2196F3, arc:0x90CAF9, spike:0x8a8272, rose:0x8a8272};
+function amCropChips(){
+  const box=document.getElementById('chipsK'); if(!box) return; box.innerHTML='';
+  const grp=document.getElementById('palCrop'); if(grp&&!amCropEdit) grp.style.display=amCrops.length?'':'none';
+  amCrops.forEach((K,i)=>{
+    const c=document.createElement('span'); c.className='chip crop'+(i===amCropSel?' on':''); c.style.setProperty('--c','#2196F3'); c.dataset.crop=K.id;
+    const sw=document.createElement('i'); sw.className='sw'; c.appendChild(sw);
+    if(amCropEdit){ const inp=document.createElement('input'); inp.value=K.name; inp.placeholder='שם הקיצוץ';
+      inp.onchange=()=>{ K.name=inp.value; amCropChanged(); }; inp.onclick=e=>e.stopPropagation(); c.appendChild(inp);
+      const io=document.createElement('button'); io.className='cropio'; io.textContent=K.out?'בחוץ':'פנים';
+      io.title=K.out?'מוסתר מה שמחוץ לתיבה. לחיצה: להסתיר את מה שבתוכה':'מוסתר מה שבתוך התיבה. לחיצה: להסתיר את מה שמחוצה לה';
+      io.onclick=e=>{ e.stopPropagation(); K.out=!K.out; amCropChanged(); }; c.appendChild(io); }
+    else { const nm=document.createElement('span'); nm.textContent=K.name; nm.style.fontSize='12px'; c.appendChild(nm); }
+    if(K.off) c.style.opacity='0.45';
+    const eye=document.createElement('i'); eye.className='eye'+(K.off?'':' off'); eye.textContent='👁';   // open — the model is whole
+    eye.title=K.off?'הקיצוץ כבוי: המודל מוצג שלם. לחיצה: להסתיר שוב':'הקיצוץ מסתיר. לחיצה: להציג את המודל שלם';
+    eye.onclick=e=>{ e.stopPropagation(); K.off=!K.off; amCropChanged(); }; c.appendChild(eye);
+    if(amCropEdit){ const x=document.createElement('i'); x.className='del'; x.textContent='✕'; x.title='סגירת הקיצוץ: המודל חוזר להיות שלם';
+      x.onclick=e=>{ e.stopPropagation(); amCropClose(i); }; c.appendChild(x);
+      c.onclick=()=>amCropPick(i===amCropSel?-1:i); }
+    box.appendChild(c); }); }
+// a change by the hand: the list is new for every reader, and is kept with the work
+function amCropChanged(){ amCropTouch(); if(typeof amCropKeep==='function'){ clearTimeout(amCropSaveT); amCropSaveT=setTimeout(amCropKeep,400); } }
+// a new crop: a box around the middle of the view, hiding its inside, chosen (its handles shown)
+function amCropAdd(c,half){
+  let n=1; while(amCrops.some(K=>K.id==='k'+n)) n++;
+  let m=1; while(amCrops.some(K=>K.name==='קיצוץ '+m)) m++;
+  amCrops.push({id:'k'+n, name:'קיצוץ '+m, c:[c.x,c.y,c.z], h:[half,half,half], q:[0,0,0,1], out:false});
+  amCropPick(amCrops.length-1); amCropChanged(); return amCrops[amCrops.length-1]; }
+function amCropClose(i){ if(!amCrops[i]) return; amCrops.splice(i,1);
+  amCropSel=(amCropSel===i)?-1:(amCropSel>i?amCropSel-1:amCropSel); amCropFrameShow(); amCropChanged(); }
+// the chip chosen (-1: none): its handles shown, the others' gone
+// the tool in the hand is not changed (Eli, 17/11): a press on a handle takes the handle, a press that misses marks as always
+function amCropPick(i){ const on=(i>=0&&!!amCrops[i]);
+  amCropSel=on?i:-1; amCropDrag=null; amCropFrameShow(); amCropChips(); if(typeof invalidate==='function') invalidate(); }
+function amCropFrameShow(){
+  if(amCropFr){ if(amCropFr.group.parent) amCropFr.group.parent.remove(amCropFr.group);
+    amCropFr.group.traverse(o=>{ if(o.geometry) o.geometry.dispose(); if(o.material) o.material.dispose(); }); amCropFr=null; }
+  const K=amCrops[amCropSel]; if(!K||!amCropEdit||typeof scene==='undefined') return;
+  const box={c:new THREE.Vector3(K.c[0],K.c[1],K.c[2]), h:new THREE.Vector3(K.h[0],K.h[1],K.h[2]), q:new THREE.Quaternion(K.q[0],K.q[1],K.q[2],K.q[3])};
+  const size=amCropSize();
+  const F=amFrameGroup(box,size,[0,1,2],AM_CROP_LOOK);
+  F.group.traverse(o=>{ o.userData=Object.assign(o.userData||{},{amCropFree:true}); if(o.material&&o.material.userData) o.material.userData.amCropFree=true; });
+  scene.add(F.group); amCropFr={group:F.group, handles:F.handles, box:box, size:size, K:K}; }
+// the handles' size: a part of what the view holds (the screen says how far its eye is — amCropDist)
+function amCropSize(){ let s=Math.max(1e-3,((typeof amCropDist==='function')?amCropDist():1)*0.4);
+  // a finger: the spike (0.085 of the size) at least 44 pixels where the box is — the screen says how long a pixel is there
+  if(amCropFinger&&typeof amCropWpp==='function'){ const w=amCropWpp(); if(w>0&&isFinite(w)) s=Math.max(s,44*w/0.085); }
+  return s; }
+// the last press was a finger (touch / pen) or a mouse: the handles follow
+function amCropFingerSet(on){ on=!!on; if(on===amCropFinger) return; amCropFinger=on; if(amCropFr&&!amCropDrag) amCropFrameShow(); }   // during a drag: at its lift
+// a press: on a handle of the chosen crop — the drag begins (true); else nothing here
+function amCropPress(ray){
+  if(!amCropFr) return false;
+  const h=amFrameHit(ray,amCropFr.handles); if(!h) return false;
+  amCropDrag=amFrameStart(h,ray,camera,amCropFr.box,scene,amCropFr.size,AM_CROP_LOOK);
+  if(amCropDrag.ring){ amCropDrag.ring.userData.amCropFree=true; amCropDrag.ring.material.userData.amCropFree=true; }
+  return true; }
+function amCropMove(ray){
+  if(!amCropDrag||!amCropFr) return;
+  const F=amCropFr, K=F.K;
+  amFrameMove(amCropDrag,ray,F.box,F.size,()=>{
+    K.c=[F.box.c.x,F.box.c.y,F.box.c.z]; K.h=[F.box.h.x,F.box.h.y,F.box.h.z]; K.q=[F.box.q.x,F.box.q.y,F.box.q.z,F.box.q.w];
+    amCropMaskC=null;
+    // the picture hides as the hand goes (no "do it" button); the frame is laid again around the box, as the training
+    // screen's is — the drag's own state holds nothing of the frame
+    amCropRev++; amCropPrepd=null; amCropPack(); amCropFrameShow(); if(typeof amCropAfter==='function') amCropAfter();
+    if(typeof invalidate==='function') invalidate(); }); }
+function amCropLift(){
+  if(!amCropDrag) return false;
+  if(amCropDrag.ring&&amCropDrag.ring.parent) amCropDrag.ring.parent.remove(amCropDrag.ring);
+  amCropDrag=null; amCropFrameShow(); amCropChanged(); return true; }
 // 557 (Eli, Arena_Ashdod at 98%: "במקום בניה הדרגתית של השקיפות אני מקבל הרבה פעמים אזורים שקופים ואזורים אטומים"; "לפי ההמלצה"):
 // the model below 100% drawn as TWO layers. See-through with no depth (265) blends the surfaces along a ray in the order of the
 // file, not of distance — at 98% the last drawn of the roof, its underside or the stand below wins, in patches with straight
@@ -765,6 +1078,7 @@ function amSeeRender(renderer,scene,camera,mesh){
 (function tick(){requestAnimationFrame(tick);if(window.amMarkTick)window.amMarkTick();
   const now=performance.now(); if(amCamMoved()) amRenderUntil=Math.max(amRenderUntil,now+120);
   if(amDown>0||now<amRenderUntil){ if(window.amRescaleFixed)window.amRescaleFixed();
+    if(typeof amCropSweep==='function') amCropSweep(scene);   // 721: what a display crop hides is not drawn
     if(window.amColFlush)window.amColFlush();
     if(!(window.amSeeMesh&&amSeeRender(renderer,scene,camera,window.amSeeMesh))) renderer.render(scene,camera); } })();   // 494: the recoloured sub-faces by their ranges · 557: below 100% in two layers
 
@@ -1072,7 +1386,7 @@ function load(buf){
   // the model on the mean of its points (core.quantize_positions) and the sheet's points — rings, rulers, tapes,
   // counters, tags — are written in that frame; the package carries the model where it was scanned. Centred
   // here the same way, the iPad and the computer share one frame (on Eli's work the shift was 3 m)
-  amCentre(pos);
+  amCropOrg=amCentre(pos);     // 721: the display crops — and only they — are written in the model's coordinates (the computer's)
   const uv=bview(g,g.bin,acc[1].bufferView,Float32Array);
   const area=bview(g,g.bin,app.area,Float32Array);
   const qprob=bview(g,g.bin,app.prob,Uint8Array);
@@ -1340,6 +1654,7 @@ vec3 amSynthShade(vec3 wall, float isPatch, vec3 p, vec3 pn, float band){
   geo.computeBoundingSphere();
   // flat-mix marking (user round 11/08): aFlat=1 paints pure colour OVER the texture
   const mat=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});    // ---- the marking's look (decision 75: the stipple, option 6) --------------------------
+  mat.userData.amCropLine=true;   // 721: the cut's line where the model meets a display crop's wall
     // Ordered Bayer dithering in SCREEN space: the marking is drawn as a lattice of solid
     // colour dots over the untouched wall, the register of the 1968 plates. The layer's own
     // opacity drives dot coverage; the design wheel morphs from the old flat wash (0) to full
@@ -5155,6 +5470,21 @@ float amStippleA(float a, float lvl){
   const el=cv;
   const ptrs=new Map(); let pinch=null; let dragId=null;
   const pdist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+  /* 721 (ג): the display crop on the iPad (Eli, 17/11: made and edited here too). A crop is made around the middle of the
+     view, its handles take a finger or the pencil — a finger's size —, its chip switches it and closes it. The crops go
+     out with the sheet (getSheet: viewCrops) and the computer takes them when it loads the sheet. These are the core's
+     hooks, and the core is outside this closure: they are set on the window */
+  amCropRayOn();
+  window.amCropDist=()=>dist;
+  window.amCropWpp=()=>2*dist*Math.tan(camera.fov*Math.PI/360)/Math.max(1,el.clientHeight||1);
+  window.amCropRayAt=e=>{ const r=el.getBoundingClientRect(), rc=new THREE.Raycaster();
+    rc.setFromCamera(new THREE.Vector2(((e.clientX-r.left)/Math.max(1,r.width))*2-1,-((e.clientY-r.top)/Math.max(1,r.height))*2+1),camera); return rc; };
+  window.amCropAfter=()=>{ if(window.amInvalidate) window.amInvalidate(); };
+  window.amCropKeep=()=>{ if(typeof markUnexported==='function') markUnexported(true); };   // a change the sheet has not taken out yet
+  if($('addCrop')) $('addCrop').onclick=()=>{ amCropAdd(target,Math.max(1e-3,dist*0.18)); };
+  window.addEventListener('keydown',e=>{ if((e.key||'')==='Escape'&&amCropSel>=0) amCropPick(-1); });
+  amCropFinger=true;
+  amCropChips();
   const touchList=()=>[...ptrs.values()].filter(p=>p.type==='touch');
   const hasPen=()=>{for(const p of ptrs.values())if(p.type==='pen')return true;return false;};
   function startPinch(){const t=touchList();if(t.length<2)return;amPinchH=undefined;
@@ -5369,6 +5699,9 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       if(dragging==='paint'&&paintManual){amStrokeEnd();commitH();}
       if(dragging==='line')endLine();
       startPinch();dragging='pinch';return;}
+    // 721: a handle of the chosen display crop takes the press — a finger or the pencil — before every tool
+    if(amCropFr&&amCropPress(amCropRayAt(e))){dragging='crop';amCropFingerSet(e.pointerType!=='mouse');return;}
+    amCropFingerSet(e.pointerType!=='mouse');   // the handles as they were took the press; a finger's size follows
     // a finger ALWAYS navigates — marking/erasing/growing is pencil-only
     // (user decision 08/08/2026; also the original editor's behaviour)
     // 258: a finger rotates, and a finger that STAYS on a point for a moment grabs it
@@ -5416,6 +5749,7 @@ function amNavArm(e){ amNavDown={clientX:e.clientX,clientY:e.clientY}; amPivot=u
       if(on) amYawInPlace(pinch.on?da:tw);
       pinch={d:nd,mx:nmx,my:nmy,a:na,tw:on?0:tw,on:on};return;}
     if(dragId!==null&&e.pointerId!==dragId) return;       // palm guard
+    if(dragging==='crop'){amCropMove(amCropRayAt(e));return;}   // 721
     // a finger that travels is navigating, not holding — the grab must not fire behind it
     if(amHold&&Math.hypot(e.clientX-amHold.x,e.clientY-amHold.y)>AM_HOLD_SLOP) amHoldClear();
     const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];
